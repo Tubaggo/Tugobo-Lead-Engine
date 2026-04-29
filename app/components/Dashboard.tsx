@@ -11,8 +11,17 @@ import {
   instagramLink,
   whatsappLink,
 } from "@/app/lib/leads";
+import {
+  generateScoredLeads,
+  leadDedupeKey,
+} from "@/app/lib/generate";
+import ImportPanel, {
+  type ImportRequest,
+  type ImportResult,
+} from "@/app/components/ImportPanel";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
+const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
 
 type StateMap = Record<string, LeadStatusUpdate>;
 
@@ -46,6 +55,27 @@ function saveState(state: StateMap) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function loadExtraLeads(): ScoredLead[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(EXTRA_LEADS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ScoredLead[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveExtraLeads(leads: ScoredLead[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(EXTRA_LEADS_KEY, JSON.stringify(leads));
   } catch {
     // ignore quota errors
   }
@@ -321,6 +351,7 @@ function HotCard({
 
 export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [stateMap, setStateMap] = useState<StateMap>({});
+  const [extraLeads, setExtraLeads] = useState<ScoredLead[]>([]);
   const [dateLabel, setDateLabel] = useState("");
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<LeadType | "all">("all");
@@ -328,11 +359,46 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [sort, setSort] = useState<"hot" | "lead" | "name">("hot");
   const [openId, setOpenId] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState("");
+  const [recentlyImportedIds, setRecentlyImportedIds] = useState<string[]>([]);
 
   useEffect(() => {
     setStateMap(loadState());
+    setExtraLeads(loadExtraLeads());
     setDateLabel(buildTodayLabel());
   }, []);
+
+  const handleImport = async (req: ImportRequest): Promise<ImportResult> => {
+    const seed = Date.now();
+    const generated = generateScoredLeads(req.city, req.type, 10, seed);
+
+    // Build dedupe set from all current leads (base + already imported)
+    const existingKeys = new Set<string>(
+      [...leads, ...extraLeads].map((l) => leadDedupeKey(l.name, l.city))
+    );
+
+    const fresh = generated.filter(
+      (l) => !existingKeys.has(leadDedupeKey(l.name, l.city))
+    );
+    const skipped = generated.length - fresh.length;
+    const hot = fresh.filter((l) => l.hotScore >= 70).length;
+
+    if (fresh.length > 0) {
+      setRecentlyImportedIds(fresh.map((l) => l.id));
+      setExtraLeads((prev) => {
+        const next = [...prev, ...fresh];
+        saveExtraLeads(next);
+        return next;
+      });
+    }
+
+    return { added: fresh.length, hot, skipped };
+  };
+
+  useEffect(() => {
+    if (recentlyImportedIds.length === 0) return;
+    const t = window.setTimeout(() => setRecentlyImportedIds([]), 8000);
+    return () => window.clearTimeout(t);
+  }, [recentlyImportedIds]);
 
   const updateLead = (id: string, patch: Partial<LeadStatusUpdate>) => {
     setStateMap((prev) => {
@@ -354,9 +420,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     stateMap[id] ?? DEFAULT_STATE;
 
   const allRows = useMemo(() => {
-    return leads.map((l) => ({ ...l, _s: getLeadState(l.id) }));
+    return [...leads, ...extraLeads].map((l) => ({ ...l, _s: getLeadState(l.id) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, stateMap]);
+  }, [leads, extraLeads, stateMap]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -480,6 +546,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         />
       </section>
 
+      {/* Import */}
+      <ImportPanel onImport={handleImport} />
+
       {/* Hot 10 */}
       <section>
         <div className="mb-3 flex items-end justify-between">
@@ -589,10 +658,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 const s = row._s;
                 const wa = whatsappLink(row.phone, row.name, row.contactName);
                 const ig = row.instagram ? instagramLink(row.instagram) : null;
+                const isRecentlyImported = recentlyImportedIds.includes(row.id);
                 return (
                   <tr
                     key={row.id}
                     className={`group transition hover:bg-white/[0.025] ${
+                      isRecentlyImported ? "bg-indigo-500/[0.08]" : ""
+                    } ${
                       openId === row.id ? "bg-white/[0.03]" : ""
                     }`}
                   >
