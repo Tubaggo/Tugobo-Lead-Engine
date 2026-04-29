@@ -12,7 +12,6 @@ import {
   whatsappLink,
 } from "@/app/lib/leads";
 import {
-  generateScoredLeads,
   leadDedupeKey,
 } from "@/app/lib/generate";
 import ImportPanel, {
@@ -368,18 +367,28 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   }, []);
 
   const handleImport = async (req: ImportRequest): Promise<ImportResult> => {
-    const seed = Date.now();
-    const generated = generateScoredLeads(req.city, req.type, 10, seed);
+    const res = await fetch("/api/import-leads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ city: req.city, type: req.type }),
+    });
+    const data = (await res.json()) as {
+      leads?: ScoredLead[];
+      error?: string;
+    };
+    if (!res.ok) {
+      throw new Error(data.error || `Import failed (${res.status})`);
+    }
+    const imported = data.leads ?? [];
 
-    // Build dedupe set from all current leads (base + already imported)
     const existingKeys = new Set<string>(
       [...leads, ...extraLeads].map((l) => leadDedupeKey(l.name, l.city))
     );
 
-    const fresh = generated.filter(
+    const fresh = imported.filter(
       (l) => !existingKeys.has(leadDedupeKey(l.name, l.city))
     );
-    const skipped = generated.length - fresh.length;
+    const skipped = imported.length - fresh.length;
     const hot = fresh.filter((l) => l.hotScore >= 70).length;
 
     if (fresh.length > 0) {

@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { type LeadType } from "@/app/lib/leads";
 import { TURKEY_CITIES } from "@/app/lib/generate";
 
-export type ImportSource = "mock";
+export type ImportSource = "maps";
 
 export type ImportRequest = {
   city: string;
@@ -28,9 +28,9 @@ const NICHES: { value: LeadType; label: string }[] = [
 
 const SOURCES: { value: ImportSource; label: string; hint: string }[] = [
   {
-    value: "mock",
-    label: "Mock Import",
-    hint: "Generates realistic leads (no real API)",
+    value: "maps",
+    label: "Google Maps (Places)",
+    hint: "Live businesses from Google Places (public listings)",
   },
 ];
 
@@ -41,6 +41,13 @@ function formatImportSummary(r: ImportResult): { text: string; tone: "ok" | "war
   const leadWord = added === 1 ? "lead" : "leads";
   const hotWord = hot === 1 ? "hot lead" : "hot leads";
   const dupWord = skipped === 1 ? "duplicate skipped" : "duplicates skipped";
+
+  if (added === 0 && skipped === 0) {
+    return {
+      text: "No businesses found for this search. Try another city or niche.",
+      tone: "warn",
+    };
+  }
 
   if (added === 0 && skipped > 0) {
     return {
@@ -62,7 +69,7 @@ export default function ImportPanel({
 }) {
   const [city, setCity] = useState("");
   const [type, setType] = useState<LeadType>("Boutique Hotel");
-  const [source, setSource] = useState<ImportSource>("mock");
+  const [source, setSource] = useState<ImportSource>("maps");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState("");
@@ -83,6 +90,9 @@ export default function ImportPanel({
     try {
       const r = await onImport({ city: trimmed, type, source });
       setResult(r);
+    } catch (err) {
+      setResult(null);
+      setError(err instanceof Error ? err.message : "Import failed");
     } finally {
       setLoading(false);
     }
@@ -268,7 +278,7 @@ export default function ImportPanel({
 
       <p className="mt-1 text-[10px] text-zinc-500">
         {SOURCES.find((s) => s.value === source)?.hint}
-        {" · "}Google Maps / TripAdvisor source coming in Phase 2B.
+        {" · "}Server needs GOOGLE_MAPS_API_KEY (Places API enabled).
       </p>
     </section>
   );

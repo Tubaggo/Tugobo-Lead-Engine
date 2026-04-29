@@ -840,7 +840,11 @@ export function whatsappLink(phone: string, name: string, contactName: string) {
     `Merhaba ${contactName}, ben Tugobo'dan. ` +
     `${name} için doluluk ve direkt rezervasyon kanallarınızı %20-30 artırabilecek ` +
     `kısa bir fikir paylaşmak istedim. 5 dakikalık bir görüşmeye uygun musunuz?`;
-  return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
+  const encoded = encodeURIComponent(text);
+  if (digits.length >= 10) {
+    return `https://wa.me/${digits}?text=${encoded}`;
+  }
+  return `https://api.whatsapp.com/send?text=${encoded}`;
 }
 
 export function instagramLink(handle: string) {

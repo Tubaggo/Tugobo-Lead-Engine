@@ -44,8 +44,17 @@ const CITY_REGION: Record<string, string> = {
   Kalkan: "Akdeniz",
   Fethiye: "Akdeniz",
   Ölüdeniz: "Akdeniz",
+  Mersin: "Akdeniz",
+  Erdemli: "Akdeniz",
+  Silifke: "Akdeniz",
+  Kızkalesi: "Akdeniz",
+  Anamur: "Akdeniz",
+  Tarsus: "Akdeniz",
+  Ayaş: "Akdeniz",
+  Susanoğlu: "Akdeniz",
   Marmaris: "Ege",
   Datça: "Ege",
+  Akyaka: "Ege",
   Olympos: "Akdeniz",
   Bodrum: "Ege",
   İzmir: "Ege",
@@ -54,10 +63,13 @@ const CITY_REGION: Record<string, string> = {
   Kuşadası: "Ege",
   Didim: "Ege",
   Ayvalık: "Ege",
+  Cunda: "Ege",
   Assos: "Ege",
   Bozcaada: "Ege",
   Gümüşlük: "Ege",
+  Kapadokya: "Kapadokya",
   Göreme: "Kapadokya",
+  Ürgüp: "Kapadokya",
   "Uçhisar": "Kapadokya",
   Urgup: "Kapadokya",
   Avanos: "Kapadokya",
@@ -81,9 +93,11 @@ const CITY_REGION: Record<string, string> = {
   Mardin: "Güneydoğu",
 };
 
-function regionFor(city: string) {
+export function regionFor(city: string) {
   if (CITY_REGION[city]) return CITY_REGION[city];
-  // fallback: first chars used as rough indicator
+  const lower = city.trim().toLowerCase();
+  const hit = Object.keys(CITY_REGION).find((k) => k.toLowerCase() === lower);
+  if (hit) return CITY_REGION[hit];
   return "Türkiye";
 }
 
