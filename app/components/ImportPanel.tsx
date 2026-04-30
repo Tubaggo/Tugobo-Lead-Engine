@@ -57,7 +57,7 @@ function formatImportSummary(r: ImportResult): { text: string; tone: "ok" | "war
   }
 
   return {
-    text: `${added} ${leadWord} added | ${hot} ${hotWord} | ${skipped} ${skipped === 1 ? "duplicate" : "duplicates"} skipped`,
+    text: `${added} new ${leadWord} added | ${hot} ${hotWord} | ${skipped} ${skipped === 1 ? "duplicate" : "duplicates"} skipped`,
     tone: "ok",
   };
 }

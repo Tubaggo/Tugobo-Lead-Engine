@@ -292,11 +292,13 @@ function HotCard({
   rank,
   status,
   onAction,
+  fromLatestImport = false,
 }: {
   lead: ScoredLead;
   rank: number;
   status: LeadStatus;
   onAction: (id: string) => void;
+  fromLatestImport?: boolean;
 }) {
   return (
     <div className="group relative flex h-full min-w-[260px] flex-col rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-4 transition hover:border-orange-400/30 hover:from-orange-500/[0.05]">
@@ -324,6 +326,13 @@ function HotCard({
       <div className="text-xs text-zinc-400">
         {lead.city} · {lead.region}
       </div>
+      {fromLatestImport && (
+        <div className="mt-2">
+          <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
+            From Latest Import
+          </span>
+        </div>
+      )}
       <div className="mt-3 flex flex-wrap gap-1">
         {lead.hotReasons.slice(0, 3).map((r) => (
           <span
@@ -358,7 +367,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [sort, setSort] = useState<"hot" | "lead" | "name">("hot");
   const [openId, setOpenId] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState("");
-  const [recentlyImportedIds, setRecentlyImportedIds] = useState<string[]>([]);
+  const [recentlyImportedLeadIds, setRecentlyImportedLeadIds] = useState<string[]>([]);
+  const [latestImportLeads, setLatestImportLeads] = useState<ScoredLead[]>([]);
+  const [latestImportOnlyDuplicates, setLatestImportOnlyDuplicates] = useState(false);
+  const [hasImportRun, setHasImportRun] = useState(false);
+  const [sessionLeadIds, setSessionLeadIds] = useState<string[]>([]);
+  const [allLeadsOpen, setAllLeadsOpen] = useState(false);
+  const [showAllLeadsRows, setShowAllLeadsRows] = useState(false);
+  const [focusMode, setFocusMode] = useState(true);
+  const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
 
   useEffect(() => {
     setStateMap(loadState());
@@ -390,11 +407,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     );
     const skipped = imported.length - fresh.length;
     const hot = fresh.filter((l) => l.hotScore >= 70).length;
+    setHasImportRun(true);
+    setLatestImportLeads(fresh);
+    setLatestImportOnlyDuplicates(imported.length > 0 && fresh.length === 0);
 
     if (fresh.length > 0) {
-      setRecentlyImportedIds(fresh.map((l) => l.id));
+      setSessionLeadIds((prev) => {
+        const merged = new Set([...prev, ...fresh.map((l) => l.id)]);
+        return Array.from(merged);
+      });
+      setRecentlyImportedLeadIds(fresh.map((l) => l.id));
       setExtraLeads((prev) => {
-        const next = [...prev, ...fresh];
+        const next = [...fresh, ...prev];
         saveExtraLeads(next);
         return next;
       });
@@ -404,10 +428,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   useEffect(() => {
-    if (recentlyImportedIds.length === 0) return;
-    const t = window.setTimeout(() => setRecentlyImportedIds([]), 8000);
+    if (recentlyImportedLeadIds.length === 0) return;
+    const t = window.setTimeout(() => setRecentlyImportedLeadIds([]), 8000);
     return () => window.clearTimeout(t);
-  }, [recentlyImportedIds]);
+  }, [recentlyImportedLeadIds]);
 
   const updateLead = (id: string, patch: Partial<LeadStatusUpdate>) => {
     setStateMap((prev) => {
@@ -429,7 +453,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     stateMap[id] ?? DEFAULT_STATE;
 
   const allRows = useMemo(() => {
-    return [...leads, ...extraLeads].map((l) => ({ ...l, _s: getLeadState(l.id) }));
+    return [...extraLeads, ...leads].map((l) => ({ ...l, _s: getLeadState(l.id) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leads, extraLeads, stateMap]);
 
@@ -448,35 +472,65 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       );
     });
     list.sort((a, b) => {
+      const aIsRecent = recentlyImportedLeadIds.includes(a.id);
+      const bIsRecent = recentlyImportedLeadIds.includes(b.id);
+      if (aIsRecent && !bIsRecent) return -1;
+      if (!aIsRecent && bIsRecent) return 1;
       if (sort === "hot") return b.hotScore - a.hotScore;
       if (sort === "lead") return b.leadScore - a.leadScore;
       return a.name.localeCompare(b.name);
     });
     return list;
-  }, [allRows, query, typeFilter, statusFilter, sort]);
+  }, [allRows, query, typeFilter, statusFilter, sort, recentlyImportedLeadIds]);
 
-  const hot10 = useMemo(
-    () => [...allRows].sort((a, b) => b.hotScore - a.hotScore).slice(0, 10),
-    [allRows]
+  const useLatestImportHotLeads = latestImportLeads.length > 0;
+  const hotLeadsSource = useLatestImportHotLeads ? latestImportLeads : allRows;
+  const hot5 = useMemo(
+    () => [...hotLeadsSource].sort((a, b) => b.hotScore - a.hotScore).slice(0, 5),
+    [hotLeadsSource]
   );
 
+  const tabFiltered = useMemo(() => {
+    if (allLeadsTab === "focused") {
+      return filtered.filter((r) => r._s.status === "new" && r.hotScore >= 60);
+    }
+    if (allLeadsTab === "new") {
+      return filtered.filter((r) => r._s.status === "new");
+    }
+    if (allLeadsTab === "hot") {
+      return filtered.filter((r) => r.hotScore >= 70);
+    }
+    return filtered;
+  }, [filtered, allLeadsTab]);
+
+  const focusFiltered = useMemo(() => {
+    if (!focusMode) return tabFiltered;
+    return tabFiltered.filter((r) => r._s.status === "new" && r.hotScore >= 70);
+  }, [tabFiltered, focusMode]);
+
+  const visibleAllLeads = useMemo(() => {
+    if (showAllLeadsRows) return focusFiltered;
+    return focusFiltered.slice(0, 15);
+  }, [focusFiltered, showAllLeadsRows]);
+
   const stats = useMemo(() => {
-    const total = allRows.length;
-    const hotToday = allRows.filter((r) => r.hotScore >= 70).length;
-    const contacted = allRows.filter((r) =>
+    const sessionRows = allRows.filter((r) => sessionLeadIds.includes(r.id));
+    const sessionLeads = sessionRows.length;
+    const hotToday = sessionRows.filter((r) => r.hotScore >= 70).length;
+    const contacted = sessionRows.filter((r) =>
       ["contacted", "replied", "meeting", "won"].includes(r._s.status)
     ).length;
-    const replied = allRows.filter((r) =>
+    const replied = sessionRows.filter((r) =>
       ["replied", "meeting", "won"].includes(r._s.status)
     ).length;
-    const won = allRows.filter((r) => r._s.status === "won").length;
-    const totalRevenuePotential = allRows.reduce(
+    const won = sessionRows.filter((r) => r._s.status === "won").length;
+    const totalRevenuePotential = sessionRows.reduce(
       (acc, r) => acc + r.units * r.pricePerNight * 30 * 0.3,
       0
     );
-    return { total, hotToday, contacted, replied, won, totalRevenuePotential };
+    return { sessionLeads, hotToday, contacted, replied, won, totalRevenuePotential };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRows, stateMap]);
+  }, [allRows, stateMap, sessionLeadIds]);
 
   const openLead = openId ? allRows.find((r) => r.id === openId) : null;
 
@@ -517,40 +571,46 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             {dateLabel || "\u00A0"}
           </span>
           <span className="hidden sm:inline">·</span>
-          <span className="tabular-nums">{stats.total} leads</span>
+          <span className="tabular-nums">{stats.sessionLeads} session leads</span>
+          <button
+            onClick={() => setSessionLeadIds([])}
+            className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-white/10"
+          >
+            Start New Session
+          </button>
         </div>
       </header>
 
       {/* Stats */}
       <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <StatCard
-          label="Total leads"
-          value={stats.total}
-          hint="Turkey tourism"
+          label="Session Leads"
+          value={stats.sessionLeads}
+          hint="Added this session"
           accent="indigo"
         />
         <StatCard
-          label="Hot today"
+          label="Hot Leads"
           value={stats.hotToday}
-          hint="Hot score ≥ 70"
+          hint="Hot score ≥ 70 in session"
           accent="orange"
         />
         <StatCard
           label="Contacted"
           value={stats.contacted}
-          hint="Outreach started"
+          hint="Session"
           accent="sky"
         />
         <StatCard
           label="Replied"
           value={stats.replied}
-          hint="Replied or further"
+          hint="Session"
           accent="emerald"
         />
         <StatCard
           label="Won"
           value={stats.won}
-          hint={`${formatTRY(stats.totalRevenuePotential)} pipeline / mo`}
+          hint={`${formatTRY(stats.totalRevenuePotential)} session pipeline / mo`}
           accent="emerald"
         />
       </section>
@@ -558,224 +618,430 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* Import */}
       <ImportPanel onImport={handleImport} />
 
+      {/* Last Import Results */}
+      <section className="overflow-hidden rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] backdrop-blur ring-1 ring-inset ring-indigo-500/10">
+        <div className="border-b border-white/5 px-4 py-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+            Last Import Results
+          </h2>
+          <p className="mt-1 text-xs text-zinc-400">
+            Only leads from your latest import
+          </p>
+        </div>
+
+        {!hasImportRun ? (
+          <div className="px-4 py-6 text-xs text-zinc-500">
+            Run an import to see newly added leads here.
+          </div>
+        ) : latestImportLeads.length === 0 ? (
+          <div className="px-4 py-6 text-sm text-amber-300">
+            No new leads in this import — all results already existed.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-white/[0.02] text-left text-[11px] uppercase tracking-wider text-zinc-500">
+                <tr>
+                  <th className="px-4 py-2.5 font-medium">Lead</th>
+                  <th className="px-4 py-2.5 font-medium">Type</th>
+                  <th className="px-4 py-2.5 font-medium">Location</th>
+                  <th className="px-4 py-2.5 font-medium">Lead Score</th>
+                  <th className="px-4 py-2.5 font-medium">Hot Score</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {latestImportLeads.map((row) => {
+                  const wa = whatsappLink(row.phone, row.name, row.contactName);
+                  const ig = row.instagram ? instagramLink(row.instagram) : null;
+                  return (
+                    <tr
+                      key={row.id}
+                      className="bg-indigo-500/[0.05] shadow-[inset_0_0_0_1px_rgba(129,140,248,0.25)]"
+                    >
+                      <td className="px-4 py-3 align-top">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setOpenId(row.id)}
+                            className="text-left font-medium text-zinc-100 hover:text-white"
+                          >
+                            {row.name}
+                          </button>
+                          <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
+                            New Import
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 align-top text-xs text-zinc-300">
+                        {row.type}
+                      </td>
+                      <td className="px-4 py-3 align-top text-xs text-zinc-300">
+                        <div>{row.city}</div>
+                        <div className="text-[11px] text-zinc-500">{row.region}</div>
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <ScoreBar score={row.leadScore} tone="lead" />
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <ScoreBar score={row.hotScore} tone="hot" />
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <a
+                            href={wa}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => handleQuickContacted(row.id)}
+                            title={`WhatsApp · ${row.phone}`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-500/10 text-emerald-300 transition hover:bg-emerald-500/20"
+                          >
+                            <IconWhatsapp className="h-4 w-4" />
+                          </a>
+                          <a
+                            href={ig ?? "#"}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => {
+                              if (!ig) e.preventDefault();
+                            }}
+                            aria-disabled={!ig}
+                            title={
+                              ig
+                                ? `Instagram · @${row.instagram}`
+                                : "No Instagram on file"
+                            }
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                              ig
+                                ? "border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20"
+                                : "border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed"
+                            }`}
+                          >
+                            <IconInstagram className="h-4 w-4" />
+                          </a>
+                          <button
+                            onClick={() => setOpenId(row.id)}
+                            title="Open details"
+                            className="inline-flex h-8 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-xs text-zinc-200 transition hover:bg-white/10"
+                          >
+                            Open
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {latestImportOnlyDuplicates && latestImportLeads.length === 0 && (
+          <div className="border-t border-white/5 px-4 py-2 text-[11px] text-zinc-500">
+            Latest import returned only duplicates.
+          </div>
+        )}
+      </section>
+
       {/* Hot 10 */}
       <section>
         <div className="mb-3 flex items-end justify-between">
           <div>
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-zinc-300">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
-              Today&apos;s Hot Leads · Top 10
+              {useLatestImportHotLeads
+                ? "Hot Leads from Last Import"
+                : "Today&apos;s Hot Leads"}
             </h2>
             <p className="text-xs text-zinc-500">
-              Ranked by Hot Score. Contact these first.
+              Showing top opportunities from your latest search
             </p>
           </div>
         </div>
         <div className="-mx-1 grid grid-flow-col auto-cols-[260px] gap-3 overflow-x-auto px-1 pb-2 sm:auto-cols-[280px]">
-          {hot10.map((lead, i) => (
+          {hot5.map((lead, i) => (
             <HotCard
               key={lead.id}
               rank={i + 1}
               lead={lead}
               status={getLeadState(lead.id).status}
               onAction={(id) => setOpenId(id)}
+              fromLatestImport={useLatestImportHotLeads}
             />
           ))}
         </div>
       </section>
 
-      {/* Filters */}
-      <section className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur md:flex-row md:items-center md:justify-between">
-        <div className="flex flex-1 items-center gap-2">
-          <div className="relative flex-1">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search lead, city, contact, or @instagram"
-              className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-            />
-          </div>
-          <select
-            value={sort}
-            onChange={(e) =>
-              setSort(e.target.value as "hot" | "lead" | "name")
-            }
-            className="rounded-md border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-          >
-            <option value="hot">Sort: Hot Score</option>
-            <option value="lead">Sort: Lead Score</option>
-            <option value="name">Sort: Name</option>
-          </select>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <FilterChip
-            label="All types"
-            active={typeFilter === "all"}
-            onClick={() => setTypeFilter("all")}
-          />
-          {TYPES.map((t) => (
-            <FilterChip
-              key={t}
-              label={t}
-              active={typeFilter === t}
-              onClick={() => setTypeFilter(t)}
-            />
-          ))}
-          <span className="mx-1 h-4 w-px bg-white/10" />
-          <FilterChip
-            label="All status"
-            active={statusFilter === "all"}
-            onClick={() => setStatusFilter("all")}
-          />
-          {STATUS_ORDER.map((s) => (
-            <FilterChip
-              key={s}
-              label={STATUS_LABEL[s]}
-              active={statusFilter === s}
-              onClick={() => setStatusFilter(s)}
-            />
-          ))}
-        </div>
-      </section>
-
-      {/* Table */}
+      {/* All Leads (collapsible) */}
       <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur">
         <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
-            All Leads
-          </h2>
-          <span className="text-xs text-zinc-500 tabular-nums">
-            {filtered.length} of {allRows.length}
-          </span>
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
+              All Leads
+            </h2>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              Full database for browsing and follow-up
+            </p>
+          </div>
+          <button
+            onClick={() => setAllLeadsOpen((v) => !v)}
+            className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-200 transition hover:bg-white/10"
+          >
+            {allLeadsOpen ? "Hide" : "Show"}
+          </button>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-white/[0.02] text-left text-[11px] uppercase tracking-wider text-zinc-500">
-              <tr>
-                <th className="px-4 py-2.5 font-medium">Lead</th>
-                <th className="px-4 py-2.5 font-medium">Type</th>
-                <th className="px-4 py-2.5 font-medium">Location</th>
-                <th className="px-4 py-2.5 font-medium tabular-nums">ADR</th>
-                <th className="px-4 py-2.5 font-medium">Lead Score</th>
-                <th className="px-4 py-2.5 font-medium">Hot Score</th>
-                <th className="px-4 py-2.5 font-medium">Status</th>
-                <th className="px-4 py-2.5 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {filtered.map((row) => {
-                const s = row._s;
-                const wa = whatsappLink(row.phone, row.name, row.contactName);
-                const ig = row.instagram ? instagramLink(row.instagram) : null;
-                const isRecentlyImported = recentlyImportedIds.includes(row.id);
-                return (
-                  <tr
-                    key={row.id}
-                    className={`group transition hover:bg-white/[0.025] ${
-                      isRecentlyImported ? "bg-indigo-500/[0.08]" : ""
-                    } ${
-                      openId === row.id ? "bg-white/[0.03]" : ""
-                    }`}
-                  >
-                    <td className="px-4 py-3 align-top">
-                      <button
-                        onClick={() => setOpenId(row.id)}
-                        className="text-left"
-                      >
-                        <div className="font-medium text-zinc-100 hover:text-white">
-                          {row.name}
-                        </div>
-                        <div className="mt-0.5 text-xs text-zinc-500">
-                          {row.contactName} · {row.units} units
-                        </div>
-                      </button>
-                    </td>
-                    <td className="px-4 py-3 align-top text-xs text-zinc-300">
-                      {row.type}
-                    </td>
-                    <td className="px-4 py-3 align-top text-xs text-zinc-300">
-                      <div>{row.city}</div>
-                      <div className="text-[11px] text-zinc-500">
-                        {row.region}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 align-top tabular-nums text-zinc-300">
-                      {formatTRY(row.pricePerNight)}
-                    </td>
-                    <td className="px-4 py-3 align-top">
-                      <ScoreBar score={row.leadScore} tone="lead" />
-                    </td>
-                    <td className="px-4 py-3 align-top">
-                      <ScoreBar score={row.hotScore} tone="hot" />
-                    </td>
-                    <td className="px-4 py-3 align-top">
-                      <StatusSelect
-                        value={s.status}
-                        onChange={(status) => updateLead(row.id, { status })}
-                      />
-                    </td>
-                    <td className="px-4 py-3 align-top">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <a
-                          href={wa}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={() => handleQuickContacted(row.id)}
-                          title={`WhatsApp · ${row.phone}`}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-500/10 text-emerald-300 transition hover:bg-emerald-500/20"
-                        >
-                          <IconWhatsapp className="h-4 w-4" />
-                        </a>
-                        <a
-                          href={ig ?? "#"}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => {
-                            if (!ig) e.preventDefault();
-                          }}
-                          aria-disabled={!ig}
-                          title={
-                            ig
-                              ? `Instagram · @${row.instagram}`
-                              : "No Instagram on file"
-                          }
-                          className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
-                            ig
-                              ? "border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20"
-                              : "border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed"
-                          }`}
-                        >
-                          <IconInstagram className="h-4 w-4" />
-                        </a>
-                        <button
-                          onClick={() => setOpenId(row.id)}
-                          title="Open notes"
-                          className={`relative inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
-                            s.note
-                              ? "border-amber-400/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
-                              : "border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"
-                          }`}
-                        >
-                          <IconNote className="h-4 w-4" />
-                          {s.note && (
-                            <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-400" />
-                          )}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-zinc-500">
-                    No leads match your filters.
-                  </td>
-                </tr>
+
+        {allLeadsOpen && (
+          <>
+            <section className="flex flex-col gap-3 border-b border-white/5 p-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-1 items-center gap-2">
+                <div className="relative flex-1">
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search lead, city, contact, or @instagram"
+                    className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  />
+                </div>
+                <select
+                  value={sort}
+                  onChange={(e) =>
+                    setSort(e.target.value as "hot" | "lead" | "name")
+                  }
+                  className="rounded-md border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                >
+                  <option value="hot">Sort: Hot Score</option>
+                  <option value="lead">Sort: Lead Score</option>
+                  <option value="name">Sort: Name</option>
+                </select>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    setFocusMode((v) => !v);
+                    setShowAllLeadsRows(false);
+                  }}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset transition ${
+                    focusMode
+                      ? "bg-orange-500/20 text-orange-200 ring-orange-400/40"
+                      : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
+                  }`}
+                >
+                  Focus Mode: {focusMode ? "On" : "Off"}
+                </button>
+                <FilterChip
+                  label="All types"
+                  active={typeFilter === "all"}
+                  onClick={() => setTypeFilter("all")}
+                />
+                {TYPES.map((t) => (
+                  <FilterChip
+                    key={t}
+                    label={t}
+                    active={typeFilter === t}
+                    onClick={() => setTypeFilter(t)}
+                  />
+                ))}
+                <span className="mx-1 h-4 w-px bg-white/10" />
+                <FilterChip
+                  label="All status"
+                  active={statusFilter === "all"}
+                  onClick={() => setStatusFilter("all")}
+                />
+                {STATUS_ORDER.map((s) => (
+                  <FilterChip
+                    key={s}
+                    label={STATUS_LABEL[s]}
+                    active={statusFilter === s}
+                    onClick={() => setStatusFilter(s)}
+                  />
+                ))}
+              </div>
+            </section>
+
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-white/5 px-4 py-2">
+              <FilterChip
+                label="Focused"
+                active={allLeadsTab === "focused"}
+                onClick={() => {
+                  setAllLeadsTab("focused");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+              <FilterChip
+                label="New"
+                active={allLeadsTab === "new"}
+                onClick={() => {
+                  setAllLeadsTab("new");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+              <FilterChip
+                label="Hot"
+                active={allLeadsTab === "hot"}
+                onClick={() => {
+                  setAllLeadsTab("hot");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+              <FilterChip
+                label="All"
+                active={allLeadsTab === "all"}
+                onClick={() => {
+                  setAllLeadsTab("all");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+            </div>
+
+            <div className="flex items-center justify-between border-b border-white/5 px-4 py-2">
+              <span className="text-xs text-zinc-500 tabular-nums">
+                Showing {visibleAllLeads.length} of {focusFiltered.length} leads
+              </span>
+              {focusMode && (
+                <span className="text-[11px] text-orange-300">
+                  Focused: status New + hot score ≥ 70
+                </span>
               )}
-            </tbody>
-          </table>
-        </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-white/[0.02] text-left text-[11px] uppercase tracking-wider text-zinc-500">
+                  <tr>
+                    <th className="px-4 py-2.5 font-medium">Lead</th>
+                    <th className="px-4 py-2.5 font-medium">Location</th>
+                    <th className="px-4 py-2.5 font-medium">Lead Score</th>
+                    <th className="px-4 py-2.5 font-medium">Hot Score</th>
+                    <th className="px-4 py-2.5 text-right font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {visibleAllLeads.map((row) => {
+                    const s = row._s;
+                    const wa = whatsappLink(row.phone, row.name, row.contactName);
+                    const ig = row.instagram ? instagramLink(row.instagram) : null;
+                    const isRecentlyImported = recentlyImportedLeadIds.includes(row.id);
+                    const hotStyle =
+                      row.hotScore > 80
+                        ? "text-orange-200"
+                        : row.hotScore >= 70
+                        ? "text-zinc-200"
+                        : "text-zinc-500";
+                    return (
+                      <tr
+                        key={row.id}
+                        className={`group transition hover:bg-white/[0.025] ${
+                          row.hotScore > 80
+                            ? "bg-orange-500/[0.05]"
+                            : row.hotScore >= 70
+                            ? "bg-white/[0.02]"
+                            : "opacity-75"
+                        } ${
+                          isRecentlyImported
+                            ? "shadow-[inset_0_0_0_1px_rgba(129,140,248,0.35)]"
+                            : ""
+                        } ${openId === row.id ? "bg-white/[0.03]" : ""}`}
+                      >
+                        <td className="px-4 py-3 align-top">
+                          <button
+                            onClick={() => setOpenId(row.id)}
+                            className="text-left"
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className="font-medium text-zinc-100 hover:text-white">
+                                {row.name}
+                              </div>
+                              {isRecentlyImported && (
+                                <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
+                                  New Import
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 align-top text-xs text-zinc-300">
+                          <div>{row.city}</div>
+                          <div className="text-[11px] text-zinc-500">{row.region}</div>
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <ScoreBar score={row.leadScore} tone="lead" />
+                        </td>
+                        <td className={`px-4 py-3 align-top ${hotStyle}`}>
+                          <ScoreBar score={row.hotScore} tone="hot" />
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <a
+                              href={wa}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => handleQuickContacted(row.id)}
+                              title={`WhatsApp · ${row.phone}`}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-500/10 text-emerald-300 transition hover:bg-emerald-500/20"
+                            >
+                              <IconWhatsapp className="h-4 w-4" />
+                            </a>
+                            <a
+                              href={ig ?? "#"}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => {
+                                if (!ig) e.preventDefault();
+                              }}
+                              aria-disabled={!ig}
+                              title={
+                                ig
+                                  ? `Instagram · @${row.instagram}`
+                                  : "No Instagram on file"
+                              }
+                              className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                                ig
+                                  ? "border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20"
+                                  : "border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed"
+                              }`}
+                            >
+                              <IconInstagram className="h-4 w-4" />
+                            </a>
+                            <button
+                              onClick={() => setOpenId(row.id)}
+                              title="Open notes"
+                              className={`relative inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                                s.note
+                                  ? "border-amber-400/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                                  : "border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"
+                              }`}
+                            >
+                              <IconNote className="h-4 w-4" />
+                              {s.note && (
+                                <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-400" />
+                              )}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {focusFiltered.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-10 text-center text-sm text-zinc-500">
+                        No leads match your filters.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {focusFiltered.length > 15 && (
+              <div className="flex justify-center border-t border-white/5 px-4 py-3">
+                <button
+                  onClick={() => setShowAllLeadsRows((v) => !v)}
+                  className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-white/10"
+                >
+                  {showAllLeadsRows ? "Show less" : "Show more"}
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </section>
 
       <footer className="pb-8 pt-2 text-center text-[11px] text-zinc-600">
