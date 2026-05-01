@@ -1,15 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  type ContactQuality,
   type LeadStatus,
   type LeadStatusUpdate,
   type LeadType,
   type ScoredLead,
   STATUS_LABEL,
   STATUS_ORDER,
+  getContactQuality,
+  getTurkishPhoneKind,
   instagramLink,
   whatsappLink,
+  whatsappLinkWithText,
 } from "@/app/lib/leads";
 import {
   leadDedupeKey,
@@ -21,6 +25,15 @@ import ImportPanel, {
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
+const IMPORTED_LEADS_V2_KEY = "tugobo-lead-engine:imported-leads-v2";
+const LAST_IMPORT_KEY = "tugobo-lead-engine:last-import-v1";
+const IMPORT_CACHE_KEY = "tugobo-lead-engine:import-cache-v1";
+const CONTACT_FINDER_MAP_KEY = "tugobo-lead-engine:contact-finder-map-v1";
+const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
+
+type LastImportPayload = { batch: ScoredLead[]; newIds: string[] };
+
+type ContactChannelCat = "ready" | "needs_finder" | "none";
 
 type StateMap = Record<string, LeadStatusUpdate>;
 
@@ -28,6 +41,8 @@ const DEFAULT_STATE: LeadStatusUpdate = {
   status: "new",
   note: "",
   updatedAt: null,
+  contactedAt: null,
+  channel: null,
 };
 
 const TYPES: LeadType[] = [
@@ -37,6 +52,53 @@ const TYPES: LeadType[] = [
   "Villa",
   "Pension",
 ];
+
+const CONTACT_QUALITY_LABEL: Record<ContactQuality, string> = {
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
+
+type ContactFinderType =
+  | "VERIFIED_WHATSAPP"
+  | "GENERATED_WHATSAPP"
+  | "PHONE_ONLY"
+  | "whatsapp"
+  | "mobile"
+  | "phone"
+  | "instagram"
+  | "email"
+  | "website";
+
+type ContactFinderConfidence = "high" | "medium" | "low";
+
+type ContactFinderResult = {
+  bestContactType: ContactFinderType;
+  bestContactValue: string;
+  confidence: ContactFinderConfidence;
+  foundPhones: string[];
+  foundEmails: string[];
+  foundInstagram: string[];
+  foundWhatsapp: string[];
+  source:
+    | "Website WhatsApp link"
+    | "Website phone number"
+    | "Website Instagram link"
+    | "Website email"
+    | "Website homepage";
+  reason: string;
+};
+
+type ContactFinderState =
+  | { phase: "idle" }
+  | { phase: "loading" }
+  | { phase: "error"; error: string }
+  | { phase: "ready"; result: ContactFinderResult };
+
+type OutreachProgressState =
+  | { phase: "idle" }
+  | { phase: "running"; current: number; total: number }
+  | { phase: "done"; sent: number; skipped: number };
 
 function loadState(): StateMap {
   if (typeof window === "undefined") return {};
@@ -59,25 +121,229 @@ function saveState(state: StateMap) {
   }
 }
 
-function loadExtraLeads(): ScoredLead[] {
+function loadImportedLeadsV2(): ScoredLead[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(EXTRA_LEADS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as ScoredLead[]) : [];
+    const raw = window.localStorage.getItem(IMPORTED_LEADS_V2_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as ScoredLead[]) : [];
+    }
+    const leg = window.localStorage.getItem(EXTRA_LEADS_KEY);
+    if (leg) {
+      const parsed = JSON.parse(leg);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        window.localStorage.setItem(IMPORTED_LEADS_V2_KEY, leg);
+        return parsed as ScoredLead[];
+      }
+    }
   } catch {
-    return [];
+    // ignore
   }
+  return [];
 }
 
-function saveExtraLeads(leads: ScoredLead[]) {
+function saveImportedLeadsV2(leads: ScoredLead[]) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(EXTRA_LEADS_KEY, JSON.stringify(leads));
+    window.localStorage.setItem(IMPORTED_LEADS_V2_KEY, JSON.stringify(leads));
   } catch {
     // ignore quota errors
   }
+}
+
+function loadLastImportPayload(): LastImportPayload {
+  if (typeof window === "undefined") return { batch: [], newIds: [] };
+  try {
+    const raw = window.localStorage.getItem(LAST_IMPORT_KEY);
+    if (!raw) return { batch: [], newIds: [] };
+    const p = JSON.parse(raw) as {
+      batch?: ScoredLead[];
+      newIds?: string[];
+    };
+    return {
+      batch: Array.isArray(p.batch) ? p.batch : [],
+      newIds: Array.isArray(p.newIds) ? p.newIds : [],
+    };
+  } catch {
+    return { batch: [], newIds: [] };
+  }
+}
+
+function saveLastImportPayload(payload: LastImportPayload) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_IMPORT_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+}
+
+function loadImportCache(): Record<string, ScoredLead[]> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(IMPORT_CACHE_KEY);
+    if (!raw) return {};
+    const p = JSON.parse(raw);
+    return typeof p === "object" && p !== null && !Array.isArray(p)
+      ? (p as Record<string, ScoredLead[]>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveImportCache(cache: Record<string, ScoredLead[]>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(IMPORT_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore
+  }
+}
+
+function loadContactFinderMap(): Record<string, ContactFinderResult> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(CONTACT_FINDER_MAP_KEY);
+    if (!raw) return {};
+    const p = JSON.parse(raw);
+    return typeof p === "object" && p !== null && !Array.isArray(p)
+      ? (p as Record<string, ContactFinderResult>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveContactFinderMap(map: Record<string, ContactFinderResult>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CONTACT_FINDER_MAP_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+function loadImportMeta(): { hasRun: boolean } {
+  if (typeof window === "undefined") return { hasRun: false };
+  try {
+    const raw = window.localStorage.getItem(IMPORT_META_KEY);
+    if (!raw) return { hasRun: false };
+    const p = JSON.parse(raw) as { hasRun?: boolean };
+    return { hasRun: Boolean(p?.hasRun) };
+  } catch {
+    return { hasRun: false };
+  }
+}
+
+function saveImportMeta(meta: { hasRun: boolean }) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(IMPORT_META_KEY, JSON.stringify(meta));
+  } catch {
+    // ignore
+  }
+}
+
+function normalizePhoneDedupe(phone: string): string | null {
+  let d = phone.replace(/\D/g, "");
+  if (!d) return null;
+  while (d.startsWith("00") && d.length > 2) d = d.slice(2);
+  if (d.startsWith("90") && d.length > 2) d = d.slice(2);
+  return d.length >= 10 ? d : null;
+}
+
+function normalizeWebDedupe(web?: string): string | null {
+  if (!web?.trim()) return null;
+  const h = web
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0];
+  return h || null;
+}
+
+function dedupeKeysForLead(lead: ScoredLead): string[] {
+  const keys: string[] = [leadDedupeKey(lead.name, lead.city)];
+  const pk = normalizePhoneDedupe(lead.phone);
+  if (pk) keys.push(`phone:${pk}`);
+  const wk = normalizeWebDedupe(lead.website);
+  if (wk) keys.push(`web:${wk}`);
+  return keys;
+}
+
+function buildDedupeKeySet(base: ScoredLead[]): Set<string> {
+  const s = new Set<string>();
+  for (const l of base) {
+    for (const k of dedupeKeysForLead(l)) s.add(k);
+  }
+  return s;
+}
+
+function isDuplicateAgainstSet(lead: ScoredLead, keys: Set<string>): boolean {
+  for (const k of dedupeKeysForLead(lead)) {
+    if (keys.has(k)) return true;
+  }
+  return false;
+}
+
+function addLeadToDedupeSet(lead: ScoredLead, keys: Set<string>) {
+  for (const k of dedupeKeysForLead(lead)) keys.add(k);
+}
+
+function mergeImportBatch(
+  prevImported: ScoredLead[],
+  seedLeads: ScoredLead[],
+  batch: ScoredLead[],
+): { next: ScoredLead[]; fresh: ScoredLead[]; newIds: string[] } {
+  const base = prevImported.length > 0 ? prevImported : seedLeads;
+  const keySet = buildDedupeKeySet(base);
+  const fresh: ScoredLead[] = [];
+  for (const l of batch) {
+    if (isDuplicateAgainstSet(l, keySet)) continue;
+    fresh.push(l);
+    addLeadToDedupeSet(l, keySet);
+  }
+  if (fresh.length === 0) {
+    return { next: prevImported, fresh, newIds: [] };
+  }
+  return {
+    next: [...fresh, ...prevImported],
+    fresh,
+    newIds: fresh.map((x) => x.id),
+  };
+}
+
+function classifyContactChannel(
+  lead: ScoredLead,
+  finder: ContactFinderResult | undefined,
+): ContactChannelCat {
+  const finderDirect =
+    finder &&
+    [
+      "VERIFIED_WHATSAPP",
+      "GENERATED_WHATSAPP",
+      "whatsapp",
+      "mobile",
+      "instagram",
+      "email",
+    ].includes(finder.bestContactType);
+
+  const leadDirect =
+    Boolean(lead.instagram?.trim()) ||
+    whatsappLink(lead.phone) !== null ||
+    (getTurkishPhoneKind(lead.phone) === "mobile" &&
+      normalizePhoneDedupe(lead.phone) !== null);
+
+  if (leadDirect || finderDirect) return "ready";
+
+  if (lead.website?.trim()) {
+    if (!finder) return "needs_finder";
+    return "none";
+  }
+  return "none";
 }
 
 // Deterministic Turkish currency formatter.
@@ -90,6 +356,10 @@ function formatTRY(n: number) {
   const abs = Math.abs(rounded).toString();
   const grouped = abs.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   return `${sign}${grouped} \u20BA`;
+}
+
+function openExternal(url: string) {
+  window.open(url, "_blank");
 }
 
 const WEEKDAYS = [
@@ -233,6 +503,43 @@ function IconInstagram({ className = "" }: { className?: string }) {
   );
 }
 
+function IconGlobe({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
+  );
+}
+
+function LeadWebsiteAction({ website }: { website?: string }) {
+  const host = website?.trim();
+  if (!host) return null;
+  const href = `https://${host.replace(/^https?:\/\//i, "")}`;
+  const square =
+    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-sky-400/20 bg-sky-500/10 text-sky-300 transition hover:bg-sky-500/20";
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Web sitesi"
+      className={square}
+    >
+      <IconGlobe className="h-4 w-4" />
+    </a>
+  );
+}
+
 function IconNote({ className = "" }: { className?: string }) {
   return (
     <svg
@@ -249,6 +556,215 @@ function IconNote({ className = "" }: { className?: string }) {
       <path d="M14 3v6h6" />
       <path d="M9 14h6M9 18h4" />
     </svg>
+  );
+}
+
+function IconSpark({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.25-6.25a2 2 0 0 1 0-2.828l6.25-6.25a2 2 0 0 1 2.828 0l6.25 6.25a2 2 0 0 1 0 2.828l-6.25 6.25a2 2 0 0 0-1.437 1.437z" />
+      <path d="m14 6 3.535 3.536" />
+      <path d="M12.061 16.5 16.06 12.5" />
+      <path d="m17 10 2 2" />
+      <path d="M19.061 6.5 20 5.5" />
+    </svg>
+  );
+}
+
+type AiMessageModalState =
+  | null
+  | { lead: ScoredLead; phase: "loading" }
+  | { lead: ScoredLead; phase: "ready"; message: string }
+  | { lead: ScoredLead; phase: "error"; error: string };
+
+function AiMessageModal({
+  state,
+  onClose,
+  onRetry,
+  onMarkContacted,
+}: {
+  state: AiMessageModalState;
+  onClose: () => void;
+  onRetry: (lead: ScoredLead) => void;
+  onMarkContacted: (id: string) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    setCopied(false);
+  }, [state]);
+
+  if (!state) return null;
+
+  const { lead } = state;
+  const waReady =
+    state.phase === "ready"
+      ? whatsappLinkWithText(lead.phone, state.message)
+      : null;
+
+  const handleCopy = async () => {
+    if (state.phase !== "ready") return;
+    try {
+      await navigator.clipboard.writeText(state.message);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="ai-message-title"
+    >
+      <button
+        type="button"
+        aria-label="Kapat"
+        onClick={onClose}
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+      />
+      <div className="relative z-10 w-full max-w-lg rounded-xl border border-white/10 bg-zinc-950 shadow-2xl ring-1 ring-white/5">
+        <div className="flex items-start justify-between border-b border-white/10 px-4 py-3">
+          <div>
+            <h2
+              id="ai-message-title"
+              className="text-sm font-semibold text-zinc-100"
+            >
+              AI Message
+            </h2>
+            <p className="mt-0.5 text-xs text-zinc-500">{lead.name}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
+            aria-label="Kapat"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className="h-5 w-5"
+            >
+              <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="max-h-[min(60vh,28rem)] overflow-y-auto px-4 py-3">
+          {state.phase === "loading" && (
+            <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
+              <div
+                className="h-8 w-8 animate-spin rounded-full border-2 border-violet-400/30 border-t-violet-400"
+                aria-hidden
+              />
+              <p className="text-sm text-zinc-400">Mesaj oluşturuluyor…</p>
+            </div>
+          )}
+          {state.phase === "error" && (
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-rose-300">{state.error}</p>
+              <button
+                type="button"
+                onClick={() => onRetry(lead)}
+                className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
+              >
+                Tekrar dene
+              </button>
+            </div>
+          )}
+          {state.phase === "ready" && (
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
+              {state.message}
+            </p>
+          )}
+        </div>
+
+        {state.phase === "ready" && (
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
+            <button
+              type="button"
+              onClick={() => void handleCopy()}
+              className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+            {waReady ? (
+              <button
+                type="button"
+                onClick={() => {
+                  openExternal(waReady);
+                  onMarkContacted(lead.id);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
+              >
+                <IconWhatsapp className="h-4 w-4" />
+                Open WhatsApp 🚀
+              </button>
+            ) : (
+              <span
+                title="WhatsApp bulunamadı"
+                className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-500"
+              >
+                <IconWhatsapp className="h-4 w-4" />
+                Open WhatsApp 🚀
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LeadWhatsAppAction({
+  phone,
+  leadId,
+  onMarkContacted,
+}: {
+  phone: string;
+  leadId: string;
+  onMarkContacted: (id: string) => void;
+}) {
+  const wa = whatsappLink(phone);
+  const square =
+    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition";
+  if (wa) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          openExternal(wa);
+          onMarkContacted(leadId);
+        }}
+        title="WhatsApp ile ulaş"
+        className={`${square} border-[#25D366]/35 bg-[#25D366]/15 text-[#25D366] hover:bg-[#25D366]/25`}
+      >
+        <IconWhatsapp className="h-4 w-4" />
+      </button>
+    );
+  }
+  return (
+    <span
+      title="WhatsApp bulunamadı"
+      aria-disabled="true"
+      className={`${square} cursor-not-allowed border-white/10 bg-white/5 text-zinc-500`}
+    >
+      <IconWhatsapp className="h-4 w-4" />
+    </span>
   );
 }
 
@@ -359,16 +875,23 @@ function HotCard({
 
 export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [stateMap, setStateMap] = useState<StateMap>({});
-  const [extraLeads, setExtraLeads] = useState<ScoredLead[]>([]);
+  const [importedLeads, setImportedLeads] = useState<ScoredLead[]>([]);
+  const importedLeadsRef = useRef<ScoredLead[]>([]);
+  importedLeadsRef.current = importedLeads;
+
   const [dateLabel, setDateLabel] = useState("");
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<LeadType | "all">("all");
   const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("all");
+  const [contactChannelFilter, setContactChannelFilter] = useState<
+    "all" | ContactChannelCat
+  >("all");
   const [sort, setSort] = useState<"hot" | "lead" | "name">("hot");
   const [openId, setOpenId] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState("");
   const [recentlyImportedLeadIds, setRecentlyImportedLeadIds] = useState<string[]>([]);
   const [latestImportLeads, setLatestImportLeads] = useState<ScoredLead[]>([]);
+  const [lastImportNewIds, setLastImportNewIds] = useState<string[]>([]);
   const [latestImportOnlyDuplicates, setLatestImportOnlyDuplicates] = useState(false);
   const [hasImportRun, setHasImportRun] = useState(false);
   const [sessionLeadIds, setSessionLeadIds] = useState<string[]>([]);
@@ -376,40 +899,81 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [showAllLeadsRows, setShowAllLeadsRows] = useState(false);
   const [focusMode, setFocusMode] = useState(true);
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
+  const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
+  const [outreachProgress, setOutreachProgress] = useState<OutreachProgressState>({
+    phase: "idle",
+  });
+  const [contactFinder, setContactFinder] = useState<ContactFinderState>({
+    phase: "idle",
+  });
+  const [contactFinderMap, setContactFinderMap] = useState<
+    Record<string, ContactFinderResult>
+  >({});
 
   useEffect(() => {
     setStateMap(loadState());
-    setExtraLeads(loadExtraLeads());
+    const stored = loadImportedLeadsV2();
+    setImportedLeads(stored);
+    importedLeadsRef.current = stored;
+    const lip = loadLastImportPayload();
+    setLatestImportLeads(lip.batch);
+    setLastImportNewIds(lip.newIds);
+    setContactFinderMap(loadContactFinderMap());
+    const meta = loadImportMeta();
+    setHasImportRun(
+      meta.hasRun ||
+        lip.batch.length > 0 ||
+        stored.some((l) => l.id.startsWith("gmaps-")),
+    );
     setDateLabel(buildTodayLabel());
   }, []);
 
   const handleImport = async (req: ImportRequest): Promise<ImportResult> => {
-    const res = await fetch("/api/import-leads", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ city: req.city, type: req.type }),
-    });
-    const data = (await res.json()) as {
-      leads?: ScoredLead[];
-      error?: string;
-    };
-    if (!res.ok) {
-      throw new Error(data.error || `Import failed (${res.status})`);
+    const cityNorm = req.city.trim().toLowerCase();
+    const cacheKey = `${cityNorm}|${req.type}|${req.source}`;
+    let batch: ScoredLead[] = [];
+    const cache = loadImportCache();
+
+    if (!req.forceGoogleRefresh) {
+      const hit = cache[cacheKey];
+      if (Array.isArray(hit) && hit.length > 0) {
+        batch = hit;
+      }
     }
-    const imported = data.leads ?? [];
 
-    const existingKeys = new Set<string>(
-      [...leads, ...extraLeads].map((l) => leadDedupeKey(l.name, l.city))
-    );
+    if (batch.length === 0 || req.forceGoogleRefresh) {
+      const res = await fetch("/api/import-leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ city: req.city, type: req.type }),
+      });
+      const data = (await res.json()) as {
+        leads?: ScoredLead[];
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error || `Import failed (${res.status})`);
+      }
+      batch = data.leads ?? [];
+      if (batch.length > 0) {
+        saveImportCache({ ...cache, [cacheKey]: batch });
+      }
+    }
 
-    const fresh = imported.filter(
-      (l) => !existingKeys.has(leadDedupeKey(l.name, l.city))
-    );
-    const skipped = imported.length - fresh.length;
-    const hot = fresh.filter((l) => l.hotScore >= 70).length;
+    saveImportMeta({ hasRun: true });
     setHasImportRun(true);
-    setLatestImportLeads(fresh);
-    setLatestImportOnlyDuplicates(imported.length > 0 && fresh.length === 0);
+    setLatestImportLeads(batch);
+
+    const prev = importedLeadsRef.current;
+    const { next, fresh, newIds } = mergeImportBatch(prev, leads, batch);
+    setImportedLeads(next);
+    importedLeadsRef.current = next;
+    saveImportedLeadsV2(next);
+    setLastImportNewIds(newIds);
+    saveLastImportPayload({ batch, newIds });
+
+    setLatestImportOnlyDuplicates(batch.length > 0 && fresh.length === 0);
 
     if (fresh.length > 0) {
       setSessionLeadIds((prev) => {
@@ -417,13 +981,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         return Array.from(merged);
       });
       setRecentlyImportedLeadIds(fresh.map((l) => l.id));
-      setExtraLeads((prev) => {
-        const next = [...fresh, ...prev];
-        saveExtraLeads(next);
-        return next;
-      });
     }
 
+    const hot = fresh.filter((l) => l.hotScore >= 70).length;
+    const skipped = batch.length - fresh.length;
     return { added: fresh.length, hot, skipped };
   };
 
@@ -453,15 +1014,24 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     stateMap[id] ?? DEFAULT_STATE;
 
   const allRows = useMemo(() => {
-    return [...extraLeads, ...leads].map((l) => ({ ...l, _s: getLeadState(l.id) }));
+    const base = importedLeads.length > 0 ? importedLeads : leads;
+    return base.map((l) => ({
+      ...l,
+      _s: getLeadState(l.id),
+      contactQuality: getContactQuality(l.phone),
+    }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, extraLeads, stateMap]);
+  }, [leads, importedLeads, stateMap]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = allRows.filter((r) => {
       if (typeFilter !== "all" && r.type !== typeFilter) return false;
       if (statusFilter !== "all" && r._s.status !== statusFilter) return false;
+      if (contactChannelFilter !== "all") {
+        const cat = classifyContactChannel(r, contactFinderMap[r.id]);
+        if (contactChannelFilter !== cat) return false;
+      }
       if (!q) return true;
       return (
         r.name.toLowerCase().includes(q) ||
@@ -481,7 +1051,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       return a.name.localeCompare(b.name);
     });
     return list;
-  }, [allRows, query, typeFilter, statusFilter, sort, recentlyImportedLeadIds]);
+  }, [
+    allRows,
+    query,
+    typeFilter,
+    statusFilter,
+    contactChannelFilter,
+    contactFinderMap,
+    sort,
+    recentlyImportedLeadIds,
+  ]);
 
   const useLatestImportHotLeads = latestImportLeads.length > 0;
   const hotLeadsSource = useLatestImportHotLeads ? latestImportLeads : allRows;
@@ -513,6 +1092,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return focusFiltered.slice(0, 15);
   }, [focusFiltered, showAllLeadsRows]);
 
+  const allRowsById = useMemo(() => {
+    return new Map(allRows.map((r) => [r.id, r]));
+  }, [allRows]);
+
   const stats = useMemo(() => {
     const sessionRows = allRows.filter((r) => sessionLeadIds.includes(r.id));
     const sessionLeads = sessionRows.length;
@@ -533,16 +1116,191 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   }, [allRows, stateMap, sessionLeadIds]);
 
   const openLead = openId ? allRows.find((r) => r.id === openId) : null;
+  const drawerWaLink = openLead ? whatsappLink(openLead.phone) : null;
 
   useEffect(() => {
-    if (openLead) {
-      setDraftNote(openLead._s.note ?? "");
-    }
-  }, [openId, openLead]);
+    if (!openLead) return;
+    setDraftNote(openLead._s.note ?? "");
+    const saved = contactFinderMap[openLead.id];
+    if (saved) setContactFinder({ phase: "ready", result: saved });
+    else setContactFinder({ phase: "idle" });
+  }, [openId, openLead?.id, contactFinderMap]);
 
   const handleQuickContacted = (id: string) => {
     const cur = getLeadState(id).status;
-    if (cur === "new") updateLead(id, { status: "contacted" });
+    if (cur === "new") {
+      updateLead(id, {
+        status: "contacted",
+        contactedAt: Date.now(),
+        channel: "whatsapp",
+      });
+    }
+  };
+
+  const startAiMessage = async (lead: ScoredLead) => {
+    setAiMessageModal({ lead, phase: "loading" });
+    try {
+      const res = await fetch("/api/generate-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: lead.name,
+          type: lead.type,
+          location: `${lead.city}, ${lead.region}`,
+          leadScore: lead.leadScore,
+          hotScore: lead.hotScore,
+        }),
+      });
+      const data = (await res.json()) as { message?: string; error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || `Sunucu hatası (${res.status})`);
+      }
+      if (typeof data.message !== "string" || !data.message.trim()) {
+        throw new Error("Boş mesaj döndü");
+      }
+      setAiMessageModal({
+        lead,
+        phase: "ready",
+        message: data.message.trim(),
+      });
+    } catch (e) {
+      setAiMessageModal({
+        lead,
+        phase: "error",
+        error: e instanceof Error ? e.message : "Bir hata oluştu",
+      });
+    }
+  };
+
+  const findBestContact = async (leadId: string, website: string) => {
+    setContactFinder({ phase: "loading" });
+    try {
+      const res = await fetch("/api/contact-finder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ website }),
+      });
+      const data = (await res.json()) as ContactFinderResult & { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || `Contact finder failed (${res.status})`);
+      }
+      setContactFinder({ phase: "ready", result: data });
+      setContactFinderMap((prev) => {
+        const next = { ...prev, [leadId]: data };
+        saveContactFinderMap(next);
+        return next;
+      });
+    } catch (e) {
+      setContactFinder({
+        phase: "error",
+        error: e instanceof Error ? e.message : "Contact finder failed",
+      });
+    }
+  };
+
+  const visibleLeadIdSet = useMemo(
+    () => new Set(visibleAllLeads.map((r) => r.id)),
+    [visibleAllLeads],
+  );
+  const selectedVisibleCount = selectedLeadIds.filter((id) =>
+    visibleLeadIdSet.has(id),
+  ).length;
+  const allVisibleSelected =
+    visibleAllLeads.length > 0 && selectedVisibleCount === visibleAllLeads.length;
+
+  const toggleLeadSelection = (leadId: string, checked: boolean) => {
+    setSelectedLeadIds((prev) => {
+      if (checked) {
+        if (prev.includes(leadId)) return prev;
+        return [...prev, leadId];
+      }
+      return prev.filter((id) => id !== leadId);
+    });
+  };
+
+  const toggleSelectVisible = (checked: boolean) => {
+    setSelectedLeadIds((prev) => {
+      const visibleIds = visibleAllLeads.map((r) => r.id);
+      if (checked) {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.add(id);
+        return Array.from(next);
+      }
+      const visibleSet = new Set(visibleIds);
+      return prev.filter((id) => !visibleSet.has(id));
+    });
+  };
+
+  const markSelectedAsContacted = () => {
+    const ts = Date.now();
+    for (const id of selectedLeadIds) {
+      updateLead(id, { status: "contacted", contactedAt: ts, channel: "whatsapp" });
+    }
+  };
+
+  const sendBulkAiMessages = async () => {
+    if (selectedLeadIds.length === 0) return;
+
+    let sent = 0;
+    let skipped = 0;
+    const total = selectedLeadIds.length;
+    const ts = Date.now();
+
+    for (let i = 0; i < selectedLeadIds.length; i++) {
+      const id = selectedLeadIds[i];
+      setOutreachProgress({ phase: "running", current: i + 1, total });
+
+      const lead = allRowsById.get(id);
+      if (!lead) {
+        skipped += 1;
+        continue;
+      }
+
+      const finder = contactFinderMap[id];
+      const finderType = finder?.bestContactType;
+      const isWhatsAppContact =
+        finderType === "VERIFIED_WHATSAPP" || finderType === "GENERATED_WHATSAPP";
+      if (!isWhatsAppContact) {
+        skipped += 1;
+        continue;
+      }
+
+      let baseLink = finder?.bestContactValue ?? "";
+      if (!/^https?:\/\//i.test(baseLink)) {
+        skipped += 1;
+        continue;
+      }
+
+      try {
+        const res = await fetch("/api/generate-message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: lead.name,
+            type: lead.type,
+            location: `${lead.city}, ${lead.region}`,
+            leadScore: lead.leadScore,
+            hotScore: lead.hotScore,
+          }),
+        });
+        const data = (await res.json()) as { message?: string; error?: string };
+        if (!res.ok || !data.message?.trim()) {
+          skipped += 1;
+          continue;
+        }
+
+        const link = new URL(baseLink);
+        link.searchParams.set("text", data.message.trim());
+        window.open(link.toString(), "_blank");
+        updateLead(id, { status: "contacted", contactedAt: ts, channel: "whatsapp" });
+        sent += 1;
+      } catch {
+        skipped += 1;
+      }
+    }
+
+    setOutreachProgress({ phase: "done", sent, skipped });
+    setSelectedLeadIds([]);
   };
 
   return (
@@ -652,7 +1410,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               </thead>
               <tbody className="divide-y divide-white/5">
                 {latestImportLeads.map((row) => {
-                  const wa = whatsappLink(row.phone, row.name, row.contactName);
                   const ig = row.instagram ? instagramLink(row.instagram) : null;
                   return (
                     <tr
@@ -667,9 +1424,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           >
                             {row.name}
                           </button>
-                          <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
-                            New Import
-                          </span>
+                          {lastImportNewIds.includes(row.id) && (
+                            <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
+                              New Import
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top text-xs text-zinc-300">
@@ -687,16 +1446,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       </td>
                       <td className="px-4 py-3 align-top">
                         <div className="flex items-center justify-end gap-1.5">
-                          <a
-                            href={wa}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={() => handleQuickContacted(row.id)}
-                            title={`WhatsApp · ${row.phone}`}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-500/10 text-emerald-300 transition hover:bg-emerald-500/20"
-                          >
-                            <IconWhatsapp className="h-4 w-4" />
-                          </a>
+                          <LeadWhatsAppAction
+                            phone={row.phone}
+                            leadId={row.id}
+                            onMarkContacted={handleQuickContacted}
+                          />
+                          <LeadWebsiteAction website={row.website} />
                           <a
                             href={ig ?? "#"}
                             target="_blank"
@@ -718,6 +1473,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           >
                             <IconInstagram className="h-4 w-4" />
                           </a>
+                          <button
+                            type="button"
+                            onClick={() => void startAiMessage(row)}
+                            title="Kişiselleştirilmiş AI mesajı"
+                            className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 sm:text-xs"
+                          >
+                            <IconSpark className="h-3.5 w-3.5 shrink-0" />
+                            AI Message
+                          </button>
                           <button
                             onClick={() => setOpenId(row.id)}
                             title="Open details"
@@ -854,6 +1618,27 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     onClick={() => setStatusFilter(s)}
                   />
                 ))}
+                <span className="mx-1 h-4 w-px bg-white/10" />
+                <FilterChip
+                  label="Contact: all"
+                  active={contactChannelFilter === "all"}
+                  onClick={() => setContactChannelFilter("all")}
+                />
+                <FilterChip
+                  label="Contact Ready"
+                  active={contactChannelFilter === "ready"}
+                  onClick={() => setContactChannelFilter("ready")}
+                />
+                <FilterChip
+                  label="Needs Finder"
+                  active={contactChannelFilter === "needs_finder"}
+                  onClick={() => setContactChannelFilter("needs_finder")}
+                />
+                <FilterChip
+                  label="No Contact"
+                  active={contactChannelFilter === "none"}
+                  onClick={() => setContactChannelFilter("none")}
+                />
               </div>
             </section>
 
@@ -903,10 +1688,52 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               )}
             </div>
 
+            {selectedLeadIds.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-4 py-2">
+                <span className="text-xs text-zinc-400">
+                  {selectedLeadIds.length} selected
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void sendBulkAiMessages()}
+                    className="rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
+                  >
+                    Send AI Message
+                  </button>
+                  <button
+                    type="button"
+                    onClick={markSelectedAsContacted}
+                    className="rounded-md border border-sky-400/25 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
+                  >
+                    Mark as Contacted
+                  </button>
+                </div>
+                {outreachProgress.phase === "running" && (
+                  <span className="text-xs text-zinc-400">
+                    Sending {outreachProgress.current}/{outreachProgress.total}...
+                  </span>
+                )}
+                {outreachProgress.phase === "done" && (
+                  <span className="text-xs text-zinc-400">
+                    {outreachProgress.sent} sent, {outreachProgress.skipped} skipped
+                  </span>
+                )}
+              </div>
+            )}
+
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-white/[0.02] text-left text-[11px] uppercase tracking-wider text-zinc-500">
                   <tr>
+                    <th className="px-4 py-2.5 font-medium">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        aria-label="Select visible leads"
+                        onChange={(e) => toggleSelectVisible(e.target.checked)}
+                      />
+                    </th>
                     <th className="px-4 py-2.5 font-medium">Lead</th>
                     <th className="px-4 py-2.5 font-medium">Location</th>
                     <th className="px-4 py-2.5 font-medium">Lead Score</th>
@@ -917,7 +1744,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 <tbody className="divide-y divide-white/5">
                   {visibleAllLeads.map((row) => {
                     const s = row._s;
-                    const wa = whatsappLink(row.phone, row.name, row.contactName);
                     const ig = row.instagram ? instagramLink(row.instagram) : null;
                     const isRecentlyImported = recentlyImportedLeadIds.includes(row.id);
                     const hotStyle =
@@ -941,6 +1767,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             : ""
                         } ${openId === row.id ? "bg-white/[0.03]" : ""}`}
                       >
+                        <td className="px-4 py-3 align-top">
+                          <input
+                            type="checkbox"
+                            checked={selectedLeadIds.includes(row.id)}
+                            aria-label={`Select ${row.name}`}
+                            onChange={(e) =>
+                              toggleLeadSelection(row.id, e.target.checked)
+                            }
+                          />
+                        </td>
                         <td className="px-4 py-3 align-top">
                           <button
                             onClick={() => setOpenId(row.id)}
@@ -970,16 +1806,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         </td>
                         <td className="px-4 py-3 align-top">
                           <div className="flex items-center justify-end gap-1.5">
-                            <a
-                              href={wa}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={() => handleQuickContacted(row.id)}
-                              title={`WhatsApp · ${row.phone}`}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-500/10 text-emerald-300 transition hover:bg-emerald-500/20"
-                            >
-                              <IconWhatsapp className="h-4 w-4" />
-                            </a>
+                            <LeadWhatsAppAction
+                              phone={row.phone}
+                              leadId={row.id}
+                              onMarkContacted={handleQuickContacted}
+                            />
+                            <LeadWebsiteAction website={row.website} />
                             <a
                               href={ig ?? "#"}
                               target="_blank"
@@ -1002,6 +1834,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               <IconInstagram className="h-4 w-4" />
                             </a>
                             <button
+                              type="button"
+                              onClick={() => void startAiMessage(row)}
+                              title="Kişiselleştirilmiş AI mesajı"
+                              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 sm:text-xs"
+                            >
+                              <IconSpark className="h-3.5 w-3.5 shrink-0" />
+                              AI Message
+                            </button>
+                            <button
                               onClick={() => setOpenId(row.id)}
                               title="Open notes"
                               className={`relative inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
@@ -1022,7 +1863,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   })}
                   {focusFiltered.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-4 py-10 text-center text-sm text-zinc-500">
+                      <td colSpan={6} className="px-4 py-10 text-center text-sm text-zinc-500">
                         No leads match your filters.
                       </td>
                     </tr>
@@ -1047,6 +1888,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       <footer className="pb-8 pt-2 text-center text-[11px] text-zinc-600">
         Tugobo Lead Engine · founder MVP · data is local to this browser
       </footer>
+
+      <AiMessageModal
+        state={aiMessageModal}
+        onClose={() => setAiMessageModal(null)}
+        onRetry={(l) => void startAiMessage(l)}
+        onMarkContacted={handleQuickContacted}
+      />
 
       {/* Drawer */}
       {openLead && (
@@ -1121,6 +1969,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   label="Channels"
                   value={openLead.channels.join(", ")}
                 />
+                <KV
+                  label="Contact quality"
+                  value={CONTACT_QUALITY_LABEL[openLead.contactQuality]}
+                />
               </div>
 
               {openLead.signals.length > 0 && (
@@ -1142,20 +1994,29 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               )}
 
               <div className="flex flex-wrap gap-2">
-                <a
-                  href={whatsappLink(
-                    openLead.phone,
-                    openLead.name,
-                    openLead.contactName
-                  )}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => handleQuickContacted(openLead.id)}
-                  className="inline-flex items-center gap-2 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
-                >
-                  <IconWhatsapp className="h-4 w-4" />
-                  WhatsApp
-                </a>
+                {drawerWaLink ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openExternal(drawerWaLink);
+                      handleQuickContacted(openLead.id);
+                    }}
+                    title="WhatsApp ile ulaş"
+                    className="inline-flex items-center gap-2 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] transition hover:bg-[#25D366]/25"
+                  >
+                    <IconWhatsapp className="h-4 w-4" />
+                    Open WhatsApp 🚀
+                  </button>
+                ) : (
+                  <span
+                    title="WhatsApp bulunamadı"
+                    aria-disabled="true"
+                    className="inline-flex cursor-not-allowed items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-500"
+                  >
+                    <IconWhatsapp className="h-4 w-4" />
+                    WhatsApp
+                  </span>
+                )}
                 {openLead.instagram && (
                   <a
                     href={instagramLink(openLead.instagram)}
@@ -1176,7 +2037,134 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     {openLead.website}
                   </a>
                 )}
+                {openLead.website && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void findBestContact(openLead.id, openLead.website!)
+                    }
+                    className="inline-flex items-center gap-2 rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
+                  >
+                    Find Best Contact
+                  </button>
+                )}
               </div>
+
+              {openLead.website && (
+                <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
+                  <div className="mb-2 text-[11px] uppercase tracking-wider text-zinc-500">
+                    Contact Finder
+                  </div>
+                  {contactFinder.phase === "idle" && (
+                    <div className="text-zinc-500">
+                      Click "Find Best Contact" to analyze homepage contact channels.
+                    </div>
+                  )}
+                  {contactFinder.phase === "loading" && (
+                    <div className="text-zinc-300">Analyzing website...</div>
+                  )}
+                  {contactFinder.phase === "error" && (
+                    <div className="text-rose-300">{contactFinder.error}</div>
+                  )}
+                  {contactFinder.phase === "ready" && (
+                    <div className="space-y-1.5 text-zinc-300">
+                      <div>
+                        <span className="text-zinc-500">Best Contact:</span>{" "}
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
+                            contactFinder.result.bestContactType === "VERIFIED_WHATSAPP" ||
+                            contactFinder.result.bestContactType === "whatsapp"
+                              ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-500/30"
+                              : contactFinder.result.bestContactType ===
+                                    "GENERATED_WHATSAPP"
+                                ? "bg-sky-500/15 text-sky-300 ring-1 ring-inset ring-sky-500/30"
+                                : contactFinder.result.bestContactType === "PHONE_ONLY" ||
+                                    contactFinder.result.bestContactType === "mobile" ||
+                                    contactFinder.result.bestContactType === "phone"
+                                  ? "bg-zinc-500/15 text-zinc-300 ring-1 ring-inset ring-zinc-500/30"
+                                  : "text-zinc-100"
+                          }`}
+                        >
+                          {contactFinder.result.bestContactType === "VERIFIED_WHATSAPP" ||
+                          contactFinder.result.bestContactType === "whatsapp"
+                            ? "Verified WhatsApp"
+                            : contactFinder.result.bestContactType ===
+                                  "GENERATED_WHATSAPP"
+                              ? "WhatsApp Available"
+                              : contactFinder.result.bestContactType === "PHONE_ONLY" ||
+                                  contactFinder.result.bestContactType === "mobile" ||
+                                  contactFinder.result.bestContactType === "phone"
+                                ? "Phone Only"
+                                : contactFinder.result.bestContactType.toUpperCase()}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Value:</span>{" "}
+                        <span className="font-medium text-zinc-100">
+                          {contactFinder.result.bestContactValue}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Confidence:</span>{" "}
+                        <span className="font-medium text-zinc-100">
+                          {contactFinder.result.confidence}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Source:</span>{" "}
+                        {contactFinder.result.source}
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Reason:</span>{" "}
+                        {contactFinder.result.reason}
+                      </div>
+                      {(() => {
+                        const type = contactFinder.result.bestContactType;
+                        const isVerified = type === "VERIFIED_WHATSAPP" || type === "whatsapp";
+                        const generatedFromPhone = whatsappLink(
+                          contactFinder.result.bestContactValue,
+                        );
+                        const waLink = isVerified
+                          ? contactFinder.result.bestContactValue
+                          : generatedFromPhone;
+                        const numberToCopy =
+                          contactFinder.result.foundPhones[0] ||
+                          openLead.phone ||
+                          contactFinder.result.bestContactValue;
+                        return (
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            {waLink ? (
+                              <button
+                                type="button"
+                                onClick={() => openExternal(waLink)}
+                                className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-2.5 py-1 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
+                              >
+                                Open WhatsApp 🚀
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard.writeText(numberToCopy);
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-medium text-zinc-200 hover:bg-white/10"
+                            >
+                              Copy Number
+                            </button>
+                          </div>
+                        );
+                      })()}
+                      {contactFinder.result.bestContactType === "website" &&
+                        openLead.phone && (
+                          <div>
+                            <span className="text-zinc-500">Source:</span>{" "}
+                            Google Places phone ({openLead.phone})
+                          </div>
+                        )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div>
                 <div className="mb-1.5 flex items-center justify-between">

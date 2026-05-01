@@ -38,17 +38,22 @@ export type Lead = {
   signals: string[];
 };
 
+export type ContactQuality = "high" | "medium" | "low";
+
 export type ScoredLead = Lead & {
   leadScore: number;
   hotScore: number;
   leadReasons: string[];
   hotReasons: string[];
+  contactQuality: ContactQuality;
 };
 
 export type LeadStatusUpdate = {
   status: LeadStatus;
   note: string;
   updatedAt: number | null;
+  contactedAt?: number | null;
+  channel?: "whatsapp" | "phone" | "instagram" | "email" | null;
 };
 
 const turkishPhone = (n: number) => {
@@ -802,6 +807,47 @@ export function scoreHot(l: Lead): { score: number; reasons: string[] } {
   return { score: Math.round(clamp(s)), reasons: reasons.slice(0, 4) };
 }
 
+/** Turkish national patterns after stripping IDD/country code: 05… mobile, 02/03… landline. */
+export type TurkishPhoneKind = "mobile" | "landline" | "unknown";
+
+export function getTurkishPhoneKind(phone: string): TurkishPhoneKind {
+  const trimmed = phone.trim();
+  if (!trimmed) return "unknown";
+
+  let d = trimmed.replace(/\D/g, "");
+  if (!d) return "unknown";
+
+  while (d.startsWith("00") && d.length > 2) {
+    d = d.slice(2);
+  }
+  if (d.startsWith("90") && d.length > 2) {
+    d = d.slice(2);
+  }
+
+  if (d.startsWith("05")) return "mobile";
+  if (d.startsWith("02") || d.startsWith("03")) return "landline";
+
+  if (d.length === 10 && d.startsWith("5")) return "mobile";
+  if (d.length === 10 && (d.startsWith("2") || d.startsWith("3"))) {
+    return "landline";
+  }
+  if (d.length === 11 && d.startsWith("0")) {
+    if (d[1] === "5") return "mobile";
+    if (d[1] === "2" || d[1] === "3") return "landline";
+  }
+
+  return "unknown";
+}
+
+/** landline → low; mobile without wa.me → medium; mobile with working WhatsApp → high. */
+export function getContactQuality(phone: string): ContactQuality {
+  const kind = getTurkishPhoneKind(phone);
+  if (kind === "landline") return "low";
+  if (kind !== "mobile") return "low";
+  if (normalizePhoneForWhatsApp(phone) !== null) return "high";
+  return "medium";
+}
+
 export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
   return leads.map((l) => {
     const lead = scoreLead(l);
@@ -812,6 +858,7 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
       leadReasons: lead.reasons,
       hotScore: hot.score,
       hotReasons: hot.reasons,
+      contactQuality: getContactQuality(l.phone),
     };
   });
 }
@@ -834,17 +881,50 @@ export const STATUS_ORDER: LeadStatus[] = [
   "lost",
 ];
 
-export function whatsappLink(phone: string, name: string, contactName: string) {
-  const digits = phone.replace(/\D/g, "");
-  const text =
-    `Merhaba ${contactName}, ben Tugobo'dan. ` +
-    `${name} için doluluk ve direkt rezervasyon kanallarınızı %20-30 artırabilecek ` +
-    `kısa bir fikir paylaşmak istedim. 5 dakikalık bir görüşmeye uygun musunuz?`;
-  const encoded = encodeURIComponent(text);
-  if (digits.length >= 10) {
-    return `https://wa.me/${digits}?text=${encoded}`;
+export const WHATSAPP_OUTREACH_MESSAGE =
+  "Merhaba, işletmenizi inceledim. Rezervasyon süreçlerinde ciddi bir potansiyel gördüm. Size özel kısa bir analiz hazırladım, paylaşmamı ister misiniz?";
+
+/** Strips spaces, +, parentheses, etc.; normalizes Turkish numbers to international 90…. */
+export function normalizePhoneForWhatsApp(phone: string): string | null {
+  const trimmed = phone.trim();
+  if (!trimmed) return null;
+
+  let digits = trimmed.replace(/\D/g, "");
+  if (!digits) return null;
+
+  while (digits.startsWith("00") && digits.length > 2) {
+    digits = digits.slice(2);
   }
-  return `https://api.whatsapp.com/send?text=${encoded}`;
+
+  if (digits.startsWith("90")) {
+    return digits.length >= 12 ? digits : null;
+  }
+  if (digits.startsWith("0")) {
+    const intl = "90" + digits.slice(1);
+    return intl.length >= 12 ? intl : null;
+  }
+  if (digits.length === 10) {
+    const intl = "90" + digits;
+    return intl.length >= 12 ? intl : null;
+  }
+  if (digits.length >= 10 && digits.length <= 15) {
+    return digits;
+  }
+  return null;
+}
+
+/** Opens WhatsApp (wa.me) with {@link WHATSAPP_OUTREACH_MESSAGE}; `null` if phone cannot be used. */
+export function whatsappLink(phone: string): string | null {
+  return whatsappLinkWithText(phone, WHATSAPP_OUTREACH_MESSAGE);
+}
+
+/** Opens WhatsApp with a custom URL-encoded message; `null` if not a mobile line or phone unusable. */
+export function whatsappLinkWithText(phone: string, text: string): string | null {
+  if (getTurkishPhoneKind(phone) !== "mobile") return null;
+  const normalized = normalizePhoneForWhatsApp(phone);
+  if (!normalized) return null;
+  const encoded = encodeURIComponent(text);
+  return `https://wa.me/${normalized}?text=${encoded}`;
 }
 
 export function instagramLink(handle: string) {

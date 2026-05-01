@@ -2,6 +2,7 @@ import {
   type Channel,
   type Lead,
   type LeadType,
+  getContactQuality,
   scoreLead,
   scoreHot,
   type ScoredLead,
@@ -514,6 +515,7 @@ export function generateScoredLeads(
       leadReasons: ls.reasons,
       hotScore: hs.score,
       hotReasons: hs.reasons,
+      contactQuality: getContactQuality(l.phone),
     };
   });
 }
