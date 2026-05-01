@@ -6,6 +6,7 @@ import {
   type LeadStatus,
   type LeadStatusUpdate,
   type LeadType,
+  normalizePhoneForWhatsApp,
   type ScoredLead,
   STATUS_LABEL,
   STATUS_ORDER,
@@ -30,6 +31,7 @@ const LAST_IMPORT_KEY = "tugobo-lead-engine:last-import-v1";
 const IMPORT_CACHE_KEY = "tugobo-lead-engine:import-cache-v1";
 const CONTACT_FINDER_MAP_KEY = "tugobo-lead-engine:contact-finder-map-v1";
 const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
+const LEGACY_CREATED_AT_TS = Date.UTC(2024, 0, 1, 0, 0, 0, 0);
 
 type LastImportPayload = { batch: ScoredLead[]; newIds: string[] };
 
@@ -95,10 +97,16 @@ type ContactFinderState =
   | { phase: "error"; error: string }
   | { phase: "ready"; result: ContactFinderResult };
 
-type OutreachProgressState =
-  | { phase: "idle" }
-  | { phase: "running"; current: number; total: number }
-  | { phase: "done"; sent: number; skipped: number };
+type OutreachQueueState = {
+  open: boolean;
+  leadIds: string[];
+  index: number;
+  messages: Record<string, string>;
+  loading: boolean;
+  error: string | null;
+};
+
+type AllLeadsTimeFilter = "last_import" | "today" | "all_time";
 
 function loadState(): StateMap {
   if (typeof window === "undefined") return {};
@@ -121,20 +129,31 @@ function saveState(state: StateMap) {
   }
 }
 
+function ensureLeadCreatedAt(lead: ScoredLead, fallbackTs: number): ScoredLead {
+  if (typeof lead.createdAt === "number" && Number.isFinite(lead.createdAt)) return lead;
+  return { ...lead, createdAt: fallbackTs };
+}
+
+function ensureLeadsCreatedAt(leads: ScoredLead[], fallbackTs: number): ScoredLead[] {
+  return leads.map((lead) => ensureLeadCreatedAt(lead, fallbackTs));
+}
+
 function loadImportedLeadsV2(): ScoredLead[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(IMPORTED_LEADS_V2_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as ScoredLead[]) : [];
+      return Array.isArray(parsed)
+        ? ensureLeadsCreatedAt(parsed as ScoredLead[], LEGACY_CREATED_AT_TS)
+        : [];
     }
     const leg = window.localStorage.getItem(EXTRA_LEADS_KEY);
     if (leg) {
       const parsed = JSON.parse(leg);
       if (Array.isArray(parsed) && parsed.length > 0) {
         window.localStorage.setItem(IMPORTED_LEADS_V2_KEY, leg);
-        return parsed as ScoredLead[];
+        return ensureLeadsCreatedAt(parsed as ScoredLead[], LEGACY_CREATED_AT_TS);
       }
     }
   } catch {
@@ -162,7 +181,9 @@ function loadLastImportPayload(): LastImportPayload {
       newIds?: string[];
     };
     return {
-      batch: Array.isArray(p.batch) ? p.batch : [],
+      batch: Array.isArray(p.batch)
+        ? ensureLeadsCreatedAt(p.batch, LEGACY_CREATED_AT_TS)
+        : [],
       newIds: Array.isArray(p.newIds) ? p.newIds : [],
     };
   } catch {
@@ -298,7 +319,7 @@ function mergeImportBatch(
   seedLeads: ScoredLead[],
   batch: ScoredLead[],
 ): { next: ScoredLead[]; fresh: ScoredLead[]; newIds: string[] } {
-  const base = prevImported.length > 0 ? prevImported : seedLeads;
+  const base = [...seedLeads, ...prevImported];
   const keySet = buildDedupeKeySet(base);
   const fresh: ScoredLead[] = [];
   for (const l of batch) {
@@ -392,6 +413,26 @@ function buildTodayLabel(d = new Date()) {
   return `${WEEKDAYS[d.getDay()]}, ${String(d.getDate()).padStart(2, "0")} ${
     MONTHS[d.getMonth()]
   } ${d.getFullYear()}`;
+}
+
+function buildImportedLabel(createdAt?: number) {
+  if (!createdAt || !Number.isFinite(createdAt) || createdAt <= 0) return "Imported: -";
+  const now = Date.now();
+  if (now - createdAt <= 24 * 60 * 60 * 1000) return "Imported: Today";
+  if (now - createdAt <= 48 * 60 * 60 * 1000) return "Imported: Yesterday";
+  const d = new Date(createdAt);
+  return `Imported: ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+}
+
+function getImportedBadgeText(createdAt?: number) {
+  if (!createdAt || !Number.isFinite(createdAt) || createdAt <= 0) return "-";
+  const now = Date.now();
+  if (now - createdAt <= 24 * 60 * 60 * 1000) return "Today";
+  if (now - createdAt <= 48 * 60 * 60 * 1000) return "Yesterday";
+  return new Date(createdAt).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function scoreColor(score: number) {
@@ -898,11 +939,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [allLeadsOpen, setAllLeadsOpen] = useState(false);
   const [showAllLeadsRows, setShowAllLeadsRows] = useState(false);
   const [focusMode, setFocusMode] = useState(true);
+  const [allLeadsTimeFilter, setAllLeadsTimeFilter] =
+    useState<AllLeadsTimeFilter>("all_time");
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
-  const [outreachProgress, setOutreachProgress] = useState<OutreachProgressState>({
-    phase: "idle",
+  const [outreachQueue, setOutreachQueue] = useState<OutreachQueueState>({
+    open: false,
+    leadIds: [],
+    index: 0,
+    messages: {},
+    loading: false,
+    error: null,
   });
   const [contactFinder, setContactFinder] = useState<ContactFinderState>({
     phase: "idle",
@@ -956,9 +1004,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         throw new Error(data.error || `Import failed (${res.status})`);
       }
       batch = data.leads ?? [];
+      const importTs = Date.now();
+      batch = ensureLeadsCreatedAt(batch, importTs);
       if (batch.length > 0) {
         saveImportCache({ ...cache, [cacheKey]: batch });
       }
+    } else {
+      const importTs = Date.now();
+      batch = ensureLeadsCreatedAt(batch, importTs);
     }
 
     saveImportMeta({ hasRun: true });
@@ -1014,9 +1067,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     stateMap[id] ?? DEFAULT_STATE;
 
   const allRows = useMemo(() => {
-    const base = importedLeads.length > 0 ? importedLeads : leads;
+    const base = [...leads];
+    const dedupeSet = buildDedupeKeySet(leads);
+    for (const l of importedLeads) {
+      if (isDuplicateAgainstSet(l, dedupeSet)) continue;
+      base.push(l);
+      addLeadToDedupeSet(l, dedupeSet);
+    }
     return base.map((l) => ({
       ...l,
+      createdAt: l.createdAt ?? LEGACY_CREATED_AT_TS,
       _s: getLeadState(l.id),
       contactQuality: getContactQuality(l.phone),
     }));
@@ -1025,7 +1085,17 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const now = Date.now();
+    const dayAgo = now - 24 * 60 * 60 * 1000;
+    const latestImportIdSet = new Set(latestImportLeads.map((l) => l.id));
     const list = allRows.filter((r) => {
+      const createdAt = r.createdAt ?? 0;
+      if (allLeadsTimeFilter === "last_import" && !latestImportIdSet.has(r.id)) {
+        return false;
+      }
+      if (allLeadsTimeFilter === "today" && createdAt < dayAgo) {
+        return false;
+      }
       if (typeFilter !== "all" && r.type !== typeFilter) return false;
       if (statusFilter !== "all" && r._s.status !== statusFilter) return false;
       if (contactChannelFilter !== "all") {
@@ -1042,6 +1112,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       );
     });
     list.sort((a, b) => {
+      const createdDiff = (b.createdAt ?? 0) - (a.createdAt ?? 0);
+      if (createdDiff !== 0) return createdDiff;
       const aIsRecent = recentlyImportedLeadIds.includes(a.id);
       const bIsRecent = recentlyImportedLeadIds.includes(b.id);
       if (aIsRecent && !bIsRecent) return -1;
@@ -1058,6 +1130,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     statusFilter,
     contactChannelFilter,
     contactFinderMap,
+    allLeadsTimeFilter,
+    latestImportLeads,
     sort,
     recentlyImportedLeadIds,
   ]);
@@ -1095,6 +1169,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const allRowsById = useMemo(() => {
     return new Map(allRows.map((r) => [r.id, r]));
   }, [allRows]);
+
+  const latestImportRows = useMemo(
+    () =>
+      latestImportLeads
+        .map((row) => allRowsById.get(row.id))
+        .filter((row): row is (typeof allRows)[number] => Boolean(row)),
+    [latestImportLeads, allRowsById],
+  );
 
   const stats = useMemo(() => {
     const sessionRows = allRows.filter((r) => sessionLeadIds.includes(r.id));
@@ -1137,31 +1219,50 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
   };
 
+  const setLeadStatus = (id: string, status: LeadStatus) => {
+    if (status === "contacted") {
+      const current = getLeadState(id);
+      updateLead(id, {
+        status,
+        contactedAt: current.contactedAt ?? Date.now(),
+        channel: current.channel ?? "whatsapp",
+      });
+      return;
+    }
+    updateLead(id, { status });
+  };
+
+  const generateLeadAiMessage = async (lead: ScoredLead): Promise<string> => {
+    const res = await fetch("/api/generate-message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: lead.name,
+        type: lead.type,
+        location: `${lead.city}, ${lead.region}`,
+        leadScore: lead.leadScore,
+        hotScore: lead.hotScore,
+      }),
+    });
+    const data = (await res.json()) as { message?: string; error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || `Sunucu hatası (${res.status})`);
+    }
+    const message = data.message?.trim();
+    if (!message) {
+      throw new Error("Boş mesaj döndü");
+    }
+    return message;
+  };
+
   const startAiMessage = async (lead: ScoredLead) => {
     setAiMessageModal({ lead, phase: "loading" });
     try {
-      const res = await fetch("/api/generate-message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: lead.name,
-          type: lead.type,
-          location: `${lead.city}, ${lead.region}`,
-          leadScore: lead.leadScore,
-          hotScore: lead.hotScore,
-        }),
-      });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) {
-        throw new Error(data.error || `Sunucu hatası (${res.status})`);
-      }
-      if (typeof data.message !== "string" || !data.message.trim()) {
-        throw new Error("Boş mesaj döndü");
-      }
+      const message = await generateLeadAiMessage(lead);
       setAiMessageModal({
         lead,
         phase: "ready",
-        message: data.message.trim(),
+        message,
       });
     } catch (e) {
       setAiMessageModal({
@@ -1234,73 +1335,96 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const markSelectedAsContacted = () => {
     const ts = Date.now();
     for (const id of selectedLeadIds) {
-      updateLead(id, { status: "contacted", contactedAt: ts, channel: "whatsapp" });
+      updateLead(id, {
+        status: "contacted",
+        contactedAt: getLeadState(id).contactedAt ?? ts,
+        channel: getLeadState(id).channel ?? "whatsapp",
+      });
     }
   };
 
   const sendBulkAiMessages = async () => {
     if (selectedLeadIds.length === 0) return;
+    const queueLeadIds = selectedLeadIds.filter((id) => allRowsById.has(id));
+    if (queueLeadIds.length === 0) return;
+    setOutreachQueue({
+      open: true,
+      leadIds: queueLeadIds,
+      index: 0,
+      messages: {},
+      loading: false,
+      error: null,
+    });
+  };
 
-    let sent = 0;
-    let skipped = 0;
-    const total = selectedLeadIds.length;
-    const ts = Date.now();
+  const queueCurrentId = outreachQueue.leadIds[outreachQueue.index] ?? null;
+  const queueCurrentLead = queueCurrentId ? allRowsById.get(queueCurrentId) ?? null : null;
+  const queueCurrentFinder = queueCurrentId ? contactFinderMap[queueCurrentId] : undefined;
+  const queueCurrentType = queueCurrentFinder?.bestContactType;
+  const queueHasValidWhatsApp =
+    queueCurrentType === "VERIFIED_WHATSAPP" || queueCurrentType === "GENERATED_WHATSAPP";
+  const queueCurrentPhone = queueHasValidWhatsApp
+    ? normalizePhoneForWhatsApp(queueCurrentFinder?.bestContactValue ?? "")
+    : null;
+  const queueCurrentMessage = queueCurrentId
+    ? outreachQueue.messages[queueCurrentId] ?? ""
+    : "";
 
-    for (let i = 0; i < selectedLeadIds.length; i++) {
-      const id = selectedLeadIds[i];
-      setOutreachProgress({ phase: "running", current: i + 1, total });
+  useEffect(() => {
+    if (!outreachQueue.open) return;
+    if (!queueCurrentId || !queueCurrentLead) return;
+    if (outreachQueue.messages[queueCurrentId]) return;
 
-      const lead = allRowsById.get(id);
-      if (!lead) {
-        skipped += 1;
-        continue;
+    let cancelled = false;
+    setOutreachQueue((prev) => ({ ...prev, loading: true, error: null }));
+    void generateLeadAiMessage(queueCurrentLead)
+      .then((message) => {
+        if (cancelled) return;
+        setOutreachQueue((prev) => ({
+          ...prev,
+          loading: false,
+          messages: { ...prev.messages, [queueCurrentId]: message },
+        }));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setOutreachQueue((prev) => ({
+          ...prev,
+          loading: false,
+          error: e instanceof Error ? e.message : "Mesaj oluşturulamadı",
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [outreachQueue.open, queueCurrentId, queueCurrentLead, outreachQueue.messages]);
+
+  const closeOutreachQueue = () => {
+    setOutreachQueue({
+      open: false,
+      leadIds: [],
+      index: 0,
+      messages: {},
+      loading: false,
+      error: null,
+    });
+  };
+
+  const goNextInQueue = () => {
+    setOutreachQueue((prev) => {
+      if (prev.index >= prev.leadIds.length - 1) {
+        return {
+          open: false,
+          leadIds: [],
+          index: 0,
+          messages: {},
+          loading: false,
+          error: null,
+        };
       }
-
-      const finder = contactFinderMap[id];
-      const finderType = finder?.bestContactType;
-      const isWhatsAppContact =
-        finderType === "VERIFIED_WHATSAPP" || finderType === "GENERATED_WHATSAPP";
-      if (!isWhatsAppContact) {
-        skipped += 1;
-        continue;
-      }
-
-      let baseLink = finder?.bestContactValue ?? "";
-      if (!/^https?:\/\//i.test(baseLink)) {
-        skipped += 1;
-        continue;
-      }
-
-      try {
-        const res = await fetch("/api/generate-message", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: lead.name,
-            type: lead.type,
-            location: `${lead.city}, ${lead.region}`,
-            leadScore: lead.leadScore,
-            hotScore: lead.hotScore,
-          }),
-        });
-        const data = (await res.json()) as { message?: string; error?: string };
-        if (!res.ok || !data.message?.trim()) {
-          skipped += 1;
-          continue;
-        }
-
-        const link = new URL(baseLink);
-        link.searchParams.set("text", data.message.trim());
-        window.open(link.toString(), "_blank");
-        updateLead(id, { status: "contacted", contactedAt: ts, channel: "whatsapp" });
-        sent += 1;
-      } catch {
-        skipped += 1;
-      }
-    }
-
-    setOutreachProgress({ phase: "done", sent, skipped });
-    setSelectedLeadIds([]);
+      return { ...prev, index: prev.index + 1, error: null };
+    });
   };
 
   return (
@@ -1391,7 +1515,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           <div className="px-4 py-6 text-xs text-zinc-500">
             Run an import to see newly added leads here.
           </div>
-        ) : latestImportLeads.length === 0 ? (
+        ) : latestImportRows.length === 0 ? (
           <div className="px-4 py-6 text-sm text-amber-300">
             No new leads in this import — all results already existed.
           </div>
@@ -1400,22 +1524,55 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <table className="w-full text-sm">
               <thead className="bg-white/[0.02] text-left text-[11px] uppercase tracking-wider text-zinc-500">
                 <tr>
+                  <th className="px-4 py-2.5 font-medium">
+                    <input
+                      type="checkbox"
+                      checked={
+                        latestImportRows.length > 0 &&
+                        latestImportRows.every((row) => selectedLeadIds.includes(row.id))
+                      }
+                      aria-label="Select latest import leads"
+                      onChange={(e) => {
+                        const ids = latestImportRows.map((x) => x.id);
+                        setSelectedLeadIds((prev) => {
+                          if (e.target.checked) {
+                            const next = new Set(prev);
+                            for (const id of ids) next.add(id);
+                            return Array.from(next);
+                          }
+                          const removeSet = new Set(ids);
+                          return prev.filter((id) => !removeSet.has(id));
+                        });
+                      }}
+                    />
+                  </th>
                   <th className="px-4 py-2.5 font-medium">Lead</th>
                   <th className="px-4 py-2.5 font-medium">Type</th>
                   <th className="px-4 py-2.5 font-medium">Location</th>
+                  <th className="px-4 py-2.5 font-medium">Imported</th>
                   <th className="px-4 py-2.5 font-medium">Lead Score</th>
                   <th className="px-4 py-2.5 font-medium">Hot Score</th>
                   <th className="px-4 py-2.5 text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {latestImportLeads.map((row) => {
+                {latestImportRows.map((row) => {
                   const ig = row.instagram ? instagramLink(row.instagram) : null;
                   return (
                     <tr
                       key={row.id}
                       className="bg-indigo-500/[0.05] shadow-[inset_0_0_0_1px_rgba(129,140,248,0.25)]"
                     >
+                      <td className="px-4 py-3 align-top">
+                        <input
+                          type="checkbox"
+                          checked={selectedLeadIds.includes(row.id)}
+                          aria-label={`Select ${row.name}`}
+                          onChange={(e) =>
+                            toggleLeadSelection(row.id, e.target.checked)
+                          }
+                        />
+                      </td>
                       <td className="px-4 py-3 align-top">
                         <div className="flex items-center gap-2">
                           <button
@@ -1429,6 +1586,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               New Import
                             </span>
                           )}
+                          <span className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300 ring-1 ring-inset ring-white/10">
+                            Imported just now
+                          </span>
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top text-xs text-zinc-300">
@@ -1437,6 +1597,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       <td className="px-4 py-3 align-top text-xs text-zinc-300">
                         <div>{row.city}</div>
                         <div className="text-[11px] text-zinc-500">{row.region}</div>
+                      </td>
+                      <td className="px-4 py-3 align-top text-xs text-zinc-400">
+                        <div>Imported just now</div>
                       </td>
                       <td className="px-4 py-3 align-top">
                         <ScoreBar score={row.leadScore} tone="lead" />
@@ -1498,12 +1661,40 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             </table>
           </div>
         )}
-        {latestImportOnlyDuplicates && latestImportLeads.length === 0 && (
+        {latestImportOnlyDuplicates && latestImportRows.length === 0 && (
           <div className="border-t border-white/5 px-4 py-2 text-[11px] text-zinc-500">
             Latest import returned only duplicates.
           </div>
         )}
       </section>
+
+      {selectedLeadIds.length > 0 && (
+        <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-2">
+          <span className="text-xs text-zinc-400">✓ {selectedLeadIds.length} selected</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void sendBulkAiMessages()}
+              className="rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
+            >
+              Start Outreach Queue
+            </button>
+            <button
+              type="button"
+              onClick={markSelectedAsContacted}
+              className="rounded-md border border-sky-400/25 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
+            >
+              Mark Contacted
+            </button>
+          </div>
+          {outreachQueue.open && (
+            <span className="text-xs text-zinc-400">
+              Queue {Math.min(outreachQueue.index + 1, outreachQueue.leadIds.length)}/
+              {outreachQueue.leadIds.length}
+            </span>
+          )}
+        </section>
+      )}
 
       {/* Hot 10 */}
       <section>
@@ -1644,6 +1835,31 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
             <div className="flex flex-wrap items-center gap-1.5 border-b border-white/5 px-4 py-2">
               <FilterChip
+                label="Last Import"
+                active={allLeadsTimeFilter === "last_import"}
+                onClick={() => {
+                  setAllLeadsTimeFilter("last_import");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+              <FilterChip
+                label="Today"
+                active={allLeadsTimeFilter === "today"}
+                onClick={() => {
+                  setAllLeadsTimeFilter("today");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+              <FilterChip
+                label="All Time"
+                active={allLeadsTimeFilter === "all_time"}
+                onClick={() => {
+                  setAllLeadsTimeFilter("all_time");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+              <span className="mx-1 h-4 w-px bg-white/10" />
+              <FilterChip
                 label="Focused"
                 active={allLeadsTab === "focused"}
                 onClick={() => {
@@ -1681,46 +1897,23 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               <span className="text-xs text-zinc-500 tabular-nums">
                 Showing {visibleAllLeads.length} of {focusFiltered.length} leads
               </span>
-              {focusMode && (
-                <span className="text-[11px] text-orange-300">
-                  Focused: status New + hot score ≥ 70
-                </span>
-              )}
-            </div>
-
-            {selectedLeadIds.length > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-4 py-2">
-                <span className="text-xs text-zinc-400">
-                  {selectedLeadIds.length} selected
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void sendBulkAiMessages()}
-                    className="rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
-                  >
-                    Send AI Message
-                  </button>
-                  <button
-                    type="button"
-                    onClick={markSelectedAsContacted}
-                    className="rounded-md border border-sky-400/25 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
-                  >
-                    Mark as Contacted
-                  </button>
-                </div>
-                {outreachProgress.phase === "running" && (
-                  <span className="text-xs text-zinc-400">
-                    Sending {outreachProgress.current}/{outreachProgress.total}...
-                  </span>
-                )}
-                {outreachProgress.phase === "done" && (
-                  <span className="text-xs text-zinc-400">
-                    {outreachProgress.sent} sent, {outreachProgress.skipped} skipped
+              <div className="flex items-center gap-4">
+                <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={(e) => toggleSelectVisible(e.target.checked)}
+                    aria-label="Select all visible leads"
+                  />
+                  Select All (visible)
+                </label>
+                {focusMode && (
+                  <span className="text-[11px] text-orange-300">
+                    Focused: status New + hot score ≥ 70
                   </span>
                 )}
               </div>
-            )}
+            </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -1736,6 +1929,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     </th>
                     <th className="px-4 py-2.5 font-medium">Lead</th>
                     <th className="px-4 py-2.5 font-medium">Location</th>
+                    <th className="px-4 py-2.5 font-medium">Imported</th>
                     <th className="px-4 py-2.5 font-medium">Lead Score</th>
                     <th className="px-4 py-2.5 font-medium">Hot Score</th>
                     <th className="px-4 py-2.5 text-right font-medium">Actions</th>
@@ -1786,6 +1980,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               <div className="font-medium text-zinc-100 hover:text-white">
                                 {row.name}
                               </div>
+                              <span className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-400 ring-1 ring-inset ring-white/10">
+                                {buildImportedLabel(row.createdAt)}
+                              </span>
+                              <span className="inline-flex items-center rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-zinc-400/20">
+                                {getImportedBadgeText(row.createdAt)}
+                              </span>
                               {isRecentlyImported && (
                                 <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
                                   New Import
@@ -1797,6 +1997,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         <td className="px-4 py-3 align-top text-xs text-zinc-300">
                           <div>{row.city}</div>
                           <div className="text-[11px] text-zinc-500">{row.region}</div>
+                        </td>
+                        <td className="px-4 py-3 align-top text-xs text-zinc-400">
+                          {getImportedBadgeText(row.createdAt)}
                         </td>
                         <td className="px-4 py-3 align-top">
                           <ScoreBar score={row.leadScore} tone="lead" />
@@ -1863,7 +2066,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   })}
                   {focusFiltered.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-4 py-10 text-center text-sm text-zinc-500">
+                      <td colSpan={7} className="px-4 py-10 text-center text-sm text-zinc-500">
                         No leads match your filters.
                       </td>
                     </tr>
@@ -1895,6 +2098,127 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         onRetry={(l) => void startAiMessage(l)}
         onMarkContacted={handleQuickContacted}
       />
+
+      {outreachQueue.open && queueCurrentLead && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            aria-label="Kapat"
+            onClick={closeOutreachQueue}
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          />
+          <div className="relative z-10 w-full max-w-2xl rounded-xl border border-white/10 bg-zinc-950 shadow-2xl ring-1 ring-white/5">
+            <div className="flex items-start justify-between border-b border-white/10 px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-100">Outreach Queue</h2>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  {outreachQueue.index + 1} / {outreachQueue.leadIds.length}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeOutreachQueue}
+                className="rounded-md p-1 text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
+                aria-label="Kapat"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  className="h-5 w-5"
+                >
+                  <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-3 px-4 py-4 text-sm">
+              <div className="rounded-md border border-white/10 bg-white/[0.02] p-3">
+                <div className="font-medium text-zinc-100">{queueCurrentLead.name}</div>
+                <div className="text-xs text-zinc-400">
+                  {queueCurrentLead.city}, {queueCurrentLead.region}
+                </div>
+                <div className="mt-1 text-xs text-zinc-400">
+                  Contact status: {STATUS_LABEL[queueCurrentLead._s.status]}
+                </div>
+                <div className="mt-1 text-xs">
+                  {queueCurrentPhone ? (
+                    <span className="text-emerald-300">Verified WhatsApp contact available</span>
+                  ) : (
+                    <span className="text-amber-300">No verified WhatsApp contact</span>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-md border border-white/10 bg-white/[0.02] p-3">
+                {outreachQueue.loading ? (
+                  <p className="text-zinc-400">Mesaj oluşturuluyor…</p>
+                ) : outreachQueue.error ? (
+                  <p className="text-rose-300">{outreachQueue.error}</p>
+                ) : (
+                  <p className="whitespace-pre-wrap text-zinc-200">
+                    {queueCurrentMessage || "Mesaj bulunamadı"}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={!queueCurrentMessage || !queueCurrentPhone}
+                  onClick={() => {
+                    if (!queueCurrentMessage || !queueCurrentPhone) return;
+                    const link = `https://wa.me/${queueCurrentPhone}?text=${encodeURIComponent(
+                      queueCurrentMessage,
+                    )}`;
+                    openExternal(link);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Open WhatsApp
+                </button>
+                <button
+                  type="button"
+                  disabled={!queueCurrentMessage}
+                  onClick={() => {
+                    if (!queueCurrentMessage) return;
+                    void navigator.clipboard.writeText(queueCurrentMessage);
+                  }}
+                  className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Copy Message
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLeadStatus(queueCurrentLead.id, "contacted");
+                    goNextInQueue();
+                  }}
+                  className="rounded-md border border-sky-400/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
+                >
+                  Mark Contacted
+                </button>
+                <button
+                  type="button"
+                  onClick={goNextInQueue}
+                  className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
+                >
+                  Skip
+                </button>
+                <button
+                  type="button"
+                  onClick={goNextInQueue}
+                  className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Drawer */}
       {openLead && (
@@ -1973,6 +2297,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   label="Contact quality"
                   value={CONTACT_QUALITY_LABEL[openLead.contactQuality]}
                 />
+                <KV
+                  label="Imported"
+                  value={
+                    openLead.createdAt && openLead.createdAt > 0
+                      ? new Date(openLead.createdAt).toLocaleString("en-GB")
+                      : "-"
+                  }
+                />
+                <KV label="Source" value="Google Maps" />
+                <KV label="City" value={openLead.city} />
               </div>
 
               {openLead.signals.length > 0 && (
@@ -2178,13 +2512,31 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     </div>
                   )}
                 </div>
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {(["contacted", "replied", "meeting", "won"] as LeadStatus[]).map((s) => {
+                    const active = openLead._s.status === s;
+                    return (
+                      <button
+                        key={`manual-${s}`}
+                        onClick={() => setLeadStatus(openLead.id, s)}
+                        className={`rounded-md px-2.5 py-1 text-xs ring-1 ring-inset transition ${
+                          active
+                            ? "bg-indigo-500/20 text-indigo-200 ring-indigo-400/40"
+                            : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
+                        }`}
+                      >
+                        {STATUS_LABEL[s]}
+                      </button>
+                    );
+                  })}
+                </div>
                 <div className="flex flex-wrap gap-1.5">
                   {STATUS_ORDER.map((s) => {
                     const active = openLead._s.status === s;
                     return (
                       <button
                         key={s}
-                        onClick={() => updateLead(openLead.id, { status: s })}
+                        onClick={() => setLeadStatus(openLead.id, s)}
                         className={`rounded-md px-2.5 py-1 text-xs ring-1 ring-inset transition ${
                           active
                             ? "bg-indigo-500/20 text-indigo-200 ring-indigo-400/40"

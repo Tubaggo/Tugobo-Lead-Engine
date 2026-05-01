@@ -17,6 +17,7 @@ export type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
 
 export type Lead = {
   id: string;
+  createdAt?: number;
   name: string;
   type: LeadType;
   city: string;
