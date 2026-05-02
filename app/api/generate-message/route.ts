@@ -6,6 +6,7 @@ type GenerateMessageBody = {
   location: string;
   leadScore: number;
   hotScore: number;
+  followUp?: boolean;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -14,8 +15,17 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 /** Rule-based copy — conversational, 2–3 sentences; one of three variants at random. */
 function buildMockOutreachMessage(input: GenerateMessageBody): string {
-  const { name, location } = input;
+  const { name, location, followUp } = input;
   const city = location.split(",")[0]?.trim() || location;
+
+  if (followUp) {
+    const followUps = [
+      `Merhaba, dün ${name} için kısa yazmıştım — ${city} tarafındasınız. Müsait olduğunuzda tek cümleyle dönüşünüz yeterli olur, teşekkürler.`,
+      `Selam, ${name} hakkında küçük bir not bırakmıştım. Rahatsız etmek istemem; uygun bir zamanda göz atarsanız sevinirim.`,
+      `Merhaba, ${city} bölgesindeki ${name} için nazikçe hatırlatayım. Kısa bir yanıtınız benim için yeterli.`,
+    ];
+    return followUps[Math.floor(Math.random() * followUps.length)]!;
+  }
 
   const variations = [
     `Merhaba, ${name} diye bir yere bakarken denk geldim. ${city} tarafındaki konumunuz ilgimi çekti. Müsaitseniz aklımdaki şeyi paylaşmak isterim.`,
@@ -47,6 +57,7 @@ export async function POST(req: Request) {
     typeof body.location === "string" ? body.location.trim() : "";
   const leadScore = Number(body.leadScore);
   const hotScore = Number(body.hotScore);
+  const followUp = body.followUp === true;
 
   if (!name || !type || !location) {
     return NextResponse.json(
@@ -67,6 +78,7 @@ export async function POST(req: Request) {
     location,
     leadScore,
     hotScore,
+    followUp,
   });
 
   return NextResponse.json({ message });

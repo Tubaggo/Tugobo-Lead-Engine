@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { ReactNode } from "react";
 import {
   type ContactQuality,
   type Lead,
@@ -44,6 +52,9 @@ type LastImportPayload = {
 
 type ContactChannelCat = "ready" | "needs_finder" | "none";
 
+/** Lead row as rendered in the UI (workflow state merged from `stateMap`). */
+type LeadTableRow = ScoredLead & { _s: LeadStatusUpdate };
+
 type StateMap = Record<string, LeadStatusUpdate>;
 
 const DEFAULT_STATE: LeadStatusUpdate = {
@@ -55,6 +66,12 @@ const DEFAULT_STATE: LeadStatusUpdate = {
   doNotContact: false,
   contactAttempts: 0,
   lastContactedAt: null,
+  nextFollowUpAt: null,
+  followUpAfterHours: 24,
+  repliedAt: null,
+  meetingAt: null,
+  wonAt: null,
+  lostAt: null,
 };
 
 const TYPES: LeadType[] = [
@@ -101,11 +118,11 @@ type ContactFinderResult = {
   reason: string;
 };
 
-type ContactFinderState =
-  | { phase: "idle" }
-  | { phase: "loading" }
-  | { phase: "error"; error: string }
-  | { phase: "ready"; result: ContactFinderResult };
+/** In-flight / error UI for contact finder, scoped by lead id. Results read only from `contactFinderMap`. */
+type ContactFinderRequestState =
+  | { status: "idle" }
+  | { status: "loading"; leadId: string }
+  | { status: "error"; leadId: string; message: string };
 
 type OutreachQueueState = {
   open: boolean;
@@ -114,33 +131,165 @@ type OutreachQueueState = {
   messages: Record<string, string>;
   loading: boolean;
   error: string | null;
+  followUpById: Record<string, boolean>;
 };
 
-type AllLeadsTimeFilter = "last_import" | "today" | "all_time";
+type AllLeadsTimeFilter =
+  | "last_import"
+  | "today"
+  | "all_time"
+  | "follow_up"
+  | "today_work";
+
+function defaultFollowUpHours(s: LeadStatusUpdate): number {
+  return typeof s.followUpAfterHours === "number" && s.followUpAfterHours > 0
+    ? s.followUpAfterHours
+    : 24;
+}
+
+function followUpDeadline(s: LeadStatusUpdate): number | null {
+  if (typeof s.nextFollowUpAt === "number" && Number.isFinite(s.nextFollowUpAt)) {
+    return s.nextFollowUpAt;
+  }
+  const base =
+    typeof s.lastContactedAt === "number" && s.lastContactedAt > 0
+      ? s.lastContactedAt
+      : typeof s.contactedAt === "number" && s.contactedAt > 0
+        ? s.contactedAt
+        : null;
+  if (base === null) return null;
+  return base + defaultFollowUpHours(s) * 60 * 60 * 1000;
+}
+
+function isFollowUpDue(s: LeadStatusUpdate, now: number): boolean {
+  if (s.doNotContact) return false;
+  if (s.status === "needs_follow_up") return true;
+  const d = followUpDeadline(s);
+  if (s.status === "contacted" && d !== null && now > d) return true;
+  return false;
+}
+
+/** Scheduled follow-up instant: persisted `nextFollowUpAt` or derived deadline when in follow-up workflow. */
+function followUpTargetTimestamp(s: LeadStatusUpdate): number | null {
+  if (
+    typeof s.nextFollowUpAt === "number" &&
+    Number.isFinite(s.nextFollowUpAt) &&
+    s.nextFollowUpAt > 0
+  ) {
+    return s.nextFollowUpAt;
+  }
+  if (s.status === "contacted" || s.status === "needs_follow_up") {
+    return followUpDeadline(s);
+  }
+  return null;
+}
+
+function nextActionCopy(s: LeadStatusUpdate): string {
+  if (s.status === "won" || s.status === "lost") return "Completed";
+  if (s.status === "meeting") return "Close deal";
+  if (s.status === "replied") return "Move to meeting";
+  if (s.status === "needs_follow_up") return "Send follow-up message";
+  if (s.status === "contacted") return "Follow up";
+  if (s.status === "new") return "Send first message";
+  return "Review lead";
+}
+
+function followUpTimerLine(s: LeadStatusUpdate, now: number): string | null {
+  if (
+    s.status === "new" ||
+    s.status === "replied" ||
+    s.status === "meeting" ||
+    s.status === "won" ||
+    s.status === "lost"
+  ) {
+    return null;
+  }
+  const target = followUpTargetTimestamp(s);
+  if (target === null) return null;
+  if (now >= target) return "Follow up now";
+  const h = Math.max(1, Math.ceil((target - now) / (60 * 60 * 1000)));
+  return `Follow up in ${h} hour${h === 1 ? "" : "s"}`;
+}
+
+/** Current-state only: if persisted value is an array (legacy / corrupt), use the last element. */
+function coerceEpochMs(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (Array.isArray(raw)) {
+    for (let i = raw.length - 1; i >= 0; i--) {
+      const x = raw[i];
+      if (typeof x === "number" && Number.isFinite(x)) return x;
+    }
+    return null;
+  }
+  return null;
+}
+
+function coerceNonNegInt(raw: unknown, fallback: number): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.max(0, Math.floor(raw));
+  if (Array.isArray(raw)) {
+    const last = raw[raw.length - 1];
+    if (typeof last === "number" && Number.isFinite(last)) return Math.max(0, Math.floor(last));
+    return Math.max(0, raw.length);
+  }
+  return fallback;
+}
+
+function coerceNote(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    const last = raw[raw.length - 1];
+    return typeof last === "string" ? last : "";
+  }
+  return "";
+}
+
+function coerceLastContactedAt(o: Record<string, unknown>): number | null {
+  if ("lastContactedAt" in o && o.lastContactedAt === null) return null;
+  const fromLast = coerceEpochMs(o.lastContactedAt);
+  if (fromLast !== null) return fromLast;
+  if (!("lastContactedAt" in o)) return coerceEpochMs(o.contactedAt);
+  return coerceEpochMs(o.contactedAt);
+}
 
 function normalizeStateEntry(v: unknown): LeadStatusUpdate {
   if (!v || typeof v !== "object") return { ...DEFAULT_STATE };
   const o = v as Record<string, unknown>;
+  const statusRaw = o.status;
+  const status: LeadStatus =
+    typeof statusRaw === "string" && STATUS_ORDER.includes(statusRaw as LeadStatus)
+      ? (statusRaw as LeadStatus)
+      : DEFAULT_STATE.status;
+  const channelRaw = o.channel;
+  const channel: LeadStatusUpdate["channel"] =
+    channelRaw === null || channelRaw === undefined
+      ? null
+      : channelRaw === "whatsapp" ||
+          channelRaw === "phone" ||
+          channelRaw === "instagram" ||
+          channelRaw === "email"
+        ? channelRaw
+        : DEFAULT_STATE.channel;
+  const nextFu = coerceEpochMs(o.nextFollowUpAt);
   return {
     ...DEFAULT_STATE,
-    ...v,
-    status:
-      typeof o.status === "string" && STATUS_ORDER.includes(o.status as LeadStatus)
-        ? (o.status as LeadStatus)
-        : DEFAULT_STATE.status,
+    status,
+    note: coerceNote(o.note),
+    updatedAt: coerceEpochMs(o.updatedAt),
+    contactedAt: coerceEpochMs(o.contactedAt),
+    channel,
     doNotContact: Boolean(o.doNotContact),
-    contactAttempts:
-      typeof o.contactAttempts === "number" && Number.isFinite(o.contactAttempts)
-        ? Math.max(0, o.contactAttempts)
-        : DEFAULT_STATE.contactAttempts,
-    lastContactedAt:
-      typeof o.lastContactedAt === "number"
-        ? o.lastContactedAt
-        : o.lastContactedAt === null
-          ? null
-          : typeof o.contactedAt === "number"
-            ? o.contactedAt
-            : null,
+    contactAttempts: coerceNonNegInt(o.contactAttempts, DEFAULT_STATE.contactAttempts ?? 0),
+    lastContactedAt: coerceLastContactedAt(o),
+    nextFollowUpAt: nextFu,
+    followUpAfterHours:
+      typeof o.followUpAfterHours === "number" && o.followUpAfterHours > 0
+        ? o.followUpAfterHours
+        : DEFAULT_STATE.followUpAfterHours,
+    repliedAt: coerceEpochMs(o.repliedAt),
+    meetingAt: coerceEpochMs(o.meetingAt),
+    wonAt: coerceEpochMs(o.wonAt),
+    lostAt: coerceEpochMs(o.lostAt),
   };
 }
 
@@ -164,7 +313,11 @@ function loadState(): StateMap {
 function saveState(state: StateMap) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const sanitized: StateMap = {};
+    for (const [id, v] of Object.entries(state)) {
+      sanitized[id] = normalizeStateEntry(v);
+    }
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
   } catch {
     // ignore quota errors
   }
@@ -294,15 +447,35 @@ function saveImportCache(cache: Record<string, ScoredLead[]>) {
   }
 }
 
+function isContactFinderResult(v: unknown): v is ContactFinderResult {
+  return (
+    v !== null &&
+    typeof v === "object" &&
+    !Array.isArray(v) &&
+    typeof (v as ContactFinderResult).bestContactType === "string" &&
+    typeof (v as ContactFinderResult).bestContactValue === "string"
+  );
+}
+
+/** One current result per lead; if stored as array, keep only the latest entry. */
+function normalizeContactFinderMapEntry(val: unknown): ContactFinderResult | null {
+  const single = Array.isArray(val) ? val[val.length - 1] : val;
+  return isContactFinderResult(single) ? single : null;
+}
+
 function loadContactFinderMap(): Record<string, ContactFinderResult> {
   if (typeof window === "undefined") return {};
   try {
     const raw = window.localStorage.getItem(CONTACT_FINDER_MAP_KEY);
     if (!raw) return {};
     const p = JSON.parse(raw);
-    return typeof p === "object" && p !== null && !Array.isArray(p)
-      ? (p as Record<string, ContactFinderResult>)
-      : {};
+    if (typeof p !== "object" || p === null || Array.isArray(p)) return {};
+    const out: Record<string, ContactFinderResult> = {};
+    for (const [id, val] of Object.entries(p as Record<string, unknown>)) {
+      const norm = normalizeContactFinderMapEntry(val);
+      if (norm) out[id] = norm;
+    }
+    return out;
   } catch {
     return {};
   }
@@ -311,7 +484,12 @@ function loadContactFinderMap(): Record<string, ContactFinderResult> {
 function saveContactFinderMap(map: Record<string, ContactFinderResult>) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(CONTACT_FINDER_MAP_KEY, JSON.stringify(map));
+    const out: Record<string, ContactFinderResult> = {};
+    for (const [id, val] of Object.entries(map)) {
+      const n = normalizeContactFinderMapEntry(val);
+      if (n) out[id] = n;
+    }
+    window.localStorage.setItem(CONTACT_FINDER_MAP_KEY, JSON.stringify(out));
   } catch {
     // ignore
   }
@@ -647,10 +825,11 @@ function OutreachBadgesRow({
   row,
   reimported,
 }: {
-  row: { id: string; _s: LeadStatusUpdate };
+  row: { id: string; _s: LeadStatusUpdate; hotScore?: number };
   reimported?: boolean;
 }) {
   const s = row._s;
+  const now = Date.now();
   const last =
     typeof s.lastContactedAt === "number" && s.lastContactedAt > 0
       ? s.lastContactedAt
@@ -672,6 +851,20 @@ function OutreachBadgesRow({
       label: "New",
     });
   }
+  if (isFollowUpDue(s, now)) {
+    chips.push({
+      key: "fudue",
+      cls: `${badgeBase} bg-orange-500/15 text-orange-200 ring-orange-400/40`,
+      label: "🔥 Follow-Up Now",
+    });
+  }
+  if (typeof row.hotScore === "number" && row.hotScore > 70 && s.status === "new") {
+    chips.push({
+      key: "hipri",
+      cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/35`,
+      label: "⭐ High Priority",
+    });
+  }
   if (last) {
     if (isSameLocalCalendarDay(last, Date.now())) {
       chips.push({
@@ -679,13 +872,23 @@ function OutreachBadgesRow({
         cls: `${badgeBase} bg-sky-500/15 text-sky-200 ring-sky-400/35`,
         label: "Contacted today",
       });
-    } else if (["contacted", "replied", "meeting", "won"].includes(s.status)) {
+    } else if (
+      !isFollowUpDue(s, now) &&
+      ["contacted", "needs_follow_up", "replied", "meeting", "won"].includes(s.status)
+    ) {
       chips.push({
         key: "cbefore",
         cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/30`,
         label: "Contacted before",
       });
     }
+  }
+  if ((s.contactAttempts ?? 0) >= 3) {
+    chips.push({
+      key: "spam",
+      cls: `${badgeBase} bg-yellow-500/15 text-yellow-200 ring-yellow-400/35`,
+      label: "Already contacted multiple times",
+    });
   }
   if (reimported) {
     chips.push({
@@ -695,15 +898,16 @@ function OutreachBadgesRow({
     });
   }
   if (chips.length === 0) return null;
-  return (
-    <div className="mt-1 flex flex-wrap gap-1">
-      {chips.map((c) => (
-        <span key={c.key} className={c.cls}>
-          {c.label}
-        </span>
-      ))}
-    </div>
-  );
+  const chipNodes: ReactNode[] = [];
+  for (let i = 0; i < chips.length; i++) {
+    const c = chips[i];
+    chipNodes.push(
+      <span key={c.key} className={c.cls}>
+        {c.label}
+      </span>,
+    );
+  }
+  return <div className="mt-1 flex flex-wrap gap-1">{chipNodes}</div>;
 }
 
 function ScoreBar({ score, tone }: { score: number; tone: "lead" | "hot" }) {
@@ -740,6 +944,7 @@ function StatusPill({ status }: { status: LeadStatus }) {
   const styles: Record<LeadStatus, string> = {
     new: "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30",
     contacted: "bg-indigo-500/15 text-indigo-300 ring-indigo-500/30",
+    needs_follow_up: "bg-amber-500/15 text-amber-200 ring-amber-400/35",
     replied: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
     meeting: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
     won: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
@@ -751,28 +956,6 @@ function StatusPill({ status }: { status: LeadStatus }) {
     >
       {STATUS_LABEL[status]}
     </span>
-  );
-}
-
-function StatusSelect({
-  value,
-  onChange,
-}: {
-  value: LeadStatus;
-  onChange: (s: LeadStatus) => void;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as LeadStatus)}
-      className="bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-100 text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 cursor-pointer"
-    >
-      {STATUS_ORDER.map((s) => (
-        <option key={s} value={s} className="bg-zinc-900">
-          {STATUS_LABEL[s]}
-        </option>
-      ))}
-    </select>
   );
 }
 
@@ -1017,7 +1200,7 @@ function AiMessageModal({
                 className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
               >
                 <IconWhatsapp className="h-4 w-4" />
-                Open WhatsApp 🚀
+                Send via WhatsApp
               </button>
             ) : (
               <span
@@ -1025,7 +1208,7 @@ function AiMessageModal({
                 className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-500"
               >
                 <IconWhatsapp className="h-4 w-4" />
-                Open WhatsApp 🚀
+                Send via WhatsApp
               </span>
             )}
           </div>
@@ -1191,6 +1374,453 @@ function HotCard({
   );
 }
 
+function LeadDetailHeader({
+  lead,
+  onClose,
+}: {
+  lead: LeadTableRow;
+  onClose: () => void;
+}) {
+  return (
+    <div className="flex items-start justify-between border-b border-white/10 px-5 py-4">
+      <div>
+        <div className="text-[11px] uppercase tracking-wider text-zinc-500">
+          {lead.type} · {lead.city}
+        </div>
+        <div className="mt-0.5 text-base font-semibold text-zinc-50">{lead.name}</div>
+        <div className="text-xs text-zinc-400">
+          {lead.contactName} · {lead.phone}
+        </div>
+      </div>
+      <button
+        onClick={onClose}
+        className="rounded-md p-1 text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
+        aria-label="Close panel"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className="h-5 w-5"
+        >
+          <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function LeadDetailScoreSummary({ lead }: { lead: LeadTableRow }) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <DetailStat
+        label="Lead Score"
+        value={lead.leadScore}
+        reasons={lead.leadReasons}
+        tone="lead"
+      />
+      <DetailStat
+        label="Hot Score"
+        value={lead.hotScore}
+        reasons={lead.hotReasons}
+        tone="hot"
+      />
+    </div>
+  );
+}
+
+function LeadDetailMetrics({ lead }: { lead: LeadTableRow }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 text-xs">
+      <KV label="Units" value={lead.units.toString()} />
+      <KV label="ADR" value={formatTRY(lead.pricePerNight)} />
+      <KV
+        label="Occupancy 30d"
+        value={`${Math.round(lead.occupancy30d * 100)}%`}
+      />
+      <KV label="Rating" value={lead.rating.toFixed(1)} />
+      <KV label="Reviews" value={lead.reviewsCount.toString()} />
+      <KV label="Channels" value={lead.channels.join(", ")} />
+    </div>
+  );
+}
+
+function LeadDetailContactSection({
+  lead,
+  finderPersisted,
+  finderRequest,
+  updateLead,
+  findBestContact,
+}: {
+  lead: LeadTableRow;
+  finderPersisted: ContactFinderResult | undefined;
+  finderRequest: ContactFinderRequestState;
+  updateLead: (id: string, patch: Partial<LeadStatusUpdate>) => void;
+  findBestContact: (leadId: string, website: string) => Promise<void>;
+}) {
+  const s = lead._s;
+  const loadingHere =
+    finderRequest.status === "loading" && finderRequest.leadId === lead.id;
+  const finderErrHere =
+    finderRequest.status === "error" && finderRequest.leadId === lead.id;
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <KV
+          label="Contact quality"
+          value={CONTACT_QUALITY_LABEL[lead.contactQuality]}
+        />
+        <KV label="Source" value="Google Maps" />
+        <KV
+          label="First imported"
+          value={relativeCalendarLabel(lead.firstImportedAt ?? lead.createdAt)}
+        />
+        <KV label="Last imported" value={relativeCalendarLabel(lead.lastImportedAt)} />
+      </div>
+
+      <label className="flex cursor-pointer items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-zinc-200">
+        <input
+          type="checkbox"
+          className="rounded border-white/20 bg-black/40"
+          checked={s.doNotContact}
+          onChange={(e) => updateLead(lead.id, { doNotContact: e.target.checked })}
+        />
+        <span>
+          Do not contact{" "}
+          <span className="text-zinc-500">
+            (disables outreach and hides from Focused / Hot)
+          </span>
+        </span>
+      </label>
+
+      {lead.signals.length > 0 && (
+        <div>
+          <div className="mb-1.5 text-[11px] uppercase tracking-wider text-zinc-500">
+            Signals
+          </div>
+          <p className="text-[11px] leading-relaxed text-zinc-300">
+            {lead.signals.join(" · ")}
+          </p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        {lead.instagram && (
+          <a
+            href={instagramLink(lead.instagram)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-md border border-pink-400/20 bg-pink-500/10 px-3 py-1.5 text-xs font-medium text-pink-200 transition hover:bg-pink-500/20"
+          >
+            <IconInstagram className="h-4 w-4" />@{lead.instagram}
+          </a>
+        )}
+        {lead.website && (
+          <a
+            href={`https://${lead.website}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-white/10"
+          >
+            {lead.website}
+          </a>
+        )}
+      </div>
+
+      {lead.website && (
+        <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[11px] uppercase tracking-wider text-zinc-500">
+              Contact Finder
+            </div>
+            <button
+              type="button"
+              onClick={() => void findBestContact(lead.id, lead.website!)}
+              className="inline-flex shrink-0 items-center gap-2 rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20"
+            >
+              Find Best Contact
+            </button>
+          </div>
+          {!loadingHere && !finderErrHere && !finderPersisted && (
+            <div className="text-zinc-500">
+              Click &quot;Find Best Contact&quot; to analyze homepage contact channels.
+            </div>
+          )}
+          {loadingHere && <div className="text-zinc-300">Analyzing website...</div>}
+          {finderRequest.status === "error" && finderRequest.leadId === lead.id && (
+            <div className="text-rose-300">{finderRequest.message}</div>
+          )}
+          {finderPersisted && !loadingHere && !finderErrHere && (
+            <div className="space-y-1.5 text-zinc-300">
+              <div>
+                <span className="text-zinc-500">Best Contact:</span>{" "}
+                <span
+                  className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
+                    finderPersisted.bestContactType === "VERIFIED_WHATSAPP" ||
+                    finderPersisted.bestContactType === "whatsapp"
+                      ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-500/30"
+                      : finderPersisted.bestContactType === "GENERATED_WHATSAPP"
+                        ? "bg-sky-500/15 text-sky-300 ring-1 ring-inset ring-sky-500/30"
+                        : finderPersisted.bestContactType === "PHONE_ONLY" ||
+                            finderPersisted.bestContactType === "mobile" ||
+                            finderPersisted.bestContactType === "phone"
+                          ? "bg-zinc-500/15 text-zinc-300 ring-1 ring-inset ring-zinc-500/30"
+                          : "text-zinc-100"
+                  }`}
+                >
+                  {finderPersisted.bestContactType === "VERIFIED_WHATSAPP" ||
+                  finderPersisted.bestContactType === "whatsapp"
+                    ? "Verified WhatsApp"
+                    : finderPersisted.bestContactType === "GENERATED_WHATSAPP"
+                      ? "WhatsApp Available"
+                      : finderPersisted.bestContactType === "PHONE_ONLY" ||
+                          finderPersisted.bestContactType === "mobile" ||
+                          finderPersisted.bestContactType === "phone"
+                        ? "Phone Only"
+                        : finderPersisted.bestContactType.toUpperCase()}
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-500">Value:</span>{" "}
+                <span className="font-medium text-zinc-100">
+                  {finderPersisted.bestContactValue}
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-500">Confidence:</span>{" "}
+                <span className="font-medium text-zinc-100">
+                  {finderPersisted.confidence}
+                </span>
+              </div>
+              <div>
+                <span className="text-zinc-500">Source:</span> {finderPersisted.source}
+              </div>
+              <div>
+                <span className="text-zinc-500">Reason:</span> {finderPersisted.reason}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const numberToCopy =
+                      finderPersisted.foundPhones[0] ||
+                      lead.phone ||
+                      finderPersisted.bestContactValue;
+                    void navigator.clipboard.writeText(numberToCopy);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-medium text-zinc-200 hover:bg-white/10"
+                >
+                  Copy Number
+                </button>
+              </div>
+              {finderPersisted.bestContactType === "website" && lead.phone && (
+                <div>
+                  <span className="text-zinc-500">Source:</span> Google Places phone (
+                  {lead.phone})
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Follow-up meta + Next Action + Send Message + status (single drawer block, no duplicate sections). */
+function LeadDetailWorkflowSection({
+  lead,
+  setLeadStatus,
+  onSendMessage,
+  sendMessageBusy,
+}: {
+  lead: LeadTableRow;
+  setLeadStatus: (id: string, status: LeadStatus) => void;
+  onSendMessage: () => void;
+  sendMessageBusy: boolean;
+}) {
+  const s = lead._s;
+  const terminal = s.status === "won" || s.status === "lost";
+  const sendDisabled = s.doNotContact || sendMessageBusy || terminal;
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <KV
+          label="Last contacted"
+          value={relativeCalendarLabel(s.lastContactedAt ?? s.contactedAt)}
+        />
+        <KV label="Contact attempts" value={String(s.contactAttempts ?? 0)} />
+        <KV
+          label="Next follow-up"
+          value={relativeCalendarLabel(s.nextFollowUpAt)}
+        />
+      </div>
+
+      <div className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2.5 text-xs">
+        <div className="text-[10px] uppercase tracking-wider text-zinc-500">Next Action</div>
+        <p className="mt-1 text-sm text-zinc-100">{nextActionCopy(s)}</p>
+        {(() => {
+          const timer = followUpTimerLine(s, Date.now());
+          if (!timer) return null;
+          return <p className="mt-1 text-zinc-400">{timer}</p>;
+        })()}
+        <button
+          type="button"
+          disabled={sendDisabled}
+          onClick={onSendMessage}
+          title={
+            s.doNotContact
+              ? "Do not contact"
+              : terminal
+                ? "Pipeline closed"
+                : whatsappLink(lead.phone)
+                  ? "Generate message and open WhatsApp"
+                  : "Generate message (copy or send when ready)"
+          }
+          className="mt-3 w-full rounded-md bg-indigo-500 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {sendMessageBusy ? "Preparing…" : "Send Message"}
+        </button>
+
+        <div className="mt-4 border-t border-white/10 pt-3">
+          <div className="mb-1.5 flex items-center justify-between">
+            <div className="text-[11px] uppercase tracking-wider text-zinc-500">Status</div>
+            {s.updatedAt && (
+              <div className="text-[10px] text-zinc-600">
+                Updated {new Date(s.updatedAt).toLocaleString("en-GB")}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(() => {
+              const buttons: ReactNode[] = [];
+              for (let i = 0; i < STATUS_ORDER.length; i++) {
+                const st = STATUS_ORDER[i];
+                const active = s.status === st;
+                buttons.push(
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => setLeadStatus(lead.id, st)}
+                    className={`rounded-md px-2.5 py-1 text-xs ring-1 ring-inset transition ${
+                      active
+                        ? "bg-indigo-500/20 text-indigo-200 ring-indigo-400/40"
+                        : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
+                    }`}
+                  >
+                    {STATUS_LABEL[st]}
+                  </button>,
+                );
+              }
+              return buttons;
+            })()}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeadDetailNotesSection({
+  lead,
+  draftNote,
+  setDraftNote,
+  updateLead,
+}: {
+  lead: LeadTableRow;
+  draftNote: string;
+  setDraftNote: (v: string) => void;
+  updateLead: (id: string, patch: Partial<LeadStatusUpdate>) => void;
+}) {
+  const s = lead._s;
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center justify-between">
+        <div className="text-[11px] uppercase tracking-wider text-zinc-500">Notes</div>
+        <div className="text-[10px] text-zinc-600">{draftNote.length} chars</div>
+      </div>
+      <textarea
+        value={draftNote}
+        onChange={(e) => setDraftNote(e.target.value)}
+        placeholder="Owner picks up calls in the afternoon. Interested in direct booking site. Follow up Tuesday."
+        rows={6}
+        className="w-full resize-none rounded-md border border-white/10 bg-black/30 p-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+      />
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <button
+          onClick={() => setDraftNote(s.note ?? "")}
+          className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
+        >
+          Reset
+        </button>
+        <button
+          onClick={() => updateLead(lead.id, { note: draftNote })}
+          className="rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400"
+        >
+          Save note
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Single render tree for the open lead (one selected object, no list iteration). */
+function LeadDetailPanel({
+  selectedLead,
+  onClose,
+  finderPersisted,
+  contactFinderRequest,
+  draftNote,
+  setDraftNote,
+  updateLead,
+  setLeadStatus,
+  findBestContact,
+  onSendMessage,
+  sendMessageBusy,
+}: {
+  selectedLead: LeadTableRow;
+  onClose: () => void;
+  finderPersisted: ContactFinderResult | undefined;
+  contactFinderRequest: ContactFinderRequestState;
+  draftNote: string;
+  setDraftNote: (v: string) => void;
+  updateLead: (id: string, patch: Partial<LeadStatusUpdate>) => void;
+  setLeadStatus: (id: string, status: LeadStatus) => void;
+  findBestContact: (leadId: string, website: string) => Promise<void>;
+  onSendMessage: () => void;
+  sendMessageBusy: boolean;
+}) {
+  return (
+    <>
+      <LeadDetailHeader lead={selectedLead} onClose={onClose} />
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+        <LeadDetailScoreSummary lead={selectedLead} />
+        <LeadDetailMetrics lead={selectedLead} />
+        <LeadDetailContactSection
+          lead={selectedLead}
+          finderPersisted={finderPersisted}
+          finderRequest={contactFinderRequest}
+          updateLead={updateLead}
+          findBestContact={findBestContact}
+        />
+        <LeadDetailWorkflowSection
+          lead={selectedLead}
+          setLeadStatus={setLeadStatus}
+          onSendMessage={onSendMessage}
+          sendMessageBusy={sendMessageBusy}
+        />
+        <LeadDetailNotesSection
+          lead={selectedLead}
+          draftNote={draftNote}
+          setDraftNote={setDraftNote}
+          updateLead={updateLead}
+        />
+      </div>
+    </>
+  );
+}
+
 export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [stateMap, setStateMap] = useState<StateMap>({});
   const [importedLeads, setImportedLeads] = useState<ScoredLead[]>([]);
@@ -1206,6 +1836,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   >("all");
   const [sort, setSort] = useState<"hot" | "lead" | "name">("hot");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [drawerSendBusy, setDrawerSendBusy] = useState(false);
   const [draftNote, setDraftNote] = useState("");
   const [recentlyImportedLeadIds, setRecentlyImportedLeadIds] = useState<string[]>([]);
   const [latestImportLeads, setLatestImportLeads] = useState<ScoredLead[]>([]);
@@ -1229,10 +1860,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     messages: {},
     loading: false,
     error: null,
+    followUpById: {},
   });
-  const [contactFinder, setContactFinder] = useState<ContactFinderState>({
-    phase: "idle",
-  });
+  const [contactFinderRequest, setContactFinderRequest] =
+    useState<ContactFinderRequestState>({ status: "idle" });
   const [contactFinderMap, setContactFinderMap] = useState<
     Record<string, ContactFinderResult>
   >({});
@@ -1358,12 +1989,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       base.push(l);
       addLeadToDedupeSet(l, dedupeSet);
     }
-    return base.map((l) => ({
-      ...l,
-      createdAt: l.createdAt ?? LEGACY_CREATED_AT_TS,
-      _s: getLeadState(l.id),
-      contactQuality: getContactQuality(l.phone),
-    }));
+    return base.map(
+      (l): LeadTableRow => ({
+        ...l,
+        createdAt: l.createdAt ?? LEGACY_CREATED_AT_TS,
+        _s: getLeadState(l.id),
+        contactQuality: getContactQuality(l.phone),
+      }),
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leads, importedLeads, stateMap]);
 
@@ -1378,6 +2011,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const latestImportIdSet = new Set(latestImportLeads.map((l) => l.id));
     const list = allRows.filter((r) => {
       const createdAt = r.createdAt ?? 0;
+      const fu = isFollowUpDue(r._s, now);
+      if (allLeadsTimeFilter === "today_work") {
+        if (r._s.status !== "new" && !fu) return false;
+      }
+      if (allLeadsTimeFilter === "follow_up") {
+        if (!fu) return false;
+      }
       if (allLeadsTimeFilter === "last_import" && !latestImportIdSet.has(r.id)) {
         return false;
       }
@@ -1512,7 +2152,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const sessionLeads = sessionRows.length;
     const hotToday = sessionRows.filter((r) => r.hotScore >= 70).length;
     const contacted = sessionRows.filter((r) =>
-      ["contacted", "replied", "meeting", "won"].includes(r._s.status)
+      ["contacted", "needs_follow_up", "replied", "meeting", "won"].includes(
+        r._s.status,
+      ),
     ).length;
     const replied = sessionRows.filter((r) =>
       ["replied", "meeting", "won"].includes(r._s.status)
@@ -1526,51 +2168,145 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allRows, stateMap, sessionLeadIds]);
 
-  const openLead = openId ? allRows.find((r) => r.id === openId) : null;
-  const drawerWaLink = openLead ? whatsappLink(openLead.phone) : null;
+  const openLead = openId ? allRowsById.get(openId) ?? null : null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!openLead) return;
     setDraftNote(openLead._s.note ?? "");
-    const saved = contactFinderMap[openLead.id];
-    if (saved) setContactFinder({ phase: "ready", result: saved });
-    else setContactFinder({ phase: "idle" });
-  }, [openId, openLead?.id, contactFinderMap]);
-
-  const handleQuickContacted = (id: string) => {
-    const cur = getLeadState(id);
-    if (cur.doNotContact) return;
-    if (cur.status !== "new") return;
-    const ts = Date.now();
-    updateLead(id, {
-      status: "contacted",
-      contactedAt: ts,
-      lastContactedAt: ts,
-      contactAttempts: (cur.contactAttempts ?? 0) + 1,
-      channel: "whatsapp",
+    setContactFinderRequest((prev) => {
+      if (prev.status === "loading" && prev.leadId !== openLead.id) {
+        return { status: "idle" };
+      }
+      if (prev.status === "error" && prev.leadId !== openLead.id) {
+        return { status: "idle" };
+      }
+      return prev;
     });
-  };
+  }, [openId, openLead?.id]);
+
+  const recordWhatsAppOutreach = useCallback((id: string) => {
+    setStateMap((prev) => {
+      const cur = normalizeStateEntry(prev[id]);
+      if (cur.doNotContact) return prev;
+      const ts = Date.now();
+      const hours = defaultFollowUpHours(cur);
+      const nextFollowUpAt = ts + hours * 60 * 60 * 1000;
+      const next: StateMap = {
+        ...prev,
+        [id]: {
+          ...DEFAULT_STATE,
+          ...cur,
+          status: "contacted",
+          contactedAt: cur.contactedAt ?? ts,
+          lastContactedAt: ts,
+          contactAttempts: (cur.contactAttempts ?? 0) + 1,
+          channel: "whatsapp",
+          nextFollowUpAt,
+          followUpAfterHours: hours,
+          updatedAt: ts,
+        },
+      };
+      saveState(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+      setStateMap((prev) => {
+        let changed = false;
+        const next: StateMap = { ...prev };
+        for (const [id, s] of Object.entries(prev)) {
+          if (s.doNotContact || s.status !== "contacted") continue;
+          const d = followUpDeadline(normalizeStateEntry(s));
+          if (d === null || now <= d) continue;
+          next[id] = {
+            ...normalizeStateEntry(s),
+            status: "needs_follow_up",
+            updatedAt: now,
+          };
+          changed = true;
+        }
+        if (changed) saveState(next);
+        return changed ? next : prev;
+      });
+    };
+    tick();
+    const i = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(i);
+  }, []);
 
   const setLeadStatus = (id: string, status: LeadStatus) => {
+    const current = getLeadState(id);
+    const ts = Date.now();
+    const hours = defaultFollowUpHours(current);
+
     if (status === "contacted") {
-      const current = getLeadState(id);
-      const ts = Date.now();
-      const alreadyContacted = current.status === "contacted";
+      const alreadyPipeline =
+        current.status === "contacted" || current.status === "needs_follow_up";
       updateLead(id, {
-        status,
+        status: "contacted",
         contactedAt: current.contactedAt ?? ts,
         lastContactedAt: ts,
-        contactAttempts: alreadyContacted
+        contactAttempts: alreadyPipeline
           ? (current.contactAttempts ?? 0)
           : (current.contactAttempts ?? 0) + 1,
         channel: current.channel ?? "whatsapp",
+        nextFollowUpAt: ts + hours * 60 * 60 * 1000,
+        followUpAfterHours: hours,
       });
       return;
     }
-    updateLead(id, { status });
+
+    if (status === "replied") {
+      updateLead(id, {
+        status,
+        repliedAt:
+          typeof current.repliedAt === "number" ? current.repliedAt : ts,
+        nextFollowUpAt: null,
+      });
+      return;
+    }
+    if (status === "meeting") {
+      updateLead(id, {
+        status,
+        meetingAt:
+          typeof current.meetingAt === "number" ? current.meetingAt : ts,
+        nextFollowUpAt: null,
+      });
+      return;
+    }
+    if (status === "won") {
+      updateLead(id, {
+        status,
+        wonAt: typeof current.wonAt === "number" ? current.wonAt : ts,
+        nextFollowUpAt: null,
+      });
+      return;
+    }
+    if (status === "lost") {
+      updateLead(id, {
+        status,
+        lostAt: typeof current.lostAt === "number" ? current.lostAt : ts,
+        nextFollowUpAt: null,
+      });
+      return;
+    }
+    if (status === "new") {
+      updateLead(id, { status, nextFollowUpAt: null });
+      return;
+    }
+    if (status === "needs_follow_up") {
+      updateLead(id, { status });
+      return;
+    }
   };
 
-  const generateLeadAiMessage = async (lead: ScoredLead): Promise<string> => {
+  const generateLeadAiMessage = async (
+    lead: ScoredLead,
+    followUp = false,
+  ): Promise<string> => {
     const res = await fetch("/api/generate-message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1580,6 +2316,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         location: `${lead.city}, ${lead.region}`,
         leadScore: lead.leadScore,
         hotScore: lead.hotScore,
+        followUp,
       }),
     });
     const data = (await res.json()) as { message?: string; error?: string };
@@ -1603,15 +2340,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       });
       return;
     }
-    if (st.status !== "new") {
+    if (st.status !== "new" && st.status !== "needs_follow_up") {
       const ok = window.confirm(
         "This lead is not in New status. You may duplicate outreach. Generate an AI message anyway?",
       );
       if (!ok) return;
     }
+    const useFollowUpCopy = st.status === "needs_follow_up";
     setAiMessageModal({ lead, phase: "loading" });
     try {
-      const message = await generateLeadAiMessage(lead);
+      const message = await generateLeadAiMessage(lead, useFollowUpCopy);
       setAiMessageModal({
         lead,
         phase: "ready",
@@ -1626,8 +2364,75 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
   };
 
+  const drawerSendMessage = async (lead: LeadTableRow) => {
+    const st = getLeadState(lead.id);
+    if (st.doNotContact) return;
+    const wa = whatsappLink(lead.phone);
+    const followUp = st.status === "needs_follow_up";
+    if (wa) {
+      setDrawerSendBusy(true);
+      try {
+        const message = await generateLeadAiMessage(lead, followUp);
+        const link = whatsappLinkWithText(lead.phone, message);
+        if (!link) {
+          setAiMessageModal({ lead, phase: "ready", message });
+          return;
+        }
+        openExternal(link);
+        if (
+          st.status === "new" ||
+          st.status === "needs_follow_up" ||
+          st.status === "contacted"
+        ) {
+          recordWhatsAppOutreach(lead.id);
+        } else if (st.status === "replied" || st.status === "meeting") {
+          const ts = Date.now();
+          const hours = defaultFollowUpHours(st);
+          updateLead(lead.id, {
+            lastContactedAt: ts,
+            contactAttempts: (st.contactAttempts ?? 0) + 1,
+            nextFollowUpAt: ts + hours * 60 * 60 * 1000,
+            channel: "whatsapp",
+          });
+        }
+      } catch (e) {
+        setAiMessageModal({
+          lead,
+          phase: "error",
+          error: e instanceof Error ? e.message : "Bir hata oluştu",
+        });
+      } finally {
+        setDrawerSendBusy(false);
+      }
+    } else {
+      void startAiMessage(lead);
+    }
+  };
+
+  const startFollowUpOutreach = async (lead: ScoredLead) => {
+    const st = getLeadState(lead.id);
+    if (st.doNotContact) return;
+    if (!isFollowUpDue(st, Date.now()) && st.status !== "needs_follow_up") return;
+    try {
+      const message = await generateLeadAiMessage(lead, true);
+      const wa = whatsappLinkWithText(lead.phone, message);
+      if (wa) {
+        openExternal(wa);
+        recordWhatsAppOutreach(lead.id);
+      } else {
+        setAiMessageModal({ lead, phase: "ready", message });
+      }
+    } catch (e) {
+      setAiMessageModal({
+        lead,
+        phase: "error",
+        error: e instanceof Error ? e.message : "Bir hata oluştu",
+      });
+    }
+  };
+
   const findBestContact = async (leadId: string, website: string) => {
-    setContactFinder({ phase: "loading" });
+    setContactFinderRequest({ status: "loading", leadId });
     try {
       const res = await fetch("/api/contact-finder", {
         method: "POST",
@@ -1638,16 +2443,17 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       if (!res.ok) {
         throw new Error(data.error || `Contact finder failed (${res.status})`);
       }
-      setContactFinder({ phase: "ready", result: data });
       setContactFinderMap((prev) => {
         const next = { ...prev, [leadId]: data };
         saveContactFinderMap(next);
         return next;
       });
+      setContactFinderRequest({ status: "idle" });
     } catch (e) {
-      setContactFinder({
-        phase: "error",
-        error: e instanceof Error ? e.message : "Contact finder failed",
+      setContactFinderRequest({
+        status: "error",
+        leadId,
+        message: e instanceof Error ? e.message : "Contact finder failed",
       });
     }
   };
@@ -1686,20 +2492,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   const markSelectedAsContacted = () => {
-    const ts = Date.now();
     for (const id of selectedLeadIds) {
-      const current = getLeadState(id);
-      if (current.doNotContact) continue;
-      const alreadyContacted = current.status === "contacted";
-      updateLead(id, {
-        status: "contacted",
-        contactedAt: current.contactedAt ?? ts,
-        lastContactedAt: ts,
-        contactAttempts: alreadyContacted
-          ? (current.contactAttempts ?? 0)
-          : (current.contactAttempts ?? 0) + 1,
-        channel: current.channel ?? "whatsapp",
-      });
+      if (getLeadState(id).doNotContact) continue;
+      setLeadStatus(id, "contacted");
     }
   };
 
@@ -1708,8 +2503,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const queueLeadIds = selectedLeadIds
       .filter((id) => allRowsById.has(id))
       .filter((id) => !getLeadState(id).doNotContact)
-      .filter((id) => getLeadState(id).status === "new");
+      .filter((id) => {
+        const st = getLeadState(id).status;
+        return st === "new" || st === "needs_follow_up";
+      });
     if (queueLeadIds.length === 0) return;
+    const followUpById: Record<string, boolean> = {};
+    for (const id of queueLeadIds) {
+      followUpById[id] = getLeadState(id).status === "needs_follow_up";
+    }
     setOutreachQueue({
       open: true,
       leadIds: queueLeadIds,
@@ -1717,6 +2519,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       messages: {},
       loading: false,
       error: null,
+      followUpById,
     });
   };
 
@@ -1739,8 +2542,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     if (outreachQueue.messages[queueCurrentId]) return;
 
     let cancelled = false;
+    const followUp = Boolean(outreachQueue.followUpById[queueCurrentId]);
     setOutreachQueue((prev) => ({ ...prev, loading: true, error: null }));
-    void generateLeadAiMessage(queueCurrentLead)
+    void generateLeadAiMessage(queueCurrentLead, followUp)
       .then((message) => {
         if (cancelled) return;
         setOutreachQueue((prev) => ({
@@ -1761,7 +2565,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return () => {
       cancelled = true;
     };
-  }, [outreachQueue.open, queueCurrentId, queueCurrentLead, outreachQueue.messages]);
+  }, [
+    outreachQueue.open,
+    queueCurrentId,
+    queueCurrentLead,
+    outreachQueue.messages,
+    outreachQueue.followUpById,
+  ]);
 
   const closeOutreachQueue = () => {
     setOutreachQueue({
@@ -1771,6 +2581,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       messages: {},
       loading: false,
       error: null,
+      followUpById: {},
     });
   };
 
@@ -1784,6 +2595,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           messages: {},
           loading: false,
           error: null,
+          followUpById: {},
         };
       }
       return { ...prev, index: prev.index + 1, error: null };
@@ -1993,7 +2805,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           <LeadWhatsAppAction
                             phone={row.phone}
                             leadId={row.id}
-                            onMarkContacted={handleQuickContacted}
+                            onMarkContacted={recordWhatsAppOutreach}
                             outreachDisabled={row._s.doNotContact}
                           />
                           <LeadWebsiteAction website={row.website} />
@@ -2028,6 +2840,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             <IconSpark className="h-3.5 w-3.5 shrink-0" />
                             AI Message
                           </button>
+                          {!row._s.doNotContact &&
+                            (isFollowUpDue(row._s, Date.now()) ||
+                              row._s.status === "needs_follow_up") && (
+                              <button
+                                type="button"
+                                onClick={() => void startFollowUpOutreach(row)}
+                                title="Kısa hatırlatma mesajı ve WhatsApp"
+                                className="inline-flex h-8 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:text-xs"
+                              >
+                                Follow Up
+                              </button>
+                            )}
                           <button
                             onClick={() => setOpenId(row.id)}
                             title="Open details"
@@ -2241,6 +3065,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   setShowAllLeadsRows(false);
                 }}
               />
+              <FilterChip
+                label="Follow-Up"
+                active={allLeadsTimeFilter === "follow_up"}
+                onClick={() => {
+                  setAllLeadsTimeFilter("follow_up");
+                  setShowAllLeadsRows(false);
+                }}
+              />
+              <FilterChip
+                label={"Today's Work"}
+                active={allLeadsTimeFilter === "today_work"}
+                onClick={() => {
+                  setAllLeadsTimeFilter("today_work");
+                  setShowAllLeadsRows(false);
+                }}
+              />
               <span className="mx-1 h-4 w-px bg-white/10" />
               <FilterChip
                 label="Focused"
@@ -2415,7 +3255,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             <LeadWhatsAppAction
                               phone={row.phone}
                               leadId={row.id}
-                              onMarkContacted={handleQuickContacted}
+                              onMarkContacted={recordWhatsAppOutreach}
                               outreachDisabled={s.doNotContact}
                             />
                             <LeadWebsiteAction website={row.website} />
@@ -2450,6 +3290,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               <IconSpark className="h-3.5 w-3.5 shrink-0" />
                               AI Message
                             </button>
+                            {!s.doNotContact &&
+                              (isFollowUpDue(s, Date.now()) ||
+                                s.status === "needs_follow_up") && (
+                                <button
+                                  type="button"
+                                  onClick={() => void startFollowUpOutreach(row)}
+                                  title="Kısa hatırlatma mesajı ve WhatsApp"
+                                  className="inline-flex h-8 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:text-xs"
+                                >
+                                  Follow Up
+                                </button>
+                              )}
                             <button
                               onClick={() => setOpenId(row.id)}
                               title="Open notes"
@@ -2501,7 +3353,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         state={aiMessageModal}
         onClose={() => setAiMessageModal(null)}
         onRetry={(l) => void startAiMessage(l)}
-        onMarkContacted={(id) => setLeadStatus(id, "contacted")}
+        onMarkContacted={recordWhatsAppOutreach}
       />
 
       {outreachQueue.open && queueCurrentLead && (
@@ -2579,6 +3431,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       queueCurrentMessage,
                     )}`;
                     openExternal(link);
+                    recordWhatsAppOutreach(queueCurrentLead.id);
                   }}
                   className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
                 >
@@ -2638,398 +3491,19 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             className="flex-1 bg-black/60 backdrop-blur-sm"
           />
           <aside className="flex h-full w-full max-w-md flex-col border-l border-white/10 bg-zinc-950 shadow-2xl">
-            <div className="flex items-start justify-between border-b border-white/10 px-5 py-4">
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-zinc-500">
-                  {openLead.type} · {openLead.city}
-                </div>
-                <div className="mt-0.5 text-base font-semibold text-zinc-50">
-                  {openLead.name}
-                </div>
-                <div className="text-xs text-zinc-400">
-                  {openLead.contactName} · {openLead.phone}
-                </div>
-                <OutreachBadgesRow
-                  row={openLead}
-                  reimported={lastImportUpdatedIds.includes(openLead.id)}
-                />
-              </div>
-              <button
-                onClick={() => setOpenId(null)}
-                className="rounded-md p-1 text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
-                aria-label="Close panel"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  className="h-5 w-5"
-                >
-                  <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
-              <div className="grid grid-cols-2 gap-3">
-                <DetailStat
-                  label="Lead Score"
-                  value={openLead.leadScore}
-                  reasons={openLead.leadReasons}
-                  tone="lead"
-                />
-                <DetailStat
-                  label="Hot Score"
-                  value={openLead.hotScore}
-                  reasons={openLead.hotReasons}
-                  tone="hot"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <KV label="Units" value={openLead.units.toString()} />
-                <KV label="ADR" value={formatTRY(openLead.pricePerNight)} />
-                <KV
-                  label="Occupancy 30d"
-                  value={`${Math.round(openLead.occupancy30d * 100)}%`}
-                />
-                <KV label="Rating" value={openLead.rating.toFixed(1)} />
-                <KV
-                  label="Reviews"
-                  value={openLead.reviewsCount.toString()}
-                />
-                <KV
-                  label="Channels"
-                  value={openLead.channels.join(", ")}
-                />
-                <KV
-                  label="Contact quality"
-                  value={CONTACT_QUALITY_LABEL[openLead.contactQuality]}
-                />
-                <KV
-                  label="First imported"
-                  value={relativeCalendarLabel(
-                    openLead.firstImportedAt ?? openLead.createdAt,
-                  )}
-                />
-                <KV
-                  label="Last imported"
-                  value={relativeCalendarLabel(openLead.lastImportedAt)}
-                />
-                <KV
-                  label="Last contacted"
-                  value={relativeCalendarLabel(
-                    openLead._s.lastContactedAt ?? openLead._s.contactedAt,
-                  )}
-                />
-                <KV
-                  label="Contact attempts"
-                  value={String(openLead._s.contactAttempts ?? 0)}
-                />
-                <KV label="Source" value="Google Maps" />
-                <KV label="City" value={openLead.city} />
-              </div>
-
-              <label className="flex cursor-pointer items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-zinc-200">
-                <input
-                  type="checkbox"
-                  className="rounded border-white/20 bg-black/40"
-                  checked={openLead._s.doNotContact}
-                  onChange={(e) =>
-                    updateLead(openLead.id, { doNotContact: e.target.checked })
-                  }
-                />
-                <span>
-                  Do not contact{" "}
-                  <span className="text-zinc-500">
-                    (disables outreach and hides from Focused / Hot)
-                  </span>
-                </span>
-              </label>
-
-              {openLead.signals.length > 0 && (
-                <div>
-                  <div className="mb-1.5 text-[11px] uppercase tracking-wider text-zinc-500">
-                    Signals
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {openLead.signals.map((s) => (
-                      <span
-                        key={s}
-                        className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-zinc-300 ring-1 ring-inset ring-white/10"
-                      >
-                        {s}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                {drawerWaLink && !openLead._s.doNotContact ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      openExternal(drawerWaLink);
-                      handleQuickContacted(openLead.id);
-                    }}
-                    title="WhatsApp ile ulaş"
-                    className="inline-flex items-center gap-2 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] transition hover:bg-[#25D366]/25"
-                  >
-                    <IconWhatsapp className="h-4 w-4" />
-                    Open WhatsApp 🚀
-                  </button>
-                ) : openLead._s.doNotContact ? (
-                  <span
-                    title="Do not contact"
-                    className="inline-flex cursor-not-allowed items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-500"
-                  >
-                    <IconWhatsapp className="h-4 w-4" />
-                    WhatsApp (blocked)
-                  </span>
-                ) : (
-                  <span
-                    title="WhatsApp bulunamadı"
-                    aria-disabled="true"
-                    className="inline-flex cursor-not-allowed items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-500"
-                  >
-                    <IconWhatsapp className="h-4 w-4" />
-                    WhatsApp
-                  </span>
-                )}
-                {openLead.instagram && (
-                  <a
-                    href={instagramLink(openLead.instagram)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 rounded-md border border-pink-400/20 bg-pink-500/10 px-3 py-1.5 text-xs font-medium text-pink-200 transition hover:bg-pink-500/20"
-                  >
-                    <IconInstagram className="h-4 w-4" />@{openLead.instagram}
-                  </a>
-                )}
-                {openLead.website && (
-                  <a
-                    href={`https://${openLead.website}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-white/10"
-                  >
-                    {openLead.website}
-                  </a>
-                )}
-                {openLead.website && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void findBestContact(openLead.id, openLead.website!)
-                    }
-                    className="inline-flex items-center gap-2 rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
-                  >
-                    Find Best Contact
-                  </button>
-                )}
-              </div>
-
-              {openLead.website && (
-                <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
-                  <div className="mb-2 text-[11px] uppercase tracking-wider text-zinc-500">
-                    Contact Finder
-                  </div>
-                  {contactFinder.phase === "idle" && (
-                    <div className="text-zinc-500">
-                      Click "Find Best Contact" to analyze homepage contact channels.
-                    </div>
-                  )}
-                  {contactFinder.phase === "loading" && (
-                    <div className="text-zinc-300">Analyzing website...</div>
-                  )}
-                  {contactFinder.phase === "error" && (
-                    <div className="text-rose-300">{contactFinder.error}</div>
-                  )}
-                  {contactFinder.phase === "ready" && (
-                    <div className="space-y-1.5 text-zinc-300">
-                      <div>
-                        <span className="text-zinc-500">Best Contact:</span>{" "}
-                        <span
-                          className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
-                            contactFinder.result.bestContactType === "VERIFIED_WHATSAPP" ||
-                            contactFinder.result.bestContactType === "whatsapp"
-                              ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-500/30"
-                              : contactFinder.result.bestContactType ===
-                                    "GENERATED_WHATSAPP"
-                                ? "bg-sky-500/15 text-sky-300 ring-1 ring-inset ring-sky-500/30"
-                                : contactFinder.result.bestContactType === "PHONE_ONLY" ||
-                                    contactFinder.result.bestContactType === "mobile" ||
-                                    contactFinder.result.bestContactType === "phone"
-                                  ? "bg-zinc-500/15 text-zinc-300 ring-1 ring-inset ring-zinc-500/30"
-                                  : "text-zinc-100"
-                          }`}
-                        >
-                          {contactFinder.result.bestContactType === "VERIFIED_WHATSAPP" ||
-                          contactFinder.result.bestContactType === "whatsapp"
-                            ? "Verified WhatsApp"
-                            : contactFinder.result.bestContactType ===
-                                  "GENERATED_WHATSAPP"
-                              ? "WhatsApp Available"
-                              : contactFinder.result.bestContactType === "PHONE_ONLY" ||
-                                  contactFinder.result.bestContactType === "mobile" ||
-                                  contactFinder.result.bestContactType === "phone"
-                                ? "Phone Only"
-                                : contactFinder.result.bestContactType.toUpperCase()}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Value:</span>{" "}
-                        <span className="font-medium text-zinc-100">
-                          {contactFinder.result.bestContactValue}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Confidence:</span>{" "}
-                        <span className="font-medium text-zinc-100">
-                          {contactFinder.result.confidence}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Source:</span>{" "}
-                        {contactFinder.result.source}
-                      </div>
-                      <div>
-                        <span className="text-zinc-500">Reason:</span>{" "}
-                        {contactFinder.result.reason}
-                      </div>
-                      {(() => {
-                        const type = contactFinder.result.bestContactType;
-                        const isVerified = type === "VERIFIED_WHATSAPP" || type === "whatsapp";
-                        const generatedFromPhone = whatsappLink(
-                          contactFinder.result.bestContactValue,
-                        );
-                        const waLink = isVerified
-                          ? contactFinder.result.bestContactValue
-                          : generatedFromPhone;
-                        const numberToCopy =
-                          contactFinder.result.foundPhones[0] ||
-                          openLead.phone ||
-                          contactFinder.result.bestContactValue;
-                        return (
-                          <div className="flex flex-wrap items-center gap-2 pt-1">
-                            {waLink ? (
-                              <button
-                                type="button"
-                                onClick={() => openExternal(waLink)}
-                                className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-2.5 py-1 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
-                              >
-                                Open WhatsApp 🚀
-                              </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void navigator.clipboard.writeText(numberToCopy);
-                              }}
-                              className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-medium text-zinc-200 hover:bg-white/10"
-                            >
-                              Copy Number
-                            </button>
-                          </div>
-                        );
-                      })()}
-                      {contactFinder.result.bestContactType === "website" &&
-                        openLead.phone && (
-                          <div>
-                            <span className="text-zinc-500">Source:</span>{" "}
-                            Google Places phone ({openLead.phone})
-                          </div>
-                        )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">
-                    Status
-                  </div>
-                  {openLead._s.updatedAt && (
-                    <div className="text-[10px] text-zinc-600">
-                      Updated{" "}
-                      {new Date(openLead._s.updatedAt).toLocaleString("en-GB")}
-                    </div>
-                  )}
-                </div>
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {(["contacted", "replied", "meeting", "won"] as LeadStatus[]).map((s) => {
-                    const active = openLead._s.status === s;
-                    return (
-                      <button
-                        key={`manual-${s}`}
-                        onClick={() => setLeadStatus(openLead.id, s)}
-                        className={`rounded-md px-2.5 py-1 text-xs ring-1 ring-inset transition ${
-                          active
-                            ? "bg-indigo-500/20 text-indigo-200 ring-indigo-400/40"
-                            : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
-                        }`}
-                      >
-                        {STATUS_LABEL[s]}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {STATUS_ORDER.map((s) => {
-                    const active = openLead._s.status === s;
-                    return (
-                      <button
-                        key={s}
-                        onClick={() => setLeadStatus(openLead.id, s)}
-                        className={`rounded-md px-2.5 py-1 text-xs ring-1 ring-inset transition ${
-                          active
-                            ? "bg-indigo-500/20 text-indigo-200 ring-indigo-400/40"
-                            : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
-                        }`}
-                      >
-                        {STATUS_LABEL[s]}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">
-                    Notes
-                  </div>
-                  <div className="text-[10px] text-zinc-600">
-                    {draftNote.length} chars
-                  </div>
-                </div>
-                <textarea
-                  value={draftNote}
-                  onChange={(e) => setDraftNote(e.target.value)}
-                  placeholder="Owner picks up calls in the afternoon. Interested in direct booking site. Follow up Tuesday."
-                  rows={6}
-                  className="w-full resize-none rounded-md border border-white/10 bg-black/30 p-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                />
-                <div className="mt-2 flex items-center justify-end gap-2">
-                  <button
-                    onClick={() => setDraftNote(openLead._s.note ?? "")}
-                    className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
-                  >
-                    Reset
-                  </button>
-                  <button
-                    onClick={() =>
-                      updateLead(openLead.id, { note: draftNote })
-                    }
-                    className="rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400"
-                  >
-                    Save note
-                  </button>
-                </div>
-              </div>
-            </div>
+            <LeadDetailPanel
+              selectedLead={openLead}
+              onClose={() => setOpenId(null)}
+              finderPersisted={contactFinderMap[openLead.id]}
+              contactFinderRequest={contactFinderRequest}
+              draftNote={draftNote}
+              setDraftNote={setDraftNote}
+              updateLead={updateLead}
+              setLeadStatus={setLeadStatus}
+              findBestContact={findBestContact}
+              onSendMessage={() => void drawerSendMessage(openLead)}
+              sendMessageBusy={drawerSendBusy}
+            />
           </aside>
         </div>
       )}
@@ -3101,14 +3575,21 @@ function DetailStat({
       </div>
       {reasons.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
-          {reasons.map((r) => (
-            <span
-              key={r}
-              className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300 ring-1 ring-inset ring-white/10"
-            >
-              {r}
-            </span>
-          ))}
+          {(() => {
+            const nodes: ReactNode[] = [];
+            for (let i = 0; i < reasons.length; i++) {
+              const r = reasons[i];
+              nodes.push(
+                <span
+                  key={`${r}-${i}`}
+                  className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300 ring-1 ring-inset ring-white/10"
+                >
+                  {r}
+                </span>,
+              );
+            }
+            return nodes;
+          })()}
         </div>
       )}
     </div>

@@ -8,6 +8,7 @@ export type LeadType =
 export type LeadStatus =
   | "new"
   | "contacted"
+  | "needs_follow_up"
   | "replied"
   | "meeting"
   | "won"
@@ -28,6 +29,8 @@ export type Lead = {
   contactAttempts?: number;
   /** Import batch session id (last touch). */
   importSessionId?: string | null;
+  /** Optional mirror; persisted workflow flag lives in {@link LeadStatusUpdate.doNotContact}. */
+  doNotContact?: boolean;
   name: string;
   type: LeadType;
   city: string;
@@ -59,8 +62,10 @@ export type ScoredLead = Lead & {
   contactQuality: ContactQuality;
 };
 
+/** Persisted workflow state for one lead — scalars only (current snapshot, not history). */
 export type LeadStatusUpdate = {
   status: LeadStatus;
+  /** Single note text; UI and storage must not treat as a list. */
   note: string;
   updatedAt: number | null;
   contactedAt?: number | null;
@@ -69,6 +74,14 @@ export type LeadStatusUpdate = {
   doNotContact?: boolean;
   contactAttempts?: number;
   lastContactedAt?: number | null;
+  /** Epoch ms when a follow-up is due (set on outbound WhatsApp / contacted). */
+  nextFollowUpAt?: number | null;
+  /** Hours after last contact before auto “needs follow-up” (default 24 in UI). */
+  followUpAfterHours?: number;
+  repliedAt?: number | null;
+  meetingAt?: number | null;
+  wonAt?: number | null;
+  lostAt?: number | null;
 };
 
 const turkishPhone = (n: number) => {
@@ -881,6 +894,7 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
 export const STATUS_LABEL: Record<LeadStatus, string> = {
   new: "New",
   contacted: "Contacted",
+  needs_follow_up: "Follow-Up",
   replied: "Replied",
   meeting: "Meeting",
   won: "Won",
@@ -890,6 +904,7 @@ export const STATUS_LABEL: Record<LeadStatus, string> = {
 export const STATUS_ORDER: LeadStatus[] = [
   "new",
   "contacted",
+  "needs_follow_up",
   "replied",
   "meeting",
   "won",
