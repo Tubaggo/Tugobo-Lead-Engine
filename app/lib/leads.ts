@@ -18,6 +18,16 @@ export type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
 export type Lead = {
   id: string;
   createdAt?: number;
+  /** First time this business was added to the master database (import). */
+  firstImportedAt?: number;
+  /** Most recent import that touched this lead. */
+  lastImportedAt?: number;
+  /** Last outreach marked as contacted (mirrors workflow state). */
+  lastContactedAt?: number;
+  /** Number of times outreach was marked contacted. */
+  contactAttempts?: number;
+  /** Import batch session id (last touch). */
+  importSessionId?: string | null;
   name: string;
   type: LeadType;
   city: string;
@@ -55,6 +65,10 @@ export type LeadStatusUpdate = {
   updatedAt: number | null;
   contactedAt?: number | null;
   channel?: "whatsapp" | "phone" | "instagram" | "email" | null;
+  /** Persisted DNC flag (also mirrored on stored ScoredLead for imports). */
+  doNotContact?: boolean;
+  contactAttempts?: number;
+  lastContactedAt?: number | null;
 };
 
 const turkishPhone = (n: number) => {
