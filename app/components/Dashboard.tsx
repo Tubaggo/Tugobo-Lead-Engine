@@ -9,7 +9,9 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
+  type Channel,
   type ContactQuality,
   type Lead,
   type LeadStatus,
@@ -42,6 +44,9 @@ const LAST_IMPORT_KEY = "tugobo-lead-engine:last-import-v1";
 const IMPORT_CACHE_KEY = "tugobo-lead-engine:import-cache-v1";
 const CONTACT_FINDER_MAP_KEY = "tugobo-lead-engine:contact-finder-map-v1";
 const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
+const DAILY_OUTREACH_STORAGE_KEY = "tugobo-lead-engine:daily-outreach-v1";
+/** Max leads staged for today's outreach queue (local calendar day). */
+const DAILY_OUTREACH_LIMIT = 20;
 const LEGACY_CREATED_AT_TS = Date.UTC(2024, 0, 1, 0, 0, 0, 0);
 
 type LastImportPayload = {
@@ -124,6 +129,12 @@ type ContactFinderRequestState =
   | { status: "loading"; leadId: string }
   | { status: "error"; leadId: string; message: string };
 
+type OutreachQueueSessionStats = {
+  sent: number;
+  skipped: number;
+  dnc: number;
+};
+
 type OutreachQueueState = {
   open: boolean;
   leadIds: string[];
@@ -132,6 +143,17 @@ type OutreachQueueState = {
   loading: boolean;
   error: string | null;
   followUpById: Record<string, boolean>;
+  /** Session finished (no more leads in this run). */
+  complete: boolean;
+  sessionStats: OutreachQueueSessionStats;
+};
+
+type DailyOutreachPersisted = {
+  queueDate: string;
+  todayQueue: string[];
+  completedToday: number;
+  skippedToday: number;
+  dncToday: number;
 };
 
 type AllLeadsTimeFilter =
@@ -457,10 +479,134 @@ function isContactFinderResult(v: unknown): v is ContactFinderResult {
   );
 }
 
+/** Flatten nested JSON arrays and drop duplicate strings (order preserved). */
+function normalizeStringList(value: unknown): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") {
+      const t = v.trim();
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      out.push(t);
+      return;
+    }
+    if (!Array.isArray(v)) return;
+    for (const x of v) walk(x);
+  };
+  walk(value);
+  return out;
+}
+
+const ALL_CHANNELS: readonly Channel[] = [
+  "Booking",
+  "Airbnb",
+  "Direct",
+  "Tatilsepeti",
+];
+
+function normalizeChannelList(value: unknown): Channel[] {
+  const out: Channel[] = [];
+  const seen = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") {
+      const t = v.trim();
+      if (!t || seen.has(t)) return;
+      if ((ALL_CHANNELS as readonly string[]).includes(t)) {
+        seen.add(t);
+        out.push(t as Channel);
+      }
+      return;
+    }
+    if (!Array.isArray(v)) return;
+    for (const x of v) walk(x);
+  };
+  walk(value);
+  return out;
+}
+
+function firstFiniteNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) {
+    for (const x of value) {
+      const n = firstFiniteNumber(x, NaN);
+      if (Number.isFinite(n)) return n;
+    }
+    return fallback;
+  }
+  if (typeof value === "string") {
+    const p = Number.parseFloat(value);
+    return Number.isFinite(p) ? p : fallback;
+  }
+  return fallback;
+}
+
+/** Corrupt storage sometimes stores a scalar field as an array of copies. */
+function coerceTextField(value: unknown, fallback: string): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (const x of value) {
+      if (typeof x === "string" && x.trim()) return x;
+    }
+    return fallback;
+  }
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
+function coerceBool(b: unknown, fallback: boolean): boolean {
+  if (typeof b === "boolean") return b;
+  if (Array.isArray(b) && b.length > 0) return coerceBool(b[0], fallback);
+  return fallback;
+}
+
+/** Repair persisted / merged leads so list fields cannot balloon the detail drawer. */
+function sanitizeScoredLeadForUi(lead: ScoredLead): ScoredLead {
+  return {
+    ...lead,
+    name: coerceTextField(lead.name, ""),
+    type: lead.type,
+    city: coerceTextField(lead.city, ""),
+    region: coerceTextField(lead.region, ""),
+    contactName: coerceTextField(lead.contactName, ""),
+    phone: coerceTextField(lead.phone, ""),
+    instagram: lead.instagram
+      ? coerceTextField(lead.instagram, "")
+      : lead.instagram,
+    website: lead.website ? coerceTextField(lead.website, "") : lead.website,
+    units: Math.max(0, Math.round(firstFiniteNumber(lead.units, 0))),
+    pricePerNight: Math.max(0, firstFiniteNumber(lead.pricePerNight, 0)),
+    occupancy30d: Math.min(1, Math.max(0, firstFiniteNumber(lead.occupancy30d, 0))),
+    rating: firstFiniteNumber(lead.rating, 0),
+    reviewsCount: Math.max(0, Math.round(firstFiniteNumber(lead.reviewsCount, 0))),
+    daysSinceLastReview: Math.max(0, Math.round(firstFiniteNumber(lead.daysSinceLastReview, 0))),
+    daysOnPlatform: Math.max(0, Math.round(firstFiniteNumber(lead.daysOnPlatform, 0))),
+    leadScore: Math.round(firstFiniteNumber(lead.leadScore, 0)),
+    hotScore: Math.round(firstFiniteNumber(lead.hotScore, 0)),
+    hasOwnWebsite: coerceBool(lead.hasOwnWebsite, false),
+    hasInstagram: coerceBool(lead.hasInstagram, false),
+    signals: normalizeStringList(lead.signals),
+    leadReasons: normalizeStringList(lead.leadReasons),
+    hotReasons: normalizeStringList(lead.hotReasons),
+    channels: normalizeChannelList(lead.channels),
+  };
+}
+
+function sanitizeContactFinderResult(r: ContactFinderResult): ContactFinderResult {
+  return {
+    ...r,
+    foundPhones: normalizeStringList(r.foundPhones),
+    foundEmails: normalizeStringList(r.foundEmails),
+    foundInstagram: normalizeStringList(r.foundInstagram),
+    foundWhatsapp: normalizeStringList(r.foundWhatsapp),
+  };
+}
+
 /** One current result per lead; if stored as array, keep only the latest entry. */
 function normalizeContactFinderMapEntry(val: unknown): ContactFinderResult | null {
   const single = Array.isArray(val) ? val[val.length - 1] : val;
-  return isContactFinderResult(single) ? single : null;
+  if (!isContactFinderResult(single)) return null;
+  return sanitizeContactFinderResult(single);
 }
 
 function loadContactFinderMap(): Record<string, ContactFinderResult> {
@@ -788,6 +934,149 @@ function isSameLocalCalendarDay(a: number, b: number) {
   return calendarDayStart(a) === calendarDayStart(b);
 }
 
+function localCalendarDayKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function emptyOutreachQueueState(): OutreachQueueState {
+  return {
+    open: false,
+    leadIds: [],
+    index: 0,
+    messages: {},
+    loading: false,
+    error: null,
+    followUpById: {},
+    complete: false,
+    sessionStats: { sent: 0, skipped: 0, dnc: 0 },
+  };
+}
+
+function loadDailyOutreachState(): DailyOutreachPersisted {
+  if (typeof window === "undefined") {
+    return {
+      queueDate: "",
+      todayQueue: [],
+      completedToday: 0,
+      skippedToday: 0,
+      dncToday: 0,
+    };
+  }
+  const today = localCalendarDayKey();
+  try {
+    const raw = window.localStorage.getItem(DAILY_OUTREACH_STORAGE_KEY);
+    if (!raw) {
+      return {
+        queueDate: today,
+        todayQueue: [],
+        completedToday: 0,
+        skippedToday: 0,
+        dncToday: 0,
+      };
+    }
+    const p = JSON.parse(raw) as Partial<DailyOutreachPersisted>;
+    if (p.queueDate !== today) {
+      const fresh: DailyOutreachPersisted = {
+        queueDate: today,
+        todayQueue: [],
+        completedToday: 0,
+        skippedToday: 0,
+        dncToday: 0,
+      };
+      window.localStorage.setItem(DAILY_OUTREACH_STORAGE_KEY, JSON.stringify(fresh));
+      return fresh;
+    }
+    return {
+      queueDate: today,
+      todayQueue: Array.isArray(p.todayQueue)
+        ? p.todayQueue.filter((id) => typeof id === "string")
+        : [],
+      completedToday:
+        typeof p.completedToday === "number" && Number.isFinite(p.completedToday)
+          ? Math.max(0, Math.floor(p.completedToday))
+          : 0,
+      skippedToday:
+        typeof p.skippedToday === "number" && Number.isFinite(p.skippedToday)
+          ? Math.max(0, Math.floor(p.skippedToday))
+          : 0,
+      dncToday:
+        typeof p.dncToday === "number" && Number.isFinite(p.dncToday)
+          ? Math.max(0, Math.floor(p.dncToday))
+          : 0,
+    };
+  } catch {
+    return {
+      queueDate: today,
+      todayQueue: [],
+      completedToday: 0,
+      skippedToday: 0,
+      dncToday: 0,
+    };
+  }
+}
+
+function saveDailyOutreachState(next: DailyOutreachPersisted) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DAILY_OUTREACH_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
+
+function wasContactedToday(s: LeadStatusUpdate, now: number): boolean {
+  const ts =
+    typeof s.lastContactedAt === "number" && s.lastContactedAt > 0
+      ? s.lastContactedAt
+      : typeof s.contactedAt === "number" && s.contactedAt > 0
+        ? s.contactedAt
+        : null;
+  if (ts === null) return false;
+  return isSameLocalCalendarDay(ts, now);
+}
+
+function queueLeadHasOutreachPath(
+  lead: ScoredLead,
+  finder: ContactFinderResult | undefined,
+): boolean {
+  return classifyContactChannel(lead, finder) !== "none";
+}
+
+function isEligibleForDailyQueue(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  todayQueue: string[],
+  now: number,
+): boolean {
+  if (row._s.doNotContact) return false;
+  if (row._s.status !== "new") return false;
+  if (!queueLeadHasOutreachPath(row, finder)) return false;
+  if (wasContactedToday(row._s, now)) return false;
+  if (todayQueue.includes(row.id)) return false;
+  return true;
+}
+
+/** WhatsApp digits for wa.me (Places phone or finder WhatsApp). */
+function queueSessionWhatsAppDigits(
+  lead: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+): string | null {
+  const t = finder?.bestContactType;
+  if (
+    finder &&
+    (t === "VERIFIED_WHATSAPP" ||
+      t === "GENERATED_WHATSAPP" ||
+      t === "whatsapp")
+  ) {
+    const fromFinder = normalizePhoneForWhatsApp(finder.bestContactValue);
+    if (fromFinder) return fromFinder;
+  }
+  return normalizePhoneForWhatsApp(lead.phone);
+}
+
 function relativeCalendarLabel(ts?: number | null) {
   if (!ts || !Number.isFinite(ts) || ts <= 0) return "-";
   const now = Date.now();
@@ -1073,6 +1362,14 @@ type AiMessageModalState =
   | { lead: ScoredLead; phase: "loading" }
   | { lead: ScoredLead; phase: "ready"; message: string }
   | { lead: ScoredLead; phase: "error"; error: string };
+
+type ReplyHelperSuggestion = {
+  message: string;
+  suggestedStatus: LeadStatus | null;
+  suggestDoNotContact: boolean;
+  nextFollowUpAt: number | null;
+  intent: string;
+};
 
 function AiMessageModal({
   state,
@@ -1722,6 +2019,99 @@ function LeadDetailWorkflowSection({
   );
 }
 
+function LeadDetailReplyHelperSection({
+  lead,
+  ownerReplyDraft,
+  onOwnerReplyChange,
+  onGenerate,
+  generateBusy,
+  generateError,
+  suggestion,
+  copied,
+  onCopyReply,
+  onApplySuggestion,
+}: {
+  lead: LeadTableRow;
+  ownerReplyDraft: string;
+  onOwnerReplyChange: (v: string) => void;
+  onGenerate: () => void;
+  generateBusy: boolean;
+  generateError: string | null;
+  suggestion: ReplyHelperSuggestion | null;
+  copied: boolean;
+  onCopyReply: () => void;
+  onApplySuggestion: () => void;
+}) {
+  const waLink =
+    suggestion && suggestion.message.trim()
+      ? whatsappLinkWithText(lead.phone, suggestion.message)
+      : null;
+  const suggestedLabel = suggestion?.suggestDoNotContact
+    ? "Lost + Do Not Contact"
+    : suggestion?.suggestedStatus
+      ? STATUS_LABEL[suggestion.suggestedStatus]
+      : "No status suggestion";
+
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
+      <div className="mb-2 text-[10px] uppercase tracking-wider text-zinc-500">Reply Helper</div>
+      <textarea
+        value={ownerReplyDraft}
+        onChange={(e) => onOwnerReplyChange(e.target.value)}
+        placeholder="Owner reply buraya..."
+        rows={3}
+        className="w-full resize-none rounded-md border border-white/10 bg-black/30 p-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+      />
+      <button
+        type="button"
+        disabled={generateBusy || ownerReplyDraft.trim().length === 0}
+        onClick={onGenerate}
+        className="mt-2 w-full rounded-md bg-indigo-500 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {generateBusy ? "Generating…" : "Generate Reply"}
+      </button>
+      {generateError && <p className="mt-2 text-rose-300">{generateError}</p>}
+      {suggestion && (
+        <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-2.5">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">Suggested Reply</div>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-100">{suggestion.message}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onCopyReply}
+              className="rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-xs text-zinc-200 hover:bg-white/10"
+            >
+              {copied ? "Copied" : "Copy Reply"}
+            </button>
+            {waLink ? (
+              <button
+                type="button"
+                onClick={() => openExternal(waLink)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-2.5 py-1 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
+              >
+                <IconWhatsapp className="h-3.5 w-3.5" />
+                Send via WhatsApp
+              </button>
+            ) : null}
+            {(suggestion.suggestedStatus || suggestion.suggestDoNotContact) && (
+              <button
+                type="button"
+                onClick={onApplySuggestion}
+                className="rounded-md border border-indigo-400/35 bg-indigo-500/15 px-2.5 py-1 text-xs text-indigo-200 hover:bg-indigo-500/25"
+              >
+                Apply Suggested Status
+              </button>
+            )}
+          </div>
+          <div className="mt-2 inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-zinc-300">
+            Suggested next status: {suggestedLabel}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LeadDetailNotesSection({
   lead,
   draftNote,
@@ -1778,6 +2168,15 @@ function LeadDetailPanel({
   findBestContact,
   onSendMessage,
   sendMessageBusy,
+  ownerReplyDraft,
+  setOwnerReplyDraft,
+  onGenerateReplyHelper,
+  replyHelperBusy,
+  replyHelperError,
+  replyHelperSuggestion,
+  replyCopied,
+  onCopyReplyHelper,
+  onApplyReplyHelperSuggestion,
 }: {
   selectedLead: LeadTableRow;
   onClose: () => void;
@@ -1790,11 +2189,20 @@ function LeadDetailPanel({
   findBestContact: (leadId: string, website: string) => Promise<void>;
   onSendMessage: () => void;
   sendMessageBusy: boolean;
+  ownerReplyDraft: string;
+  setOwnerReplyDraft: (v: string) => void;
+  onGenerateReplyHelper: () => void;
+  replyHelperBusy: boolean;
+  replyHelperError: string | null;
+  replyHelperSuggestion: ReplyHelperSuggestion | null;
+  replyCopied: boolean;
+  onCopyReplyHelper: () => void;
+  onApplyReplyHelperSuggestion: () => void;
 }) {
   return (
-    <>
+    <div className="flex min-h-0 flex-1 flex-col">
       <LeadDetailHeader lead={selectedLead} onClose={onClose} />
-      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
         <LeadDetailScoreSummary lead={selectedLead} />
         <LeadDetailMetrics lead={selectedLead} />
         <LeadDetailContactSection
@@ -1810,6 +2218,18 @@ function LeadDetailPanel({
           onSendMessage={onSendMessage}
           sendMessageBusy={sendMessageBusy}
         />
+        <LeadDetailReplyHelperSection
+          lead={selectedLead}
+          ownerReplyDraft={ownerReplyDraft}
+          onOwnerReplyChange={setOwnerReplyDraft}
+          onGenerate={onGenerateReplyHelper}
+          generateBusy={replyHelperBusy}
+          generateError={replyHelperError}
+          suggestion={replyHelperSuggestion}
+          copied={replyCopied}
+          onCopyReply={onCopyReplyHelper}
+          onApplySuggestion={onApplyReplyHelperSuggestion}
+        />
         <LeadDetailNotesSection
           lead={selectedLead}
           draftNote={draftNote}
@@ -1817,7 +2237,7 @@ function LeadDetailPanel({
           updateLead={updateLead}
         />
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1838,6 +2258,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [drawerSendBusy, setDrawerSendBusy] = useState(false);
   const [draftNote, setDraftNote] = useState("");
+  const [ownerReplyDraft, setOwnerReplyDraft] = useState("");
+  const [replyHelperBusy, setReplyHelperBusy] = useState(false);
+  const [replyHelperError, setReplyHelperError] = useState<string | null>(null);
+  const [replyHelperSuggestion, setReplyHelperSuggestion] =
+    useState<ReplyHelperSuggestion | null>(null);
+  const [replyCopied, setReplyCopied] = useState(false);
   const [recentlyImportedLeadIds, setRecentlyImportedLeadIds] = useState<string[]>([]);
   const [latestImportLeads, setLatestImportLeads] = useState<ScoredLead[]>([]);
   const [lastImportNewIds, setLastImportNewIds] = useState<string[]>([]);
@@ -1853,15 +2279,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
-  const [outreachQueue, setOutreachQueue] = useState<OutreachQueueState>({
-    open: false,
-    leadIds: [],
-    index: 0,
-    messages: {},
-    loading: false,
-    error: null,
-    followUpById: {},
-  });
+  const [dailyOutreach, setDailyOutreach] = useState<DailyOutreachPersisted>(() =>
+    typeof window === "undefined"
+      ? {
+          queueDate: "",
+          todayQueue: [],
+          completedToday: 0,
+          skippedToday: 0,
+          dncToday: 0,
+        }
+      : loadDailyOutreachState(),
+  );
+  const [queueActionNotice, setQueueActionNotice] = useState<string | null>(null);
+  const [outreachQueue, setOutreachQueue] = useState<OutreachQueueState>(() =>
+    emptyOutreachQueueState(),
+  );
   const [contactFinderRequest, setContactFinderRequest] =
     useState<ContactFinderRequestState>({ status: "idle" });
   const [contactFinderMap, setContactFinderMap] = useState<
@@ -1878,6 +2310,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     setLastImportNewIds(lip.newIds);
     setLastImportUpdatedIds(lip.updatedIds);
     setContactFinderMap(loadContactFinderMap());
+    setDailyOutreach(loadDailyOutreachState());
     const meta = loadImportMeta();
     setHasImportRun(
       meta.hasRun ||
@@ -1991,7 +2424,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
     return base.map(
       (l): LeadTableRow => ({
-        ...l,
+        ...sanitizeScoredLeadForUi(l),
         createdAt: l.createdAt ?? LEGACY_CREATED_AT_TS,
         _s: getLeadState(l.id),
         contactQuality: getContactQuality(l.phone),
@@ -2170,9 +2603,37 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const openLead = openId ? allRowsById.get(openId) ?? null : null;
 
+  const lastLoggedDrawerLeadId = useRef<string | null>(null);
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (!openId) {
+      lastLoggedDrawerLeadId.current = null;
+      return;
+    }
+    if (lastLoggedDrawerLeadId.current === openId) return;
+    lastLoggedDrawerLeadId.current = openId;
+    const row = allRowsById.get(openId);
+    if (!row) return;
+    // One log per drawer open: confirms single object + list shapes (guards against corrupt storage).
+    console.info("[LeadDetailPanel] openLead inspection", {
+      openId,
+      topLevelIsArray: Array.isArray(row),
+      id: row.id,
+      signals: row.signals,
+      leadReasons: row.leadReasons,
+      hotReasons: row.hotReasons,
+      channels: row.channels,
+    });
+  }, [openId, allRowsById]);
+
   useLayoutEffect(() => {
     if (!openLead) return;
     setDraftNote(openLead._s.note ?? "");
+    setOwnerReplyDraft("");
+    setReplyHelperBusy(false);
+    setReplyHelperError(null);
+    setReplyHelperSuggestion(null);
+    setReplyCopied(false);
     setContactFinderRequest((prev) => {
       if (prev.status === "loading" && prev.leadId !== openLead.id) {
         return { status: "idle" };
@@ -2330,6 +2791,79 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return message;
   };
 
+  const generateReplyHelperSuggestion = async (lead: LeadTableRow) => {
+    const reply = ownerReplyDraft.trim();
+    if (!reply) {
+      setReplyHelperError("Owner reply gerekli.");
+      return;
+    }
+    setReplyHelperBusy(true);
+    setReplyHelperError(null);
+    setReplyCopied(false);
+    try {
+      const res = await fetch("/api/generate-reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerReply: reply,
+          city: lead.city,
+        }),
+      });
+      const data = (await res.json()) as ReplyHelperSuggestion & { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || `Sunucu hatası (${res.status})`);
+      }
+      if (!data.message?.trim()) {
+        throw new Error("Boş yanıt döndü");
+      }
+      setReplyHelperSuggestion({
+        message: data.message,
+        suggestedStatus: data.suggestedStatus ?? null,
+        suggestDoNotContact: Boolean(data.suggestDoNotContact),
+        nextFollowUpAt:
+          typeof data.nextFollowUpAt === "number" ? data.nextFollowUpAt : null,
+        intent: data.intent || "unknown",
+      });
+    } catch (e) {
+      setReplyHelperSuggestion(null);
+      setReplyHelperError(e instanceof Error ? e.message : "Bir hata oluştu");
+    } finally {
+      setReplyHelperBusy(false);
+    }
+  };
+
+  const copyReplyHelperSuggestion = async () => {
+    if (!replyHelperSuggestion?.message) return;
+    try {
+      await navigator.clipboard.writeText(replyHelperSuggestion.message);
+      setReplyCopied(true);
+      window.setTimeout(() => setReplyCopied(false), 2000);
+    } catch {
+      setReplyCopied(false);
+    }
+  };
+
+  const applyReplyHelperSuggestion = (lead: LeadTableRow) => {
+    const suggestion = replyHelperSuggestion;
+    if (!suggestion) return;
+
+    if (suggestion.suggestDoNotContact) {
+      setLeadStatus(lead.id, "lost");
+      updateLead(lead.id, { doNotContact: true, nextFollowUpAt: null });
+      return;
+    }
+
+    if (suggestion.suggestedStatus) {
+      setLeadStatus(lead.id, suggestion.suggestedStatus);
+    }
+    if (typeof suggestion.nextFollowUpAt === "number") {
+      updateLead(lead.id, {
+        status: "needs_follow_up",
+        nextFollowUpAt: suggestion.nextFollowUpAt,
+      });
+    }
+  };
+
   const startAiMessage = async (lead: ScoredLead) => {
     const st = getLeadState(lead.id);
     if (st.doNotContact) {
@@ -2443,8 +2977,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       if (!res.ok) {
         throw new Error(data.error || `Contact finder failed (${res.status})`);
       }
+      if (!isContactFinderResult(data)) {
+        throw new Error("Invalid contact finder response");
+      }
+      const cleaned = sanitizeContactFinderResult(data);
       setContactFinderMap((prev) => {
-        const next = { ...prev, [leadId]: data };
+        const next = { ...prev, [leadId]: cleaned };
         saveContactFinderMap(next);
         return next;
       });
@@ -2498,6 +3036,108 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
   };
 
+  const showQueueNotice = (msg: string) => {
+    setQueueActionNotice(msg);
+    window.setTimeout(() => setQueueActionNotice(null), 6500);
+  };
+
+  const addLeadIdsToDailyQueue = (ids: string[]) => {
+    const now = Date.now();
+    const day = localCalendarDayKey();
+    setDailyOutreach((prev) => {
+      const base =
+        prev.queueDate === day
+          ? prev
+          : {
+              queueDate: day,
+              todayQueue: [],
+              completedToday: 0,
+              skippedToday: 0,
+              dncToday: 0,
+            };
+      if (base.todayQueue.length >= DAILY_OUTREACH_LIMIT) {
+        window.setTimeout(
+          () =>
+            showQueueNotice(
+              `Daily queue is full (${DAILY_OUTREACH_LIMIT}/${DAILY_OUTREACH_LIMIT}).`,
+            ),
+          0,
+        );
+        return base;
+      }
+      const nextQ = [...base.todayQueue];
+      let added = 0;
+      for (const id of ids) {
+        if (nextQ.length >= DAILY_OUTREACH_LIMIT) break;
+        if (nextQ.includes(id)) continue;
+        const row = allRowsById.get(id);
+        if (!row) continue;
+        if (!isEligibleForDailyQueue(row, contactFinderMap[id], nextQ, now)) continue;
+        nextQ.push(id);
+        added++;
+      }
+      const next: DailyOutreachPersisted = {
+        ...base,
+        queueDate: day,
+        todayQueue: nextQ,
+      };
+      saveDailyOutreachState(next);
+      if (added === 0 && ids.length > 0) {
+        window.setTimeout(
+          () =>
+            showQueueNotice(
+              "No eligible leads added (status New, contact path available, not contacted today, not in queue).",
+            ),
+          0,
+        );
+      } else if (ids.length > added && nextQ.length >= DAILY_OUTREACH_LIMIT) {
+        window.setTimeout(
+          () =>
+            showQueueNotice(
+              `Added ${added} lead(s); daily limit is ${DAILY_OUTREACH_LIMIT}.`,
+            ),
+          0,
+        );
+      }
+      return next;
+    });
+  };
+
+  const clearDailyQueue = () => {
+    const day = localCalendarDayKey();
+    setDailyOutreach((prev) => {
+      const next: DailyOutreachPersisted = {
+        ...prev,
+        queueDate: day,
+        todayQueue: [],
+      };
+      saveDailyOutreachState(next);
+      return next;
+    });
+  };
+
+  const startDailyOutreachSession = () => {
+    if (dailyOutreach.todayQueue.length === 0) {
+      showQueueNotice("Add leads to the queue first.");
+      return;
+    }
+    const followUpById: Record<string, boolean> = {};
+    for (const id of dailyOutreach.todayQueue) {
+      followUpById[id] = getLeadState(id).status === "needs_follow_up";
+    }
+    setOutreachQueue({
+      open: true,
+      leadIds: [...dailyOutreach.todayQueue],
+      index: 0,
+      messages: {},
+      loading: false,
+      error: null,
+      followUpById,
+      complete: false,
+      sessionStats: { sent: 0, skipped: 0, dnc: 0 },
+    });
+  };
+
   const sendBulkAiMessages = async () => {
     if (selectedLeadIds.length === 0) return;
     const queueLeadIds = selectedLeadIds
@@ -2508,36 +3148,42 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         return st === "new" || st === "needs_follow_up";
       });
     if (queueLeadIds.length === 0) return;
+    const capped = queueLeadIds.slice(0, DAILY_OUTREACH_LIMIT);
+    if (queueLeadIds.length > DAILY_OUTREACH_LIMIT) {
+      showQueueNotice(
+        `Only the first ${DAILY_OUTREACH_LIMIT} selected leads start (daily outreach cap).`,
+      );
+    }
     const followUpById: Record<string, boolean> = {};
-    for (const id of queueLeadIds) {
+    for (const id of capped) {
       followUpById[id] = getLeadState(id).status === "needs_follow_up";
     }
     setOutreachQueue({
       open: true,
-      leadIds: queueLeadIds,
+      leadIds: capped,
       index: 0,
       messages: {},
       loading: false,
       error: null,
       followUpById,
+      complete: false,
+      sessionStats: { sent: 0, skipped: 0, dnc: 0 },
     });
   };
 
   const queueCurrentId = outreachQueue.leadIds[outreachQueue.index] ?? null;
   const queueCurrentLead = queueCurrentId ? allRowsById.get(queueCurrentId) ?? null : null;
   const queueCurrentFinder = queueCurrentId ? contactFinderMap[queueCurrentId] : undefined;
-  const queueCurrentType = queueCurrentFinder?.bestContactType;
-  const queueHasValidWhatsApp =
-    queueCurrentType === "VERIFIED_WHATSAPP" || queueCurrentType === "GENERATED_WHATSAPP";
-  const queueCurrentPhone = queueHasValidWhatsApp
-    ? normalizePhoneForWhatsApp(queueCurrentFinder?.bestContactValue ?? "")
-    : null;
+  const queueCurrentPhone =
+    queueCurrentLead && queueCurrentId
+      ? queueSessionWhatsAppDigits(queueCurrentLead, queueCurrentFinder)
+      : null;
   const queueCurrentMessage = queueCurrentId
     ? outreachQueue.messages[queueCurrentId] ?? ""
     : "";
 
   useEffect(() => {
-    if (!outreachQueue.open) return;
+    if (!outreachQueue.open || outreachQueue.complete) return;
     if (!queueCurrentId || !queueCurrentLead) return;
     if (outreachQueue.messages[queueCurrentId]) return;
 
@@ -2567,6 +3213,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     };
   }, [
     outreachQueue.open,
+    outreachQueue.complete,
     queueCurrentId,
     queueCurrentLead,
     outreachQueue.messages,
@@ -2574,31 +3221,136 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   ]);
 
   const closeOutreachQueue = () => {
-    setOutreachQueue({
-      open: false,
-      leadIds: [],
-      index: 0,
-      messages: {},
-      loading: false,
-      error: null,
-      followUpById: {},
+    setOutreachQueue(emptyOutreachQueueState());
+  };
+
+  const finishQueueSession = (prev: OutreachQueueState): OutreachQueueState => ({
+    ...prev,
+    open: true,
+    complete: true,
+    loading: false,
+    error: null,
+  });
+
+  const goNextInQueue = (countAsSkip: boolean) => {
+    setDailyOutreach((dprev) => {
+      if (!countAsSkip) return dprev;
+      const day = localCalendarDayKey();
+      const base = dprev.queueDate === day ? dprev : loadDailyOutreachState();
+      const nextD: DailyOutreachPersisted = {
+        ...base,
+        queueDate: day,
+        skippedToday: base.skippedToday + 1,
+      };
+      saveDailyOutreachState(nextD);
+      return nextD;
+    });
+    setOutreachQueue((prev) => {
+      const stats = countAsSkip
+        ? {
+            ...prev.sessionStats,
+            skipped: prev.sessionStats.skipped + 1,
+          }
+        : prev.sessionStats;
+      if (prev.index >= prev.leadIds.length - 1) {
+        return finishQueueSession({ ...prev, sessionStats: stats });
+      }
+      return { ...prev, index: prev.index + 1, error: null, sessionStats: stats };
     });
   };
 
-  const goNextInQueue = () => {
+  const markQueueLeadSent = () => {
+    if (!queueCurrentLead || !queueCurrentId) return;
+    const id = queueCurrentLead.id;
+    const cur = getLeadState(id);
+    const ts = Date.now();
+    const hours = 48;
+    updateLead(id, {
+      status: "contacted",
+      contactedAt: cur.contactedAt ?? ts,
+      lastContactedAt: ts,
+      contactAttempts: (cur.contactAttempts ?? 0) + 1,
+      channel: "whatsapp",
+      nextFollowUpAt: ts + hours * 60 * 60 * 1000,
+      followUpAfterHours: hours,
+    });
+    setDailyOutreach((dprev) => {
+      const day = localCalendarDayKey();
+      const base = dprev.queueDate === day ? dprev : loadDailyOutreachState();
+      const nextD: DailyOutreachPersisted = {
+        ...base,
+        queueDate: day,
+        todayQueue: base.todayQueue.filter((x) => x !== id),
+        completedToday: base.completedToday + 1,
+      };
+      saveDailyOutreachState(nextD);
+      return nextD;
+    });
     setOutreachQueue((prev) => {
-      if (prev.index >= prev.leadIds.length - 1) {
-        return {
-          open: false,
+      const stats = {
+        ...prev.sessionStats,
+        sent: prev.sessionStats.sent + 1,
+      };
+      const leadIds = prev.leadIds.filter((x) => x !== id);
+      const nextIndex = Math.min(prev.index, Math.max(0, leadIds.length - 1));
+      if (leadIds.length === 0) {
+        return finishQueueSession({
+          ...prev,
           leadIds: [],
           index: 0,
           messages: {},
-          loading: false,
-          error: null,
-          followUpById: {},
-        };
+          sessionStats: stats,
+        });
       }
-      return { ...prev, index: prev.index + 1, error: null };
+      return {
+        ...prev,
+        leadIds,
+        index: nextIndex,
+        sessionStats: stats,
+        error: null,
+      };
+    });
+  };
+
+  const markQueueLeadDnc = () => {
+    if (!queueCurrentLead || !queueCurrentId) return;
+    const id = queueCurrentLead.id;
+    updateLead(id, { doNotContact: true });
+    setDailyOutreach((dprev) => {
+      const day = localCalendarDayKey();
+      const base = dprev.queueDate === day ? dprev : loadDailyOutreachState();
+      const nextD: DailyOutreachPersisted = {
+        ...base,
+        queueDate: day,
+        todayQueue: base.todayQueue.filter((x) => x !== id),
+        dncToday: base.dncToday + 1,
+      };
+      saveDailyOutreachState(nextD);
+      return nextD;
+    });
+    setOutreachQueue((prev) => {
+      const stats = {
+        ...prev.sessionStats,
+        dnc: prev.sessionStats.dnc + 1,
+      };
+      const leadIds = prev.leadIds.filter((x) => x !== id);
+      const nextIndex = Math.min(prev.index, Math.max(0, leadIds.length - 1));
+      if (leadIds.length === 0) {
+        return finishQueueSession({
+          ...prev,
+          leadIds: [],
+          index: 0,
+          messages: {},
+          sessionStats: stats,
+        });
+      }
+      return {
+        ...prev,
+        leadIds,
+        index: nextIndex,
+        sessionStats: stats,
+        error: null,
+      };
     });
   };
 
@@ -2853,6 +3605,30 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               </button>
                             )}
                           <button
+                            type="button"
+                            disabled={(() => {
+                              const now = Date.now();
+                              const inQ = dailyOutreach.todayQueue.includes(row.id);
+                              const elig = isEligibleForDailyQueue(
+                                row,
+                                contactFinderMap[row.id],
+                                dailyOutreach.todayQueue,
+                                now,
+                              );
+                              return (
+                                inQ ||
+                                !elig ||
+                                (!inQ &&
+                                  dailyOutreach.todayQueue.length >= DAILY_OUTREACH_LIMIT)
+                              );
+                            })()}
+                            title="Add to today’s outreach queue (max 20)"
+                            onClick={() => addLeadIdsToDailyQueue([row.id])}
+                            className="inline-flex h-8 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            Add to Queue
+                          </button>
+                          <button
                             onClick={() => setOpenId(row.id)}
                             title="Open details"
                             className="inline-flex h-8 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-xs text-zinc-200 transition hover:bg-white/10"
@@ -2875,10 +3651,88 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         )}
       </section>
 
+      {queueActionNotice && (
+        <div className="rounded-md border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          {queueActionNotice}
+        </div>
+      )}
+
+      <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3 ring-1 ring-inset ring-emerald-500/10">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-emerald-200">
+              Today&apos;s Outreach Queue
+            </h2>
+            <p className="mt-0.5 text-[11px] text-zinc-500">
+              {dailyOutreach.todayQueue.length} / {DAILY_OUTREACH_LIMIT} leads · Sent today{" "}
+              {dailyOutreach.completedToday} · Skipped {dailyOutreach.skippedToday} · DNC{" "}
+              {dailyOutreach.dncToday}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={startDailyOutreachSession}
+              disabled={dailyOutreach.todayQueue.length === 0}
+              className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Start Session
+            </button>
+            <button
+              type="button"
+              onClick={clearDailyQueue}
+              disabled={dailyOutreach.todayQueue.length === 0}
+              className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Clear Queue
+            </button>
+          </div>
+        </div>
+        {dailyOutreach.todayQueue.length > 0 ? (
+          <div className="mt-3 max-h-28 overflow-y-auto border-t border-white/5 pt-2">
+            <ul className="space-y-1.5 text-[11px] text-zinc-300">
+              {dailyOutreach.todayQueue.map((qid) => {
+                const qrow = allRowsById.get(qid);
+                if (!qrow) return null;
+                const cat = classifyContactChannel(qrow, contactFinderMap[qid]);
+                return (
+                  <li
+                    key={qid}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-black/20 px-2 py-1"
+                  >
+                    <span className="font-medium text-zinc-100">{qrow.name}</span>
+                    <span className="text-zinc-500">{qrow.city}</span>
+                    <span className="tabular-nums text-orange-200">Hot {qrow.hotScore}</span>
+                    <span className="text-zinc-500">
+                      {cat === "ready"
+                        ? "Contact ready"
+                        : cat === "needs_finder"
+                          ? "Needs finder"
+                          : "No channel"}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : (
+          <p className="mt-2 text-[11px] text-zinc-500">
+            Use &quot;Add to Queue&quot; on import or All Leads rows, or add selected leads in bulk.
+          </p>
+        )}
+      </section>
+
       {selectedLeadIds.length > 0 && (
         <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-2">
           <span className="text-xs text-zinc-400">✓ {selectedLeadIds.length} selected</span>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => addLeadIdsToDailyQueue(selectedLeadIds)}
+              className="rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+            >
+              Add Selected to Queue
+            </button>
             <button
               type="button"
               onClick={() => void sendBulkAiMessages()}
@@ -3303,6 +4157,30 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                 </button>
                               )}
                             <button
+                              type="button"
+                              disabled={(() => {
+                                const now = Date.now();
+                                const inQ = dailyOutreach.todayQueue.includes(row.id);
+                                const elig = isEligibleForDailyQueue(
+                                  row,
+                                  contactFinderMap[row.id],
+                                  dailyOutreach.todayQueue,
+                                  now,
+                                );
+                                return (
+                                  inQ ||
+                                  !elig ||
+                                  (!inQ &&
+                                    dailyOutreach.todayQueue.length >= DAILY_OUTREACH_LIMIT)
+                                );
+                              })()}
+                              title="Add to today’s outreach queue"
+                              onClick={() => addLeadIdsToDailyQueue([row.id])}
+                              className="inline-flex h-8 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Queue
+                            </button>
+                            <button
                               onClick={() => setOpenId(row.id)}
                               title="Open notes"
                               className={`relative inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
@@ -3356,7 +4234,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         onMarkContacted={recordWhatsAppOutreach}
       />
 
-      {outreachQueue.open && queueCurrentLead && (
+      {outreachQueue.open && (outreachQueue.complete || queueCurrentLead) && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           role="dialog"
@@ -3371,9 +4249,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           <div className="relative z-10 w-full max-w-2xl rounded-xl border border-white/10 bg-zinc-950 shadow-2xl ring-1 ring-white/5">
             <div className="flex items-start justify-between border-b border-white/10 px-4 py-3">
               <div>
-                <h2 className="text-sm font-semibold text-zinc-100">Outreach Queue</h2>
+                <h2 className="text-sm font-semibold text-zinc-100">
+                  {outreachQueue.complete ? "Session complete" : "Today’s outreach session"}
+                </h2>
                 <p className="mt-0.5 text-xs text-zinc-500">
-                  {outreachQueue.index + 1} / {outreachQueue.leadIds.length}
+                  {outreachQueue.complete
+                    ? "Summary for this run"
+                    : `${outreachQueue.index + 1} / ${outreachQueue.leadIds.length}`}
                 </p>
               </div>
               <button
@@ -3394,119 +4276,183 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               </button>
             </div>
             <div className="space-y-3 px-4 py-4 text-sm">
-              <div className="rounded-md border border-white/10 bg-white/[0.02] p-3">
-                <div className="font-medium text-zinc-100">{queueCurrentLead.name}</div>
-                <div className="text-xs text-zinc-400">
-                  {queueCurrentLead.city}, {queueCurrentLead.region}
+              {outreachQueue.complete ? (
+                <div className="rounded-md border border-white/10 bg-white/[0.02] p-4 text-zinc-200">
+                  <p className="text-sm font-medium text-zinc-100">Nice work.</p>
+                  <ul className="mt-3 space-y-1.5 text-xs text-zinc-400">
+                    <li>Sent: {outreachQueue.sessionStats.sent}</li>
+                    <li>Skipped: {outreachQueue.sessionStats.skipped}</li>
+                    <li>Do not contact: {outreachQueue.sessionStats.dnc}</li>
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={closeOutreachQueue}
+                    className="mt-4 rounded-md bg-indigo-500 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-400"
+                  >
+                    Close
+                  </button>
                 </div>
-                <div className="mt-1 text-xs text-zinc-400">
-                  Contact status: {STATUS_LABEL[queueCurrentLead._s.status]}
-                </div>
-                <div className="mt-1 text-xs">
-                  {queueCurrentPhone ? (
-                    <span className="text-emerald-300">Verified WhatsApp contact available</span>
-                  ) : (
-                    <span className="text-amber-300">No verified WhatsApp contact</span>
+              ) : queueCurrentLead ? (
+                <>
+                  <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
+                    <div className="font-medium text-sm text-zinc-100">{queueCurrentLead.name}</div>
+                    <div className="mt-0.5 text-zinc-400">
+                      {queueCurrentLead.city}, {queueCurrentLead.region}
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <span className="text-zinc-500">Lead score</span>{" "}
+                        <span className="font-medium text-zinc-200">{queueCurrentLead.leadScore}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Hot score</span>{" "}
+                        <span className="font-medium text-zinc-200">{queueCurrentLead.hotScore}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Contact quality</span>{" "}
+                        <span className="font-medium text-zinc-200">
+                          {CONTACT_QUALITY_LABEL[queueCurrentLead.contactQuality]}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-500">Best contact</span>{" "}
+                        <span className="font-medium text-zinc-200">
+                          {queueCurrentFinder
+                            ? `${queueCurrentFinder.bestContactType} · ${queueCurrentFinder.bestContactValue}`
+                            : whatsappLink(queueCurrentLead.phone)
+                              ? `WhatsApp · ${queueCurrentLead.phone}`
+                              : queueCurrentLead.phone || "—"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-[11px] text-zinc-500">
+                      Pipeline: {STATUS_LABEL[queueCurrentLead._s.status]}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-white/[0.02] p-3">
+                    <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                      AI message preview
+                    </div>
+                    {outreachQueue.loading ? (
+                      <p className="text-zinc-400">Mesaj oluşturuluyor…</p>
+                    ) : outreachQueue.error ? (
+                      <p className="text-rose-300">{outreachQueue.error}</p>
+                    ) : (
+                      <p className="whitespace-pre-wrap text-zinc-200">
+                        {queueCurrentMessage || "Mesaj bulunamadı"}
+                      </p>
+                    )}
+                  </div>
+                  {(queueCurrentLead._s.contactAttempts ?? 0) >= 3 && (
+                    <p className="text-[11px] text-amber-300">
+                      Already contacted multiple times — proceed carefully.
+                    </p>
                   )}
-                </div>
-              </div>
-              <div className="rounded-md border border-white/10 bg-white/[0.02] p-3">
-                {outreachQueue.loading ? (
-                  <p className="text-zinc-400">Mesaj oluşturuluyor…</p>
-                ) : outreachQueue.error ? (
-                  <p className="text-rose-300">{outreachQueue.error}</p>
-                ) : (
-                  <p className="whitespace-pre-wrap text-zinc-200">
-                    {queueCurrentMessage || "Mesaj bulunamadı"}
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <button
-                  type="button"
-                  disabled={!queueCurrentMessage || !queueCurrentPhone}
-                  onClick={() => {
-                    if (!queueCurrentMessage || !queueCurrentPhone) return;
-                    const link = `https://wa.me/${queueCurrentPhone}?text=${encodeURIComponent(
-                      queueCurrentMessage,
-                    )}`;
-                    openExternal(link);
-                    recordWhatsAppOutreach(queueCurrentLead.id);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Open WhatsApp
-                </button>
-                <button
-                  type="button"
-                  disabled={!queueCurrentMessage}
-                  onClick={() => {
-                    if (!queueCurrentMessage) return;
-                    void navigator.clipboard.writeText(queueCurrentMessage);
-                  }}
-                  className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Copy Message
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLeadStatus(queueCurrentLead.id, "contacted");
-                    goNextInQueue();
-                  }}
-                  className="rounded-md border border-sky-400/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
-                >
-                  Mark Contacted
-                </button>
-                <button
-                  type="button"
-                  onClick={goNextInQueue}
-                  className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
-                >
-                  Skip
-                </button>
-                <button
-                  type="button"
-                  onClick={goNextInQueue}
-                  className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
-                >
-                  Next
-                </button>
-              </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={!queueCurrentMessage || !queueCurrentPhone}
+                      onClick={() => {
+                        if (!queueCurrentMessage || !queueCurrentPhone) return;
+                        const link = `https://wa.me/${queueCurrentPhone}?text=${encodeURIComponent(
+                          queueCurrentMessage,
+                        )}`;
+                        openExternal(link);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Open WhatsApp
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!queueCurrentMessage}
+                      onClick={() => {
+                        if (!queueCurrentMessage) return;
+                        void navigator.clipboard.writeText(queueCurrentMessage);
+                      }}
+                      className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Copy Message
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => markQueueLeadSent()}
+                      className="rounded-md border border-sky-400/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
+                    >
+                      Mark Sent
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => goNextInQueue(true)}
+                      className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
+                    >
+                      Skip
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => markQueueLeadDnc()}
+                      className="rounded-md border border-rose-400/25 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:bg-rose-500/20"
+                    >
+                      Mark Do Not Contact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => goNextInQueue(false)}
+                      className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
+                    >
+                      Next Lead
+                    </button>
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
       )}
 
-      {/* Drawer */}
-      {openLead && (
-        <div
-          className="fixed inset-0 z-40 flex"
-          role="dialog"
-          aria-modal="true"
-        >
-          <button
-            aria-label="Close"
-            onClick={() => setOpenId(null)}
-            className="flex-1 bg-black/60 backdrop-blur-sm"
-          />
-          <aside className="flex h-full w-full max-w-md flex-col border-l border-white/10 bg-zinc-950 shadow-2xl">
-            <LeadDetailPanel
-              selectedLead={openLead}
-              onClose={() => setOpenId(null)}
-              finderPersisted={contactFinderMap[openLead.id]}
-              contactFinderRequest={contactFinderRequest}
-              draftNote={draftNote}
-              setDraftNote={setDraftNote}
-              updateLead={updateLead}
-              setLeadStatus={setLeadStatus}
-              findBestContact={findBestContact}
-              onSendMessage={() => void drawerSendMessage(openLead)}
-              sendMessageBusy={drawerSendBusy}
+      {/* Drawer: portal keeps overlay out of Dashboard flex subtree (avoids fixed/overflow paint glitches). */}
+      {openLead &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-40 flex"
+            role="dialog"
+            aria-modal="true"
+          >
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={() => setOpenId(null)}
+              className="flex-1 bg-black/60 backdrop-blur-sm"
             />
-          </aside>
-        </div>
-      )}
+            <aside className="flex h-full w-full max-w-md flex-col border-l border-white/10 bg-zinc-950 shadow-2xl">
+              <LeadDetailPanel
+                key={openLead.id}
+                selectedLead={openLead}
+                onClose={() => setOpenId(null)}
+                finderPersisted={contactFinderMap[openLead.id]}
+                contactFinderRequest={contactFinderRequest}
+                draftNote={draftNote}
+                setDraftNote={setDraftNote}
+                updateLead={updateLead}
+                setLeadStatus={setLeadStatus}
+                findBestContact={findBestContact}
+                onSendMessage={() => void drawerSendMessage(openLead)}
+                sendMessageBusy={drawerSendBusy}
+                ownerReplyDraft={ownerReplyDraft}
+                setOwnerReplyDraft={setOwnerReplyDraft}
+                onGenerateReplyHelper={() => void generateReplyHelperSuggestion(openLead)}
+                replyHelperBusy={replyHelperBusy}
+                replyHelperError={replyHelperError}
+                replyHelperSuggestion={replyHelperSuggestion}
+                replyCopied={replyCopied}
+                onCopyReplyHelper={() => void copyReplyHelperSuggestion()}
+                onApplyReplyHelperSuggestion={() => applyReplyHelperSuggestion(openLead)}
+              />
+            </aside>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

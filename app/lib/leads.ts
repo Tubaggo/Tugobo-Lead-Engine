@@ -912,7 +912,7 @@ export const STATUS_ORDER: LeadStatus[] = [
 ];
 
 export const WHATSAPP_OUTREACH_MESSAGE =
-  "Merhaba, işletmenizi inceledim. Rezervasyon süreçlerinde ciddi bir potansiyel gördüm. Size özel kısa bir analiz hazırladım, paylaşmamı ister misiniz?";
+  "Selam, genelde tam burada kaçırılıyor gibi oluyor\nmesaj geliyor ama rezervasyona dönüşen taraf zayıf kalıyor\nsiz de bunu fark ettiniz mi?";
 
 /** Strips spaces, +, parentheses, etc.; normalizes Turkish numbers to international 90…. */
 export function normalizePhoneForWhatsApp(phone: string): string | null {

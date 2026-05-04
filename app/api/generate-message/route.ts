@@ -13,27 +13,43 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** Rule-based copy — conversational, 2–3 sentences; one of three variants at random. */
-function buildMockOutreachMessage(input: GenerateMessageBody): string {
-  const { name, location, followUp } = input;
+function pick<T>(items: readonly T[]): T {
+  return items[Math.floor(Math.random() * items.length)]!;
+}
+
+/**
+ * Rule-based copy — konuşma dilinde, 3 satır ve kısa akış.
+ * Yapı: gözlem → problem → cevap daveti.
+ */
+function buildOutreachVariations(input: GenerateMessageBody): string[] {
+  const { location, followUp } = input;
   const city = location.split(",")[0]?.trim() || location;
 
   if (followUp) {
-    const followUps = [
-      `Merhaba, dün ${name} için kısa yazmıştım — ${city} tarafındasınız. Müsait olduğunuzda tek cümleyle dönüşünüz yeterli olur, teşekkürler.`,
-      `Selam, ${name} hakkında küçük bir not bırakmıştım. Rahatsız etmek istemem; uygun bir zamanda göz atarsanız sevinirim.`,
-      `Merhaba, ${city} bölgesindeki ${name} için nazikçe hatırlatayım. Kısa bir yanıtınız benim için yeterli.`,
+    return [
+      `Selam, ${city} tarafında yine aynı tabloyu görüyoruz
+gece gelen taleplerin bir kısmı cevaplanmadan düşüyor
+sizde de bu durum oluyor mu?`,
+      `Selam, çoğu işletmede takip tam bu noktada aksıyor
+mesaj geliyor ama rezervasyona dönen taraf zayıf kalıyor
+siz de son dönemde yaşıyor musunuz?`,
+      `Selam, genelde gece saatlerinde burada kaçırılıyor
+rezervasyon soruları geç kalınca konuşma yarım kalıyor
+siz de buna denk geliyor musunuz?`,
     ];
-    return followUps[Math.floor(Math.random() * followUps.length)]!;
   }
 
-  const variations = [
-    `Merhaba, ${name} diye bir yere bakarken denk geldim. ${city} tarafındaki konumunuz ilgimi çekti. Müsaitseniz aklımdaki şeyi paylaşmak isterim.`,
-    `Selam, ${name} sayfasına takıldım. ${city} tarafında olduğunuzu görünce durdum. Uygun olursanız kısaca yazmak isterim.`,
-    `Merhaba, internette ${name} konusuna takılı kaldım. ${city} civarında olmanız dikkatimi çekti. Zamanınız olursa tek mesajda anlatmak istediğim bir şey var.`,
+  return [
+    `Selam, ${city} tarafında çoğu işletmede aynı durum var
+gece gelen taleplerin ciddi kısmı çoğu zaman cevapsız kalıyor
+siz de bu durumu yaşıyor musunuz?`,
+    `Selam, genelde tam burada kaçırılıyor gibi oluyor
+mesaj geliyor ama rezervasyona dönüşen taraf zayıf kalıyor
+siz de bunu fark ettiniz mi?`,
+    `Selam, çoğu küçük otelde benzerini sık görüyoruz
+WhatsApp dolu ama gece gelen rezervasyon talebi sönüyor
+sizde de bu taraf bazen kopuyor mu?`,
   ];
-
-  return variations[Math.floor(Math.random() * variations.length)]!;
 }
 
 export async function POST(req: Request) {
@@ -72,7 +88,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const message = buildMockOutreachMessage({
+  const variations = buildOutreachVariations({
     name,
     type,
     location,
@@ -80,6 +96,7 @@ export async function POST(req: Request) {
     hotScore,
     followUp,
   });
+  const message = pick(variations);
 
-  return NextResponse.json({ message });
+  return NextResponse.json({ message, variations });
 }
