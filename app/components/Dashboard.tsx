@@ -47,12 +47,19 @@ const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
 const DAILY_OUTREACH_STORAGE_KEY = "tugobo-lead-engine:daily-outreach-v1";
 /** Max leads staged for today's outreach queue (local calendar day). */
 const DAILY_OUTREACH_LIMIT = 20;
+const IMPORT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const LEGACY_CREATED_AT_TS = Date.UTC(2024, 0, 1, 0, 0, 0, 0);
 
 type LastImportPayload = {
   batch: ScoredLead[];
   newIds: string[];
   updatedIds: string[];
+};
+
+type ImportCacheEntry = {
+  importSessionId: string;
+  importedAt: number;
+  leads: ScoredLead[];
 };
 
 type ContactChannelCat = "ready" | "needs_finder" | "none";
@@ -446,21 +453,21 @@ function saveLastImportPayload(payload: LastImportPayload) {
   }
 }
 
-function loadImportCache(): Record<string, ScoredLead[]> {
+function loadImportCache(): Record<string, ImportCacheEntry> {
   if (typeof window === "undefined") return {};
   try {
     const raw = window.localStorage.getItem(IMPORT_CACHE_KEY);
     if (!raw) return {};
     const p = JSON.parse(raw);
     return typeof p === "object" && p !== null && !Array.isArray(p)
-      ? (p as Record<string, ScoredLead[]>)
+      ? (p as Record<string, ImportCacheEntry>)
       : {};
   } catch {
     return {};
   }
 }
 
-function saveImportCache(cache: Record<string, ScoredLead[]>) {
+function saveImportCache(cache: Record<string, ImportCacheEntry>) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(IMPORT_CACHE_KEY, JSON.stringify(cache));
@@ -709,6 +716,49 @@ function addLeadToDedupeSet(lead: ScoredLead, keys: Set<string>) {
   for (const k of dedupeKeysForLead(lead)) keys.add(k);
 }
 
+function dedupeScoredLeads(leads: ScoredLead[]): ScoredLead[] {
+  const idSeen = new Set<string>();
+  const phoneSeen = new Set<string>();
+  const webSeen = new Set<string>();
+  const nameCitySeen = new Set<string>();
+  const out: ScoredLead[] = [];
+  for (const lead of leads) {
+    const idKey = lead.id?.trim();
+    const phoneKey = normalizePhoneDedupe(lead.phone);
+    const webKey = normalizeWebDedupe(lead.website);
+    const nameCityKey = leadDedupeKey(lead.name, lead.city);
+    if (idKey && idSeen.has(idKey)) continue;
+    if (phoneKey && phoneSeen.has(phoneKey)) continue;
+    if (webKey && webSeen.has(webKey)) continue;
+    if (nameCitySeen.has(nameCityKey)) continue;
+    if (idKey) idSeen.add(idKey);
+    if (phoneKey) phoneSeen.add(phoneKey);
+    if (webKey) webSeen.add(webKey);
+    nameCitySeen.add(nameCityKey);
+    out.push(lead);
+  }
+  return out;
+}
+
+function dedupeLeadIds(ids: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+function renderLeadKey(
+  listName: string,
+  lead: { id: string; importSessionId?: string | null; lastImportedAt?: number },
+  index: number,
+) {
+  return `${listName}:${lead.id}-${lead.importSessionId ?? lead.lastImportedAt ?? index}`;
+}
+
 type ImportMatch =
   | { kind: "imported"; index: number; lead: ScoredLead }
   | { kind: "seed"; lead: ScoredLead };
@@ -799,6 +849,7 @@ function mergeImportBatchMaster(
   updatedIds: string[];
   freshNewLeads: ScoredLead[];
 } {
+  const dedupedBatch = dedupeScoredLeads(batch);
   let imported = [...prevImported];
   const newIds: string[] = [];
   const updatedIds: string[] = [];
@@ -821,7 +872,7 @@ function mergeImportBatchMaster(
     freshNewLeads.push(novel);
   };
 
-  for (const inc of batch) {
+  for (const inc of dedupedBatch) {
     const m = findImportMatch(inc, imported, seedLeads);
     if (m?.kind === "imported") {
       const merged = upsertScoredFields(m.lead, inc, importTs, importSessionId);
@@ -2299,6 +2350,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [contactFinderMap, setContactFinderMap] = useState<
     Record<string, ContactFinderResult>
   >({});
+  const [sheetsConnected, setSheetsConnected] = useState<boolean | null>(null);
+  const [sheetsWarning, setSheetsWarning] = useState("");
+  const [sheetsSyncStatus, setSheetsSyncStatus] = useState("");
+  const [sheetsBusy, setSheetsBusy] = useState<"sync" | "load" | null>(null);
 
   useEffect(() => {
     setStateMap(loadState());
@@ -2320,16 +2375,54 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     setDateLabel(buildTodayLabel());
   }, []);
 
+  useEffect(() => {
+    const checkSheets = async () => {
+      try {
+        const res = await fetch("/api/sheets/leads", { cache: "no-store" });
+        const data = (await res.json()) as { configured?: boolean };
+        setSheetsConnected(Boolean(data.configured));
+        if (!data.configured) {
+          setSheetsWarning("Google Sheets not connected. Using local storage only.");
+        }
+      } catch {
+        setSheetsConnected(false);
+        setSheetsWarning("Google Sheets not connected. Using local storage only.");
+      }
+    };
+    void checkSheets();
+  }, []);
+
+  const hasCachedImportResults = useCallback(
+    (req: Omit<ImportRequest, "forceGoogleRefresh">) => {
+      const cityNorm = req.city.trim().toLowerCase();
+      const cacheKey = `${cityNorm}|${req.type}|${req.source}`;
+      const cache = loadImportCache();
+      const hit = cache[cacheKey];
+      if (!hit || !Array.isArray(hit.leads) || hit.leads.length === 0) return false;
+      if (typeof hit.importedAt !== "number") return false;
+      return Date.now() - hit.importedAt <= IMPORT_CACHE_TTL_MS;
+    },
+    [],
+  );
+
   const handleImport = async (req: ImportRequest): Promise<ImportResult> => {
     const cityNorm = req.city.trim().toLowerCase();
     const cacheKey = `${cityNorm}|${req.type}|${req.source}`;
     let batch: ScoredLead[] = [];
+    let source: "cached" | "google" = "google";
     const cache = loadImportCache();
 
     if (!req.forceGoogleRefresh) {
       const hit = cache[cacheKey];
-      if (Array.isArray(hit) && hit.length > 0) {
-        batch = hit;
+      if (
+        hit &&
+        Array.isArray(hit.leads) &&
+        hit.leads.length > 0 &&
+        typeof hit.importedAt === "number" &&
+        Date.now() - hit.importedAt <= IMPORT_CACHE_TTL_MS
+      ) {
+        batch = hit.leads;
+        source = "cached";
       }
     }
 
@@ -2348,8 +2441,20 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       }
       batch = data.leads ?? [];
       if (batch.length > 0) {
-        saveImportCache({ ...cache, [cacheKey]: batch });
+        const now = Date.now();
+        saveImportCache({
+          ...cache,
+          [cacheKey]: {
+            importSessionId:
+              typeof crypto !== "undefined" && "randomUUID" in crypto
+                ? crypto.randomUUID()
+                : `cache-${now}`,
+            importedAt: now,
+            leads: batch,
+          },
+        });
       }
+      source = "google";
     }
 
     const importTs = Date.now();
@@ -2386,7 +2491,116 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
     const hot = freshNewLeads.filter((l) => l.hotScore >= 70).length;
     const skipped = batch.length - lastSessionBatch.length;
-    return { added: freshNewLeads.length, hot, skipped };
+    return {
+      added: freshNewLeads.length,
+      updated: updatedIds.length,
+      hot,
+      skipped,
+      source,
+    };
+  };
+
+  const syncLeadsToSheets = async () => {
+    setSheetsSyncStatus("");
+    setSheetsWarning("");
+    setSheetsBusy("sync");
+    try {
+      const payload = allRows.map((row) => ({
+        ...row,
+        status: row._s.status,
+        notes: row._s.note ?? "",
+        do_not_contact: row._s.doNotContact ?? false,
+        contact_attempts: row._s.contactAttempts ?? 0,
+        last_contacted_at: row._s.lastContactedAt ?? null,
+        next_follow_up_at: row._s.nextFollowUpAt ?? null,
+      }));
+      const res = await fetch("/api/sheets/sync-leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leads: payload }),
+      });
+      const data = (await res.json()) as {
+        configured?: boolean;
+        added?: number;
+        updated?: number;
+        skipped?: number;
+        error?: string;
+      };
+      if (!data.configured) {
+        setSheetsConnected(false);
+        setSheetsWarning("Google Sheets not connected. Using local storage only.");
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || "Google Sheets sync failed");
+      setSheetsConnected(true);
+      setSheetsSyncStatus(
+        `Synced to Google Sheets: ${data.added ?? 0} added, ${data.updated ?? 0} updated, ${data.skipped ?? 0} skipped.`,
+      );
+    } catch (err) {
+      setSheetsSyncStatus(err instanceof Error ? err.message : "Google Sheets sync failed");
+    } finally {
+      setSheetsBusy(null);
+    }
+  };
+
+  const loadLeadsFromSheets = async () => {
+    setSheetsSyncStatus("");
+    setSheetsWarning("");
+    setSheetsBusy("load");
+    try {
+      const res = await fetch("/api/sheets/leads", { cache: "no-store" });
+      const data = (await res.json()) as {
+        configured?: boolean;
+        leads?: ScoredLead[];
+        states?: StateMap;
+        error?: string;
+      };
+      if (!data.configured) {
+        setSheetsConnected(false);
+        setSheetsWarning("Google Sheets not connected. Using local storage only.");
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || "Failed to load leads from Google Sheets");
+      const incomingLeads = Array.isArray(data.leads) ? data.leads : [];
+      const importTs = Date.now();
+      const importSessionId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `sheet-${importTs}`;
+      const prev = importedLeadsRef.current;
+      const merged = mergeImportBatchMaster(
+        prev,
+        leads,
+        ensureLeadsCreatedAt(incomingLeads, importTs),
+        importTs,
+        importSessionId,
+      );
+      setImportedLeads(merged.nextImported);
+      importedLeadsRef.current = merged.nextImported;
+      saveImportedLeadsV2(merged.nextImported);
+      setLatestImportLeads(merged.lastSessionBatch);
+      setLastImportNewIds(merged.newIds);
+      setLastImportUpdatedIds(merged.updatedIds);
+      saveLastImportPayload({
+        batch: merged.lastSessionBatch,
+        newIds: merged.newIds,
+        updatedIds: merged.updatedIds,
+      });
+      if (data.states && typeof data.states === "object") {
+        const sanitized: StateMap = {};
+        for (const [id, value] of Object.entries(data.states)) {
+          sanitized[id] = normalizeStateEntry(value);
+        }
+        setStateMap(sanitized);
+        saveState(sanitized);
+      }
+      setSheetsConnected(true);
+      setSheetsSyncStatus(`Loaded ${incomingLeads.length} leads from Google Sheets.`);
+    } catch (err) {
+      setSheetsSyncStatus(err instanceof Error ? err.message : "Failed to load from Sheets");
+    } finally {
+      setSheetsBusy(null);
+    }
   };
 
   useEffect(() => {
@@ -2422,7 +2636,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       base.push(l);
       addLeadToDedupeSet(l, dedupeSet);
     }
-    return base.map(
+    return dedupeScoredLeads(base).map(
       (l): LeadTableRow => ({
         ...sanitizeScoredLeadForUi(l),
         createdAt: l.createdAt ?? LEGACY_CREATED_AT_TS,
@@ -2500,7 +2714,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const useLatestImportHotLeads = latestImportLeads.length > 0;
   const hotLeadsSource = useLatestImportHotLeads ? latestImportLeads : allRows;
   const hot5 = useMemo(() => {
-    return [...hotLeadsSource]
+    return dedupeScoredLeads([...hotLeadsSource] as ScoredLead[])
       .filter((l) => {
         const full = allRowsById.get(l.id);
         return full && !full._s.doNotContact;
@@ -2552,7 +2766,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   }, [focusFiltered, showAllLeadsRows]);
 
   const latestImportRows = useMemo(() => {
-    return latestImportLeads
+    const rows = latestImportLeads
       .map((snap) => {
         const base = allRowsById.get(snap.id);
         if (!base) {
@@ -2578,6 +2792,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         };
       })
       .filter(Boolean);
+    return dedupeScoredLeads(rows as ScoredLead[]) as LeadTableRow[];
   }, [latestImportLeads, allRowsById, stateMap]);
 
   const stats = useMemo(() => {
@@ -3079,7 +3294,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       const next: DailyOutreachPersisted = {
         ...base,
         queueDate: day,
-        todayQueue: nextQ,
+        todayQueue: dedupeLeadIds(nextQ),
       };
       saveDailyOutreachState(next);
       if (added === 0 && ids.length > 0) {
@@ -3127,7 +3342,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
     setOutreachQueue({
       open: true,
-      leadIds: [...dailyOutreach.todayQueue],
+      leadIds: dedupeLeadIds([...dailyOutreach.todayQueue]),
       index: 0,
       messages: {},
       loading: false,
@@ -3148,7 +3363,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         return st === "new" || st === "needs_follow_up";
       });
     if (queueLeadIds.length === 0) return;
-    const capped = queueLeadIds.slice(0, DAILY_OUTREACH_LIMIT);
+    const capped = dedupeLeadIds(queueLeadIds).slice(0, DAILY_OUTREACH_LIMIT);
     if (queueLeadIds.length > DAILY_OUTREACH_LIMIT) {
       showQueueNotice(
         `Only the first ${DAILY_OUTREACH_LIMIT} selected leads start (daily outreach cap).`,
@@ -3425,7 +3640,33 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       </section>
 
       {/* Import */}
-      <ImportPanel onImport={handleImport} />
+      <ImportPanel onImport={handleImport} hasCachedResults={hasCachedImportResults} />
+
+      <section className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void syncLeadsToSheets()}
+            disabled={sheetsBusy !== null}
+            className="inline-flex items-center justify-center rounded-md border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {sheetsBusy === "sync" ? "Syncing..." : "Sync to Google Sheets"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadLeadsFromSheets()}
+            disabled={sheetsBusy !== null}
+            className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {sheetsBusy === "load" ? "Loading..." : "Load from Google Sheets"}
+          </button>
+          {sheetsConnected === true && (
+            <span className="text-xs text-emerald-300">Google Sheets connected</span>
+          )}
+        </div>
+        {sheetsWarning && <p className="mt-2 text-xs text-amber-300">{sheetsWarning}</p>}
+        {sheetsSyncStatus && <p className="mt-2 text-xs text-zinc-300">{sheetsSyncStatus}</p>}
+      </section>
 
       {/* Last Import Results */}
       <section className="overflow-hidden rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] backdrop-blur ring-1 ring-inset ring-indigo-500/10">
@@ -3483,11 +3724,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {latestImportRows.map((row) => {
+                {latestImportRows.map((row, index) => {
                   const ig = row.instagram ? instagramLink(row.instagram) : null;
                   return (
                     <tr
-                      key={row.id}
+                      key={renderLeadKey("latest-import", row, index)}
                       className="bg-indigo-500/[0.05] shadow-[inset_0_0_0_1px_rgba(129,140,248,0.25)]"
                     >
                       <td className="px-4 py-3 align-top">
@@ -3691,13 +3932,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         {dailyOutreach.todayQueue.length > 0 ? (
           <div className="mt-3 max-h-28 overflow-y-auto border-t border-white/5 pt-2">
             <ul className="space-y-1.5 text-[11px] text-zinc-300">
-              {dailyOutreach.todayQueue.map((qid) => {
+              {dedupeLeadIds(dailyOutreach.todayQueue).map((qid, index) => {
                 const qrow = allRowsById.get(qid);
                 if (!qrow) return null;
                 const cat = classifyContactChannel(qrow, contactFinderMap[qid]);
                 return (
                   <li
-                    key={qid}
+                    key={renderLeadKey("daily-queue", qrow, index)}
                     className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-black/20 px-2 py-1"
                   >
                     <span className="font-medium text-zinc-100">{qrow.name}</span>
@@ -3775,7 +4016,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         <div className="-mx-1 grid grid-flow-col auto-cols-[260px] gap-3 overflow-x-auto px-1 pb-2 sm:auto-cols-[280px]">
           {hot5.map((lead, i) => (
             <HotCard
-              key={lead.id}
+              key={renderLeadKey("hot", lead, i)}
               rank={i + 1}
               lead={lead}
               status={lead._s.status}
@@ -4013,7 +4254,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {visibleAllLeads.map((row) => {
+                  {visibleAllLeads.map((row, index) => {
                     const s = row._s;
                     const ig = row.instagram ? instagramLink(row.instagram) : null;
                     const isRecentlyImported = recentlyImportedLeadIds.includes(row.id);
@@ -4025,7 +4266,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         : "text-zinc-500";
                     return (
                       <tr
-                        key={row.id}
+                        key={renderLeadKey("all-leads", row, index)}
                         className={`group transition hover:bg-white/[0.025] ${
                           row.hotScore > 80
                             ? "bg-orange-500/[0.05]"

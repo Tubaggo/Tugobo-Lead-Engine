@@ -18,6 +18,8 @@ export type ImportResult = {
   added: number;
   hot: number;
   skipped: number;
+  updated: number;
+  source: "cached" | "google";
 };
 
 const NICHES: { value: LeadType; label: string }[] = [
@@ -39,10 +41,10 @@ const SOURCES: { value: ImportSource; label: string; hint: string }[] = [
 const DATALIST_ID = "tugobo-city-list";
 
 function formatImportSummary(r: ImportResult): { text: string; tone: "ok" | "warn" } {
-  const { added, hot, skipped } = r;
+  const { added, hot, skipped, updated, source } = r;
   const leadWord = added === 1 ? "lead" : "leads";
   const hotWord = hot === 1 ? "hot lead" : "hot leads";
-  const dupWord = skipped === 1 ? "duplicate skipped" : "duplicates skipped";
+  const sourceLabel = source === "cached" ? "Cached" : "Google";
 
   if (added === 0 && skipped === 0) {
     return {
@@ -53,21 +55,23 @@ function formatImportSummary(r: ImportResult): { text: string; tone: "ok" | "war
 
   if (added === 0 && skipped > 0) {
     return {
-      text: `No new leads — ${skipped} ${dupWord}. Try another city or niche.`,
+      text: `No new leads — ${updated} existing updated | ${skipped} duplicates skipped | Source: ${sourceLabel}`,
       tone: "warn",
     };
   }
 
   return {
-    text: `${added} new ${leadWord} added | ${hot} ${hotWord} | ${skipped} ${skipped === 1 ? "duplicate" : "duplicates"} skipped`,
+    text: `${added} new ${leadWord} added | ${updated} existing updated | ${hot} ${hotWord} | ${skipped} duplicates skipped | Source: ${sourceLabel}`,
     tone: "ok",
   };
 }
 
 export default function ImportPanel({
   onImport,
+  hasCachedResults,
 }: {
   onImport: (req: ImportRequest) => Promise<ImportResult>;
+  hasCachedResults: (req: Omit<ImportRequest, "forceGoogleRefresh">) => boolean;
 }) {
   const [city, setCity] = useState("");
   const [type, setType] = useState<LeadType>("Boutique Hotel");
@@ -75,6 +79,7 @@ export default function ImportPanel({
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState("");
+  const [showCacheChoice, setShowCacheChoice] = useState(false);
   const cityRef = useRef<HTMLInputElement>(null);
   const statusId = "import-status";
 
@@ -87,6 +92,7 @@ export default function ImportPanel({
     }
     setError("");
     setResult(null);
+    setShowCacheChoice(false);
     setLoading(true);
     try {
       const r = await onImport({ city: trimmed, type, source, forceGoogleRefresh });
@@ -101,10 +107,23 @@ export default function ImportPanel({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const trimmed = city.trim();
+    if (!trimmed) {
+      setError("Enter a city first.");
+      cityRef.current?.focus();
+      return;
+    }
+    if (hasCachedResults({ city: trimmed, type, source })) {
+      setError("");
+      setResult(null);
+      setShowCacheChoice(true);
+      return;
+    }
     await runImport(false);
   };
 
   const handleRefreshGoogle = () => void runImport(true);
+  const handleUseCachedResults = () => void runImport(false);
 
   const summary =
     result && !loading ? formatImportSummary(result) : null;
@@ -159,6 +178,7 @@ export default function ImportPanel({
                 setCity(e.target.value);
                 setResult(null);
                 setError("");
+                setShowCacheChoice(false);
               }}
               placeholder="e.g. Bodrum"
               autoComplete="off"
@@ -189,6 +209,7 @@ export default function ImportPanel({
               onChange={(e) => {
                 setType(e.target.value as LeadType);
                 setResult(null);
+                setShowCacheChoice(false);
               }}
               className="rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -215,6 +236,7 @@ export default function ImportPanel({
                 setSource(e.target.value as ImportSource);
                 setResult(null);
                 setError("");
+                setShowCacheChoice(false);
               }}
               className="rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -268,6 +290,16 @@ export default function ImportPanel({
               >
                 Refresh from Google
               </button>
+              {showCacheChoice && (
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={handleUseCachedResults}
+                  className="inline-flex items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-wait disabled:opacity-60"
+                >
+                  Use Cached Results
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -289,6 +321,11 @@ export default function ImportPanel({
               }
             >
               {summary.text}
+            </p>
+          )}
+          {showCacheChoice && !loading && (
+            <p className="text-xs text-indigo-300">
+              Cached results found for this search.
             </p>
           )}
         </div>
