@@ -18,6 +18,7 @@ import {
   type LeadStatusUpdate,
   type LeadType,
   normalizePhoneForWhatsApp,
+  dedupeLeads,
   type ScoredLead,
   STATUS_LABEL,
   STATUS_ORDER,
@@ -142,6 +143,15 @@ type OutreachQueueSessionStats = {
   dnc: number;
 };
 
+type QueueMessageStatus = "queued" | "prepared" | "opened" | "contacted" | "skipped";
+
+type DailyQueueItem = {
+  queuedAt: number;
+  updatedAt: number;
+  preparedMessage: string;
+  queueStatus: QueueMessageStatus;
+};
+
 type OutreachQueueState = {
   open: boolean;
   leadIds: string[];
@@ -158,6 +168,8 @@ type OutreachQueueState = {
 type DailyOutreachPersisted = {
   queueDate: string;
   todayQueue: string[];
+  todayLog: string[];
+  queueItems: Record<string, DailyQueueItem>;
   completedToday: number;
   skippedToday: number;
   dncToday: number;
@@ -717,24 +729,29 @@ function addLeadToDedupeSet(lead: ScoredLead, keys: Set<string>) {
 }
 
 function dedupeScoredLeads(leads: ScoredLead[]): ScoredLead[] {
+  const deduped = dedupeLeads(leads);
   const idSeen = new Set<string>();
-  const phoneSeen = new Set<string>();
-  const webSeen = new Set<string>();
-  const nameCitySeen = new Set<string>();
   const out: ScoredLead[] = [];
-  for (const lead of leads) {
+  for (const lead of deduped) {
     const idKey = lead.id?.trim();
-    const phoneKey = normalizePhoneDedupe(lead.phone);
-    const webKey = normalizeWebDedupe(lead.website);
-    const nameCityKey = leadDedupeKey(lead.name, lead.city);
     if (idKey && idSeen.has(idKey)) continue;
-    if (phoneKey && phoneSeen.has(phoneKey)) continue;
-    if (webKey && webSeen.has(webKey)) continue;
-    if (nameCitySeen.has(nameCityKey)) continue;
     if (idKey) idSeen.add(idKey);
-    if (phoneKey) phoneSeen.add(phoneKey);
-    if (webKey) webSeen.add(webKey);
-    nameCitySeen.add(nameCityKey);
+    out.push(lead);
+  }
+  return out;
+}
+
+function dedupeLeadsForAirtableSync(leads: LeadTableRow[]): LeadTableRow[] {
+  const byNameCitySeen = new Set<string>();
+  const byWhatsappSeen = new Set<string>();
+  const out: LeadTableRow[] = [];
+  for (const lead of leads) {
+    const nameCity = leadDedupeKey(lead.name, lead.city);
+    const whatsapp = normalizePhoneDedupe(lead.phone);
+    if (byNameCitySeen.has(nameCity)) continue;
+    if (whatsapp && byWhatsappSeen.has(whatsapp)) continue;
+    byNameCitySeen.add(nameCity);
+    if (whatsapp) byWhatsappSeen.add(whatsapp);
     out.push(lead);
   }
   return out;
@@ -1006,11 +1023,22 @@ function emptyOutreachQueueState(): OutreachQueueState {
   };
 }
 
+function emptyDailyQueueItem(ts = Date.now()): DailyQueueItem {
+  return {
+    queuedAt: ts,
+    updatedAt: ts,
+    preparedMessage: "",
+    queueStatus: "queued",
+  };
+}
+
 function loadDailyOutreachState(): DailyOutreachPersisted {
   if (typeof window === "undefined") {
     return {
       queueDate: "",
       todayQueue: [],
+      todayLog: [],
+      queueItems: {},
       completedToday: 0,
       skippedToday: 0,
       dncToday: 0,
@@ -1023,6 +1051,8 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
       return {
         queueDate: today,
         todayQueue: [],
+        todayLog: [],
+        queueItems: {},
         completedToday: 0,
         skippedToday: 0,
         dncToday: 0,
@@ -1033,6 +1063,8 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
       const fresh: DailyOutreachPersisted = {
         queueDate: today,
         todayQueue: [],
+        todayLog: [],
+        queueItems: {},
         completedToday: 0,
         skippedToday: 0,
         dncToday: 0,
@@ -1045,6 +1077,41 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
       todayQueue: Array.isArray(p.todayQueue)
         ? p.todayQueue.filter((id) => typeof id === "string")
         : [],
+      todayLog: Array.isArray(p.todayLog)
+        ? p.todayLog.filter((id) => typeof id === "string")
+        : [],
+      queueItems:
+        p.queueItems && typeof p.queueItems === "object" && !Array.isArray(p.queueItems)
+          ? Object.fromEntries(
+              Object.entries(p.queueItems).map(([id, value]) => {
+                const v = value as Partial<DailyQueueItem>;
+                const queuedAt =
+                  typeof v.queuedAt === "number" && Number.isFinite(v.queuedAt)
+                    ? v.queuedAt
+                    : Date.now();
+                return [
+                  id,
+                  {
+                    queuedAt,
+                    updatedAt:
+                      typeof v.updatedAt === "number" && Number.isFinite(v.updatedAt)
+                        ? v.updatedAt
+                        : queuedAt,
+                    preparedMessage:
+                      typeof v.preparedMessage === "string" ? v.preparedMessage : "",
+                    queueStatus:
+                      v.queueStatus === "queued" ||
+                      v.queueStatus === "prepared" ||
+                      v.queueStatus === "opened" ||
+                      v.queueStatus === "contacted" ||
+                      v.queueStatus === "skipped"
+                        ? v.queueStatus
+                        : "queued",
+                  } satisfies DailyQueueItem,
+                ];
+              }),
+            )
+          : {},
       completedToday:
         typeof p.completedToday === "number" && Number.isFinite(p.completedToday)
           ? Math.max(0, Math.floor(p.completedToday))
@@ -1062,6 +1129,8 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
     return {
       queueDate: today,
       todayQueue: [],
+      todayLog: [],
+      queueItems: {},
       completedToday: 0,
       skippedToday: 0,
       dncToday: 0,
@@ -1657,12 +1726,16 @@ function HotCard({
   rank,
   status,
   onAction,
+  onAddToQueue,
+  queueDisabled = false,
   fromLatestImport = false,
 }: {
   lead: ScoredLead;
   rank: number;
   status: LeadStatus;
   onAction: (id: string) => void;
+  onAddToQueue: (id: string) => void;
+  queueDisabled?: boolean;
   fromLatestImport?: boolean;
 }) {
   return (
@@ -1710,13 +1783,23 @@ function HotCard({
       </div>
       <div className="mt-auto flex items-center justify-between pt-4">
         <StatusPill status={status} />
-        <button
-          onClick={() => onAction(lead.id)}
-          className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-zinc-200 transition hover:bg-white/10"
-        >
-          Open
-          <span aria-hidden>→</span>
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => onAddToQueue(lead.id)}
+            disabled={queueDisabled}
+            className="inline-flex items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Queue
+          </button>
+          <button
+            onClick={() => onAction(lead.id)}
+            className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-zinc-200 transition hover:bg-white/10"
+          >
+            Open
+            <span aria-hidden>→</span>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2335,6 +2418,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       ? {
           queueDate: "",
           todayQueue: [],
+          todayLog: [],
+          queueItems: {},
           completedToday: 0,
           skippedToday: 0,
           dncToday: 0,
@@ -2350,10 +2435,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [contactFinderMap, setContactFinderMap] = useState<
     Record<string, ContactFinderResult>
   >({});
-  const [sheetsConnected, setSheetsConnected] = useState<boolean | null>(null);
-  const [sheetsWarning, setSheetsWarning] = useState("");
-  const [sheetsSyncStatus, setSheetsSyncStatus] = useState("");
-  const [sheetsBusy, setSheetsBusy] = useState<"sync" | "load" | null>(null);
+  const [airtableConnected, setAirtableConnected] = useState<boolean | null>(null);
+  const [airtableWarning, setAirtableWarning] = useState("");
+  const [airtableSyncStatus, setAirtableSyncStatus] = useState("");
+  const [airtableBusy, setAirtableBusy] = useState<"sync" | "load" | null>(null);
 
   useEffect(() => {
     setStateMap(loadState());
@@ -2376,20 +2461,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   }, []);
 
   useEffect(() => {
-    const checkSheets = async () => {
+    const checkAirtable = async () => {
       try {
-        const res = await fetch("/api/sheets/leads", { cache: "no-store" });
+        const res = await fetch("/api/airtable/leads", { cache: "no-store" });
         const data = (await res.json()) as { configured?: boolean };
-        setSheetsConnected(Boolean(data.configured));
+        setAirtableConnected(Boolean(data.configured));
         if (!data.configured) {
-          setSheetsWarning("Google Sheets not connected. Using local storage only.");
+          console.warn("Airtable not connected");
+          setAirtableWarning("Airtable not connected. Using local storage only.");
         }
       } catch {
-        setSheetsConnected(false);
-        setSheetsWarning("Google Sheets not connected. Using local storage only.");
+        setAirtableConnected(false);
+        console.warn("Airtable not connected");
+        setAirtableWarning("Airtable not connected. Using local storage only.");
       }
     };
-    void checkSheets();
+    void checkAirtable();
   }, []);
 
   const hasCachedImportResults = useCallback(
@@ -2500,21 +2587,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     };
   };
 
-  const syncLeadsToSheets = async () => {
-    setSheetsSyncStatus("");
-    setSheetsWarning("");
-    setSheetsBusy("sync");
+  const syncLeadsToAirtable = async () => {
+    setAirtableSyncStatus("");
+    setAirtableWarning("");
+    setAirtableBusy("sync");
     try {
-      const payload = allRows.map((row) => ({
-        ...row,
-        status: row._s.status,
+      const dedupedRows = dedupeLeadsForAirtableSync(allRows);
+      const payload = dedupedRows.map((row) => ({
+        business_name: row.name,
+        whatsapp: row.phone ?? "",
+        website: row.website ?? "",
+        lead_score: row.leadScore,
+        hot_score: row.hotScore,
+        status: row._s.status || "new",
         notes: row._s.note ?? "",
-        do_not_contact: row._s.doNotContact ?? false,
-        contact_attempts: row._s.contactAttempts ?? 0,
-        last_contacted_at: row._s.lastContactedAt ?? null,
-        next_follow_up_at: row._s.nextFollowUpAt ?? null,
       }));
-      const res = await fetch("/api/sheets/sync-leads", {
+      const res = await fetch("/api/airtable/sync-leads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leads: payload }),
@@ -2527,40 +2615,41 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         error?: string;
       };
       if (!data.configured) {
-        setSheetsConnected(false);
-        setSheetsWarning("Google Sheets not connected. Using local storage only.");
+        setAirtableConnected(false);
+        console.warn("Airtable not connected");
+        setAirtableWarning("Airtable not connected. Using local storage only.");
         return;
       }
-      if (!res.ok) throw new Error(data.error || "Google Sheets sync failed");
-      setSheetsConnected(true);
-      setSheetsSyncStatus(
-        `Synced to Google Sheets: ${data.added ?? 0} added, ${data.updated ?? 0} updated, ${data.skipped ?? 0} skipped.`,
+      if (!res.ok) throw new Error(data.error || "Airtable sync failed");
+      setAirtableConnected(true);
+      setAirtableSyncStatus(
+        `Synced to Airtable: ${data.added ?? 0} added, ${data.updated ?? 0} updated, ${data.skipped ?? 0} skipped.`,
       );
     } catch (err) {
-      setSheetsSyncStatus(err instanceof Error ? err.message : "Google Sheets sync failed");
+      setAirtableSyncStatus(err instanceof Error ? err.message : "Airtable sync failed");
     } finally {
-      setSheetsBusy(null);
+      setAirtableBusy(null);
     }
   };
 
-  const loadLeadsFromSheets = async () => {
-    setSheetsSyncStatus("");
-    setSheetsWarning("");
-    setSheetsBusy("load");
+  const loadLeadsFromAirtable = async () => {
+    setAirtableSyncStatus("");
+    setAirtableWarning("");
+    setAirtableBusy("load");
     try {
-      const res = await fetch("/api/sheets/leads", { cache: "no-store" });
+      const res = await fetch("/api/airtable/leads", { cache: "no-store" });
       const data = (await res.json()) as {
         configured?: boolean;
         leads?: ScoredLead[];
-        states?: StateMap;
         error?: string;
       };
       if (!data.configured) {
-        setSheetsConnected(false);
-        setSheetsWarning("Google Sheets not connected. Using local storage only.");
+        setAirtableConnected(false);
+        console.warn("Airtable not connected");
+        setAirtableWarning("Airtable not connected. Using local storage only.");
         return;
       }
-      if (!res.ok) throw new Error(data.error || "Failed to load leads from Google Sheets");
+      if (!res.ok) throw new Error(data.error || "Failed to load leads from Airtable");
       const incomingLeads = Array.isArray(data.leads) ? data.leads : [];
       const importTs = Date.now();
       const importSessionId =
@@ -2586,20 +2675,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         newIds: merged.newIds,
         updatedIds: merged.updatedIds,
       });
-      if (data.states && typeof data.states === "object") {
-        const sanitized: StateMap = {};
-        for (const [id, value] of Object.entries(data.states)) {
-          sanitized[id] = normalizeStateEntry(value);
-        }
-        setStateMap(sanitized);
-        saveState(sanitized);
-      }
-      setSheetsConnected(true);
-      setSheetsSyncStatus(`Loaded ${incomingLeads.length} leads from Google Sheets.`);
+      setAirtableConnected(true);
+      setAirtableSyncStatus(`Loaded ${incomingLeads.length} leads from Airtable.`);
     } catch (err) {
-      setSheetsSyncStatus(err instanceof Error ? err.message : "Failed to load from Sheets");
+      setAirtableSyncStatus(err instanceof Error ? err.message : "Failed to load from Airtable");
     } finally {
-      setSheetsBusy(null);
+      setAirtableBusy(null);
     }
   };
 
@@ -3256,6 +3337,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     window.setTimeout(() => setQueueActionNotice(null), 6500);
   };
 
+  const activeQueueCount = useMemo(() => {
+    return dailyOutreach.todayQueue.filter((id) => {
+      const item = dailyOutreach.queueItems[id];
+      return (
+        item &&
+        (item.queueStatus === "queued" ||
+          item.queueStatus === "prepared" ||
+          item.queueStatus === "opened")
+      );
+    }).length;
+  }, [dailyOutreach.todayQueue, dailyOutreach.queueItems]);
+
   const addLeadIdsToDailyQueue = (ids: string[]) => {
     const now = Date.now();
     const day = localCalendarDayKey();
@@ -3266,11 +3359,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           : {
               queueDate: day,
               todayQueue: [],
+              todayLog: [],
+              queueItems: {},
               completedToday: 0,
               skippedToday: 0,
               dncToday: 0,
             };
-      if (base.todayQueue.length >= DAILY_OUTREACH_LIMIT) {
+      const currentActive = base.todayQueue.filter((qid) => {
+        const item = base.queueItems[qid];
+        return (
+          item &&
+          (item.queueStatus === "queued" ||
+            item.queueStatus === "prepared" ||
+            item.queueStatus === "opened")
+        );
+      }).length;
+      if (currentActive >= DAILY_OUTREACH_LIMIT) {
         window.setTimeout(
           () =>
             showQueueNotice(
@@ -3281,20 +3385,35 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         return base;
       }
       const nextQ = [...base.todayQueue];
+      const nextLog = [...base.todayLog];
+      const nextItems: Record<string, DailyQueueItem> = { ...base.queueItems };
       let added = 0;
       for (const id of ids) {
-        if (nextQ.length >= DAILY_OUTREACH_LIMIT) break;
+        const activeNow = nextQ.filter((qid) => {
+          const item = nextItems[qid];
+          return (
+            item &&
+            (item.queueStatus === "queued" ||
+              item.queueStatus === "prepared" ||
+              item.queueStatus === "opened")
+          );
+        }).length;
+        if (activeNow >= DAILY_OUTREACH_LIMIT) break;
         if (nextQ.includes(id)) continue;
         const row = allRowsById.get(id);
         if (!row) continue;
         if (!isEligibleForDailyQueue(row, contactFinderMap[id], nextQ, now)) continue;
         nextQ.push(id);
+        if (!nextLog.includes(id)) nextLog.push(id);
+        nextItems[id] = emptyDailyQueueItem(now);
         added++;
       }
       const next: DailyOutreachPersisted = {
         ...base,
         queueDate: day,
         todayQueue: dedupeLeadIds(nextQ),
+        todayLog: dedupeLeadIds(nextLog),
+        queueItems: nextItems,
       };
       saveDailyOutreachState(next);
       if (added === 0 && ids.length > 0) {
@@ -3325,6 +3444,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         ...prev,
         queueDate: day,
         todayQueue: [],
+        todayLog: [],
+        queueItems: {},
       };
       saveDailyOutreachState(next);
       return next;
@@ -3394,46 +3515,84 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       ? queueSessionWhatsAppDigits(queueCurrentLead, queueCurrentFinder)
       : null;
   const queueCurrentMessage = queueCurrentId
-    ? outreachQueue.messages[queueCurrentId] ?? ""
+    ? dailyOutreach.queueItems[queueCurrentId]?.preparedMessage ??
+      outreachQueue.messages[queueCurrentId] ??
+      ""
     : "";
 
-  useEffect(() => {
-    if (!outreachQueue.open || outreachQueue.complete) return;
-    if (!queueCurrentId || !queueCurrentLead) return;
-    if (outreachQueue.messages[queueCurrentId]) return;
+  const updateQueueItem = useCallback(
+    (id: string, patch: Partial<DailyQueueItem>) => {
+      setDailyOutreach((prev) => {
+        const day = localCalendarDayKey();
+        const base =
+          prev.queueDate === day
+            ? prev
+            : {
+                queueDate: day,
+                todayQueue: [],
+                todayLog: [],
+                queueItems: {},
+                completedToday: 0,
+                skippedToday: 0,
+                dncToday: 0,
+              };
+        const current = base.queueItems[id] ?? emptyDailyQueueItem();
+        const next: DailyOutreachPersisted = {
+          ...base,
+          queueItems: {
+            ...base.queueItems,
+            [id]: {
+              ...current,
+              ...patch,
+              updatedAt: Date.now(),
+            },
+          },
+        };
+        saveDailyOutreachState(next);
+        return next;
+      });
+    },
+    [],
+  );
 
-    let cancelled = false;
+  const removeLeadFromQueue = useCallback((id: string) => {
+    setDailyOutreach((dprev) => {
+      const day = localCalendarDayKey();
+      const base = dprev.queueDate === day ? dprev : loadDailyOutreachState();
+      const nextItems = { ...base.queueItems };
+      delete nextItems[id];
+      const nextD: DailyOutreachPersisted = {
+        ...base,
+        queueDate: day,
+        todayQueue: base.todayQueue.filter((x) => x !== id),
+        todayLog: base.todayLog.filter((x) => x !== id),
+        queueItems: nextItems,
+      };
+      saveDailyOutreachState(nextD);
+      return nextD;
+    });
+  }, []);
+
+  const prepareQueueLeadMessage = async () => {
+    if (!queueCurrentId || !queueCurrentLead) return;
     const followUp = Boolean(outreachQueue.followUpById[queueCurrentId]);
     setOutreachQueue((prev) => ({ ...prev, loading: true, error: null }));
-    void generateLeadAiMessage(queueCurrentLead, followUp)
-      .then((message) => {
-        if (cancelled) return;
-        setOutreachQueue((prev) => ({
-          ...prev,
-          loading: false,
-          messages: { ...prev.messages, [queueCurrentId]: message },
-        }));
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setOutreachQueue((prev) => ({
-          ...prev,
-          loading: false,
-          error: e instanceof Error ? e.message : "Mesaj oluşturulamadı",
-        }));
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    outreachQueue.open,
-    outreachQueue.complete,
-    queueCurrentId,
-    queueCurrentLead,
-    outreachQueue.messages,
-    outreachQueue.followUpById,
-  ]);
+    try {
+      const message = await generateLeadAiMessage(queueCurrentLead, followUp);
+      setOutreachQueue((prev) => ({
+        ...prev,
+        loading: false,
+        messages: { ...prev.messages, [queueCurrentId]: message },
+      }));
+      updateQueueItem(queueCurrentId, { preparedMessage: message, queueStatus: "prepared" });
+    } catch (e) {
+      setOutreachQueue((prev) => ({
+        ...prev,
+        loading: false,
+        error: e instanceof Error ? e.message : "Message could not be prepared",
+      }));
+    }
+  };
 
   const closeOutreachQueue = () => {
     setOutreachQueue(emptyOutreachQueueState());
@@ -3479,7 +3638,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const id = queueCurrentLead.id;
     const cur = getLeadState(id);
     const ts = Date.now();
-    const hours = 48;
+    const hours = 24;
     updateLead(id, {
       status: "contacted",
       contactedAt: cur.contactedAt ?? ts,
@@ -3489,6 +3648,31 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       nextFollowUpAt: ts + hours * 60 * 60 * 1000,
       followUpAfterHours: hours,
     });
+    void (async () => {
+      try {
+        const res = await fetch("/api/airtable/mark-sent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lead: {
+              business_name: queueCurrentLead.name,
+              whatsapp: queueCurrentLead.phone,
+              notes: queueCurrentLead._s.note ?? "",
+              contactAttempts: (cur.contactAttempts ?? 0) + 1,
+              lastContactedAt: ts,
+              nextFollowUpAt: ts + hours * 60 * 60 * 1000,
+            },
+          }),
+        });
+        const data = (await res.json()) as { configured?: boolean; warning?: string };
+        if (data.configured && data.warning) {
+          console.warn(data.warning);
+        }
+      } catch {
+        console.warn("Airtable mark-sent update skipped");
+      }
+    })();
+    updateQueueItem(id, { queueStatus: "contacted" });
     setDailyOutreach((dprev) => {
       const day = localCalendarDayKey();
       const base = dprev.queueDate === day ? dprev : loadDailyOutreachState();
@@ -3496,6 +3680,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         ...base,
         queueDate: day,
         todayQueue: base.todayQueue.filter((x) => x !== id),
+        todayLog: base.todayLog.includes(id) ? base.todayLog : [...base.todayLog, id],
         completedToday: base.completedToday + 1,
       };
       saveDailyOutreachState(nextD);
@@ -3538,6 +3723,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         ...base,
         queueDate: day,
         todayQueue: base.todayQueue.filter((x) => x !== id),
+        todayLog: base.todayLog.includes(id) ? base.todayLog : [...base.todayLog, id],
         dncToday: base.dncToday + 1,
       };
       saveDailyOutreachState(nextD);
@@ -3567,6 +3753,26 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         error: null,
       };
     });
+  };
+
+  const skipQueueLead = () => {
+    if (!queueCurrentId) return;
+    updateQueueItem(queueCurrentId, { queueStatus: "skipped" });
+    setDailyOutreach((dprev) => {
+      const day = localCalendarDayKey();
+      const base = dprev.queueDate === day ? dprev : loadDailyOutreachState();
+      const nextD: DailyOutreachPersisted = {
+        ...base,
+        queueDate: day,
+        todayQueue: base.todayQueue.filter((x) => x !== queueCurrentId),
+        todayLog: base.todayLog.includes(queueCurrentId)
+          ? base.todayLog
+          : [...base.todayLog, queueCurrentId],
+      };
+      saveDailyOutreachState(nextD);
+      return nextD;
+    });
+    goNextInQueue(true);
   };
 
   return (
@@ -3646,26 +3852,26 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => void syncLeadsToSheets()}
-            disabled={sheetsBusy !== null}
+            onClick={() => void syncLeadsToAirtable()}
+            disabled={airtableBusy !== null}
             className="inline-flex items-center justify-center rounded-md border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {sheetsBusy === "sync" ? "Syncing..." : "Sync to Google Sheets"}
+            {airtableBusy === "sync" ? "Syncing..." : "Sync to Airtable"}
           </button>
           <button
             type="button"
-            onClick={() => void loadLeadsFromSheets()}
-            disabled={sheetsBusy !== null}
+            onClick={() => void loadLeadsFromAirtable()}
+            disabled={airtableBusy !== null}
             className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {sheetsBusy === "load" ? "Loading..." : "Load from Google Sheets"}
+            {airtableBusy === "load" ? "Loading..." : "Load from Airtable"}
           </button>
-          {sheetsConnected === true && (
-            <span className="text-xs text-emerald-300">Google Sheets connected</span>
+          {airtableConnected === true && (
+            <span className="text-xs text-emerald-300">Airtable connected</span>
           )}
         </div>
-        {sheetsWarning && <p className="mt-2 text-xs text-amber-300">{sheetsWarning}</p>}
-        {sheetsSyncStatus && <p className="mt-2 text-xs text-zinc-300">{sheetsSyncStatus}</p>}
+        {airtableWarning && <p className="mt-2 text-xs text-amber-300">{airtableWarning}</p>}
+        {airtableSyncStatus && <p className="mt-2 text-xs text-zinc-300">{airtableSyncStatus}</p>}
       </section>
 
       {/* Last Import Results */}
@@ -3860,7 +4066,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                 inQ ||
                                 !elig ||
                                 (!inQ &&
-                                  dailyOutreach.todayQueue.length >= DAILY_OUTREACH_LIMIT)
+                                  activeQueueCount >= DAILY_OUTREACH_LIMIT)
                               );
                             })()}
                             title="Add to today’s outreach queue (max 20)"
@@ -3905,7 +4111,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               Today&apos;s Outreach Queue
             </h2>
             <p className="mt-0.5 text-[11px] text-zinc-500">
-              {dailyOutreach.todayQueue.length} / {DAILY_OUTREACH_LIMIT} leads · Sent today{" "}
+              {activeQueueCount} / {DAILY_OUTREACH_LIMIT} active · Sent today{" "}
               {dailyOutreach.completedToday} · Skipped {dailyOutreach.skippedToday} · DNC{" "}
               {dailyOutreach.dncToday}
             </p>
@@ -3914,7 +4120,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <button
               type="button"
               onClick={startDailyOutreachSession}
-              disabled={dailyOutreach.todayQueue.length === 0}
+              disabled={activeQueueCount === 0}
               className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Start Session
@@ -3929,13 +4135,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             </button>
           </div>
         </div>
-        {dailyOutreach.todayQueue.length > 0 ? (
+        {dailyOutreach.todayLog.length > 0 ? (
           <div className="mt-3 max-h-28 overflow-y-auto border-t border-white/5 pt-2">
             <ul className="space-y-1.5 text-[11px] text-zinc-300">
-              {dedupeLeadIds(dailyOutreach.todayQueue).map((qid, index) => {
+              {dedupeLeadIds(dailyOutreach.todayLog).map((qid, index) => {
                 const qrow = allRowsById.get(qid);
                 if (!qrow) return null;
                 const cat = classifyContactChannel(qrow, contactFinderMap[qid]);
+                const qitem = dailyOutreach.queueItems[qid];
                 return (
                   <li
                     key={renderLeadKey("daily-queue", qrow, index)}
@@ -3944,6 +4151,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     <span className="font-medium text-zinc-100">{qrow.name}</span>
                     <span className="text-zinc-500">{qrow.city}</span>
                     <span className="tabular-nums text-orange-200">Hot {qrow.hotScore}</span>
+                    <span className="rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-zinc-300">
+                      {qitem?.queueStatus ?? "queued"}
+                    </span>
                     <span className="text-zinc-500">
                       {cat === "ready"
                         ? "Contact ready"
@@ -4021,6 +4231,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               lead={lead}
               status={lead._s.status}
               onAction={(id) => setOpenId(id)}
+              onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
+              queueDisabled={activeQueueCount >= DAILY_OUTREACH_LIMIT}
               fromLatestImport={useLatestImportHotLeads}
             />
           ))}
@@ -4412,7 +4624,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                   inQ ||
                                   !elig ||
                                   (!inQ &&
-                                    dailyOutreach.todayQueue.length >= DAILY_OUTREACH_LIMIT)
+                                    activeQueueCount >= DAILY_OUTREACH_LIMIT)
                                 );
                               })()}
                               title="Add to today’s outreach queue"
@@ -4569,6 +4781,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     <div className="mt-2 text-[11px] text-zinc-500">
                       Pipeline: {STATUS_LABEL[queueCurrentLead._s.status]}
                     </div>
+                    <div className="mt-1 text-[11px] text-zinc-500">
+                      Queue status: {dailyOutreach.queueItems[queueCurrentId!]?.queueStatus ?? "queued"}
+                    </div>
                   </div>
                   <div className="rounded-md border border-white/10 bg-white/[0.02] p-3">
                     <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
@@ -4579,9 +4794,19 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     ) : outreachQueue.error ? (
                       <p className="text-rose-300">{outreachQueue.error}</p>
                     ) : (
-                      <p className="whitespace-pre-wrap text-zinc-200">
-                        {queueCurrentMessage || "Mesaj bulunamadı"}
-                      </p>
+                      <textarea
+                        value={queueCurrentMessage}
+                        onChange={(e) => {
+                          if (!queueCurrentId) return;
+                          const nextMessage = e.target.value;
+                          updateQueueItem(queueCurrentId, {
+                            preparedMessage: nextMessage,
+                            queueStatus: nextMessage.trim() ? "prepared" : "queued",
+                          });
+                        }}
+                        placeholder="Prepare Message to generate AI outreach copy"
+                        className="min-h-28 w-full rounded-md border border-white/10 bg-black/20 p-2 text-xs text-zinc-200 placeholder:text-zinc-500 focus:border-indigo-400/40 focus:outline-none focus:ring-1 focus:ring-indigo-500/30"
+                      />
                     )}
                   </div>
                   {(queueCurrentLead._s.contactAttempts ?? 0) >= 3 && (
@@ -4592,6 +4817,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
                       type="button"
+                      onClick={() => void prepareQueueLeadMessage()}
+                      disabled={outreachQueue.loading}
+                      className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {outreachQueue.loading ? "Preparing..." : "Prepare Message"}
+                    </button>
+                    <button
+                      type="button"
                       disabled={!queueCurrentMessage || !queueCurrentPhone}
                       onClick={() => {
                         if (!queueCurrentMessage || !queueCurrentPhone) return;
@@ -4599,10 +4832,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           queueCurrentMessage,
                         )}`;
                         openExternal(link);
+                        if (queueCurrentId) {
+                          updateQueueItem(queueCurrentId, { queueStatus: "opened" });
+                        }
                       }}
                       className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Open WhatsApp
+                      {queueCurrentPhone ? "Open WhatsApp" : "No WhatsApp contact"}
                     </button>
                     <button
                       type="button"
@@ -4624,10 +4860,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     </button>
                     <button
                       type="button"
-                      onClick={() => goNextInQueue(true)}
+                      onClick={() => skipQueueLead()}
                       className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
                     >
                       Skip
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!queueCurrentId) return;
+                        removeLeadFromQueue(queueCurrentId);
+                        goNextInQueue(false);
+                      }}
+                      className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
+                    >
+                      Remove from Queue
                     </button>
                     <button
                       type="button"

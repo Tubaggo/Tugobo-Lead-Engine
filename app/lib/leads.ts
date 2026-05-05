@@ -62,6 +62,37 @@ export type ScoredLead = Lead & {
   contactQuality: ContactQuality;
 };
 
+function normalizePhoneDedupe(phone?: string): string | null {
+  if (!phone?.trim()) return null;
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length === 10) return `90${digits}`;
+  if (digits.length === 11 && digits.startsWith("0")) return `9${digits}`;
+  return digits;
+}
+
+function normalizeNameCityKey(name: string, city: string): string {
+  return `${name}`.trim().toLowerCase() + "|" + `${city}`.trim().toLowerCase();
+}
+
+export function dedupeLeads(leads: Lead[]): Lead[] {
+  const seenNameCity = new Set<string>();
+  const seenWhatsapp = new Set<string>();
+  const out: Lead[] = [];
+
+  for (const lead of leads) {
+    const nameCityKey = normalizeNameCityKey(lead.name, lead.city);
+    const whatsappKey = normalizePhoneDedupe(lead.phone);
+    if (seenNameCity.has(nameCityKey)) continue;
+    if (whatsappKey && seenWhatsapp.has(whatsappKey)) continue;
+    seenNameCity.add(nameCityKey);
+    if (whatsappKey) seenWhatsapp.add(whatsappKey);
+    out.push(lead);
+  }
+
+  return out;
+}
+
 /** Persisted workflow state for one lead — scalars only (current snapshot, not history). */
 export type LeadStatusUpdate = {
   status: LeadStatus;
