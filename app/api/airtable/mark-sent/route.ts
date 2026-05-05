@@ -13,6 +13,8 @@ type MarkSentBody = {
     contactAttempts?: unknown;
     lastContactedAt?: unknown;
     nextFollowUpAt?: unknown;
+    doNotContact?: unknown;
+    pipelineStage?: unknown;
   };
 };
 
@@ -53,16 +55,32 @@ export async function POST(req: Request) {
     const contactAttempts = asNumber(lead?.contactAttempts);
     const lastContactedAt = asNumber(lead?.lastContactedAt);
     const nextFollowUpAt = asNumber(lead?.nextFollowUpAt);
+    const doNotContact = Boolean(lead?.doNotContact);
+    const pipelineStage = asString(lead?.pipelineStage) || "contacted";
     const patchFields: Record<string, unknown> = {
       status: "contacted",
       notes: asString(lead?.notes),
-      contactAttempts: contactAttempts ?? 0,
-      lastContactedAt: lastContactedAt ? new Date(lastContactedAt).toISOString() : null,
-      nextFollowUpAt: nextFollowUpAt ? new Date(nextFollowUpAt).toISOString() : null,
+      contact_attempts: contactAttempts ?? 0,
+      last_contacted_at: lastContactedAt ? new Date(lastContactedAt).toISOString() : null,
+      next_follow_up_at: nextFollowUpAt ? new Date(nextFollowUpAt).toISOString() : null,
+      do_not_contact: doNotContact,
+      pipeline_stage: pipelineStage,
+    };
+    const fallbackFields: Record<string, unknown> = {
+      status: "contacted",
+      notes: asString(lead?.notes),
     };
 
     try {
-      await updateLeadRecordFields(existing.id, patchFields);
+      try {
+        await updateLeadRecordFields(existing.id, patchFields);
+      } catch (err) {
+        const message = err instanceof Error ? err.message.toLowerCase() : "";
+        const unknownField =
+          message.includes("unknown field") || message.includes("cannot find field");
+        if (!unknownField) throw err;
+        await updateLeadRecordFields(existing.id, fallbackFields);
+      }
       return NextResponse.json({ configured: true, updated: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Airtable mark-sent update failed";

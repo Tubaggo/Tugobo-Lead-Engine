@@ -1,6 +1,6 @@
 type AirtableRecordFields = Record<string, unknown>;
 
-type AirtableRecord = {
+export type AirtableRecord = {
   id: string;
   createdTime?: string;
   fields: AirtableRecordFields;
@@ -19,6 +19,11 @@ export type AirtableLeadPayload = {
   hot_score: number;
   status: string;
   notes: string;
+  contact_attempts: number;
+  last_contacted_at: string | null;
+  next_follow_up_at: string | null;
+  do_not_contact: boolean;
+  pipeline_stage: string;
 };
 
 function getEnv(name: string): string {
@@ -166,4 +171,15 @@ export async function listAllLeadRecords(): Promise<AirtableRecord[]> {
     offset = data.offset;
   }
   return all;
+}
+
+export async function getLeadRecordById(recordId: string): Promise<AirtableRecord | null> {
+  const conn = getAirtableConnection();
+  if (!conn) return null;
+  const res = await airtableFetch(`${conn.baseUrl}/${recordId}`, { method: "GET" }, conn.apiKey);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Airtable read failed (${res.status})`);
+  }
+  return (await res.json()) as AirtableRecord;
 }

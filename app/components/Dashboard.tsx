@@ -1233,9 +1233,11 @@ const badgeBase =
 function OutreachBadgesRow({
   row,
   reimported,
+  syncedToAirtable = false,
 }: {
   row: { id: string; _s: LeadStatusUpdate; hotScore?: number };
   reimported?: boolean;
+  syncedToAirtable?: boolean;
 }) {
   const s = row._s;
   const now = Date.now();
@@ -1264,7 +1266,14 @@ function OutreachBadgesRow({
     chips.push({
       key: "fudue",
       cls: `${badgeBase} bg-orange-500/15 text-orange-200 ring-orange-400/40`,
-      label: "🔥 Follow-Up Now",
+      label: "Follow-Up Due",
+    });
+  }
+  if ((s.contactAttempts ?? 0) === 2) {
+    chips.push({
+      key: "fuonce",
+      cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`,
+      label: "Followed up once",
     });
   }
   if (typeof row.hotScore === "number" && row.hotScore > 70 && s.status === "new") {
@@ -1296,7 +1305,7 @@ function OutreachBadgesRow({
     chips.push({
       key: "spam",
       cls: `${badgeBase} bg-yellow-500/15 text-yellow-200 ring-yellow-400/35`,
-      label: "Already contacted multiple times",
+      label: "Max attempts reached",
     });
   }
   if (reimported) {
@@ -1304,6 +1313,13 @@ function OutreachBadgesRow({
       key: "reimp",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/35`,
       label: "Re-imported",
+    });
+  }
+  if (syncedToAirtable) {
+    chips.push({
+      key: "airtable",
+      cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
+      label: "Synced to Airtable",
     });
   }
   if (chips.length === 0) return null;
@@ -2430,6 +2446,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [outreachQueue, setOutreachQueue] = useState<OutreachQueueState>(() =>
     emptyOutreachQueueState(),
   );
+  const [followUpBusyLeadId, setFollowUpBusyLeadId] = useState<string | null>(null);
   const [contactFinderRequest, setContactFinderRequest] =
     useState<ContactFinderRequestState>({ status: "idle" });
   const [contactFinderMap, setContactFinderMap] = useState<
@@ -2439,6 +2456,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [airtableWarning, setAirtableWarning] = useState("");
   const [airtableSyncStatus, setAirtableSyncStatus] = useState("");
   const [airtableBusy, setAirtableBusy] = useState<"sync" | "load" | null>(null);
+  const [airtableSyncedLeadIds, setAirtableSyncedLeadIds] = useState<string[]>([]);
 
   useEffect(() => {
     setStateMap(loadState());
@@ -2593,7 +2611,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     setAirtableBusy("sync");
     try {
       const dedupedRows = dedupeLeadsForAirtableSync(allRows);
-      const payload = dedupedRows.map((row) => ({
+      const valuableRows = dedupedRows.filter((row) => {
+        const queueTouched =
+          dailyOutreach.todayQueue.includes(row.id) || dailyOutreach.todayLog.includes(row.id);
+        const interacted = row._s.status !== "new" || (row._s.contactAttempts ?? 0) > 0;
+        return queueTouched || interacted;
+      });
+      const payload = valuableRows.map((row) => ({
         business_name: row.name,
         whatsapp: row.phone ?? "",
         website: row.website ?? "",
@@ -2601,7 +2625,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         hot_score: row.hotScore,
         status: row._s.status || "new",
         notes: row._s.note ?? "",
+        contact_attempts: row._s.contactAttempts ?? 0,
+        last_contacted_at:
+          typeof row._s.lastContactedAt === "number" && row._s.lastContactedAt > 0
+            ? new Date(row._s.lastContactedAt).toISOString()
+            : null,
+        next_follow_up_at:
+          typeof row._s.nextFollowUpAt === "number" && row._s.nextFollowUpAt > 0
+            ? new Date(row._s.nextFollowUpAt).toISOString()
+            : null,
+        do_not_contact: Boolean(row._s.doNotContact),
+        pipeline_stage: row._s.status === "new" ? "new" : "contacted",
       }));
+      if (payload.length === 0) {
+        setAirtableSyncStatus("No valuable leads to sync yet.");
+        return;
+      }
       const res = await fetch("/api/airtable/sync-leads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2622,6 +2661,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       }
       if (!res.ok) throw new Error(data.error || "Airtable sync failed");
       setAirtableConnected(true);
+      setAirtableSyncedLeadIds(valuableRows.map((row) => row.id));
       setAirtableSyncStatus(
         `Synced to Airtable: ${data.added ?? 0} added, ${data.updated ?? 0} updated, ${data.skipped ?? 0} skipped.`,
       );
@@ -2876,6 +2916,27 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return dedupeScoredLeads(rows as ScoredLead[]) as LeadTableRow[];
   }, [latestImportLeads, allRowsById, stateMap]);
 
+  const followUpDueRows = useMemo(() => {
+    const now = Date.now();
+    return allRows
+      .filter((row) => {
+        const s = row._s;
+        if (s.doNotContact) return false;
+        if (s.status !== "contacted") return false;
+        const attempts = s.contactAttempts ?? 0;
+        if (attempts >= 3) return false;
+        const dueAt = followUpTargetTimestamp(s);
+        if (dueAt === null) return false;
+        return dueAt <= now;
+      })
+      .sort((a, b) => {
+        const ad = followUpTargetTimestamp(a._s) ?? 0;
+        const bd = followUpTargetTimestamp(b._s) ?? 0;
+        return ad - bd;
+      })
+      .slice(0, 20);
+  }, [allRows]);
+
   const stats = useMemo(() => {
     const sessionRows = allRows.filter((r) => sessionLeadIds.includes(r.id));
     const sessionLeads = sessionRows.length;
@@ -2941,78 +3002,118 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     });
   }, [openId, openLead?.id]);
 
-  const recordWhatsAppOutreach = useCallback((id: string) => {
-    setStateMap((prev) => {
-      const cur = normalizeStateEntry(prev[id]);
-      if (cur.doNotContact) return prev;
-      const ts = Date.now();
-      const hours = defaultFollowUpHours(cur);
-      const nextFollowUpAt = ts + hours * 60 * 60 * 1000;
-      const next: StateMap = {
-        ...prev,
-        [id]: {
-          ...DEFAULT_STATE,
-          ...cur,
-          status: "contacted",
-          contactedAt: cur.contactedAt ?? ts,
+  const syncContactedToAirtable = useCallback(
+    async (
+      leadId: string,
+      payload: {
+        contactAttempts: number;
+        lastContactedAt: number;
+        nextFollowUpAt: number | null;
+        doNotContact: boolean;
+      },
+    ) => {
+      const lead = allRowsById.get(leadId);
+      if (!lead) return;
+      try {
+        const res = await fetch("/api/airtable/mark-sent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lead: {
+              business_name: lead.name,
+              whatsapp: lead.phone,
+              notes: lead._s.note ?? "",
+              contactAttempts: payload.contactAttempts,
+              lastContactedAt: payload.lastContactedAt,
+              nextFollowUpAt: payload.nextFollowUpAt,
+              doNotContact: payload.doNotContact,
+              pipelineStage: "contacted",
+            },
+          }),
+        });
+        const data = (await res.json()) as { configured?: boolean; warning?: string };
+        if (data.configured && data.warning) {
+          console.warn(data.warning);
+        }
+      } catch {
+        console.warn("Airtable outreach update skipped");
+      }
+    },
+    [allRowsById],
+  );
+
+  const applyOutreachConfirmed = useCallback(
+    (leadId: string) => {
+      let syncPayload:
+        | {
+            contactAttempts: number;
+            lastContactedAt: number;
+            nextFollowUpAt: number | null;
+            doNotContact: boolean;
+          }
+        | null = null;
+      setStateMap((prev) => {
+        const cur = normalizeStateEntry(prev[leadId]);
+        if (cur.doNotContact) return prev;
+        const ts = Date.now();
+        const nextAttempts = (cur.contactAttempts ?? 0) + 1;
+        const nextFollowUpAt =
+          nextAttempts === 1
+            ? ts + 24 * 60 * 60 * 1000
+            : nextAttempts === 2
+              ? ts + 72 * 60 * 60 * 1000
+              : null;
+        const doNotContact = nextAttempts >= 3;
+        syncPayload = {
+          contactAttempts: nextAttempts,
           lastContactedAt: ts,
-          contactAttempts: (cur.contactAttempts ?? 0) + 1,
-          channel: "whatsapp",
           nextFollowUpAt,
-          followUpAfterHours: hours,
-          updatedAt: ts,
-        },
-      };
-      saveState(next);
-      return next;
-    });
-  }, []);
+          doNotContact,
+        };
+        const next: StateMap = {
+          ...prev,
+          [leadId]: {
+            ...DEFAULT_STATE,
+            ...cur,
+            status: "contacted",
+            contactedAt: cur.contactedAt ?? ts,
+            lastContactedAt: ts,
+            contactAttempts: nextAttempts,
+            channel: "whatsapp",
+            nextFollowUpAt,
+            doNotContact,
+            followUpAfterHours: nextAttempts === 1 ? 24 : 72,
+            updatedAt: ts,
+          },
+        };
+        saveState(next);
+        return next;
+      });
+      if (syncPayload) {
+        void syncContactedToAirtable(leadId, syncPayload);
+      }
+    },
+    [syncContactedToAirtable],
+  );
+
+  const recordWhatsAppOutreach = useCallback(
+    (id: string) => {
+      applyOutreachConfirmed(id);
+    },
+    [applyOutreachConfirmed],
+  );
 
   useEffect(() => {
-    const tick = () => {
-      const now = Date.now();
-      setStateMap((prev) => {
-        let changed = false;
-        const next: StateMap = { ...prev };
-        for (const [id, s] of Object.entries(prev)) {
-          if (s.doNotContact || s.status !== "contacted") continue;
-          const d = followUpDeadline(normalizeStateEntry(s));
-          if (d === null || now <= d) continue;
-          next[id] = {
-            ...normalizeStateEntry(s),
-            status: "needs_follow_up",
-            updatedAt: now,
-          };
-          changed = true;
-        }
-        if (changed) saveState(next);
-        return changed ? next : prev;
-      });
-    };
-    tick();
-    const i = window.setInterval(tick, 60_000);
-    return () => window.clearInterval(i);
+    // Follow-up visibility is derived from `nextFollowUpAt`; keep status stable.
+    return () => {};
   }, []);
 
   const setLeadStatus = (id: string, status: LeadStatus) => {
     const current = getLeadState(id);
     const ts = Date.now();
-    const hours = defaultFollowUpHours(current);
 
     if (status === "contacted") {
-      const alreadyPipeline =
-        current.status === "contacted" || current.status === "needs_follow_up";
-      updateLead(id, {
-        status: "contacted",
-        contactedAt: current.contactedAt ?? ts,
-        lastContactedAt: ts,
-        contactAttempts: alreadyPipeline
-          ? (current.contactAttempts ?? 0)
-          : (current.contactAttempts ?? 0) + 1,
-        channel: current.channel ?? "whatsapp",
-        nextFollowUpAt: ts + hours * 60 * 60 * 1000,
-        followUpAfterHours: hours,
-      });
+      applyOutreachConfirmed(id);
       return;
     }
 
@@ -3242,22 +3343,33 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const startFollowUpOutreach = async (lead: ScoredLead) => {
     const st = getLeadState(lead.id);
     if (st.doNotContact) return;
+    if (st.contactAttempts !== undefined && st.contactAttempts >= 3) return;
     if (!isFollowUpDue(st, Date.now()) && st.status !== "needs_follow_up") return;
+    const wa = whatsappLink(lead.phone);
+    if (!wa) {
+      showQueueNotice("No WhatsApp contact");
+      return;
+    }
+    setFollowUpBusyLeadId(lead.id);
     try {
-      const message = await generateLeadAiMessage(lead, true);
-      const wa = whatsappLinkWithText(lead.phone, message);
-      if (wa) {
-        openExternal(wa);
-        recordWhatsAppOutreach(lead.id);
-      } else {
-        setAiMessageModal({ lead, phase: "ready", message });
+      const aiMessage = await generateLeadAiMessage(lead, true);
+      const fallback = `Merhaba ${lead.name}, onceki mesajimi gorup goremediginizi kontrol etmek istedim. Uygunsaniz kisaca bilgi paylasabilir miyim?`;
+      const message = aiMessage.trim() || fallback;
+      const waWithText = whatsappLinkWithText(lead.phone, message);
+      if (!waWithText) {
+        showQueueNotice("No WhatsApp contact");
+        return;
       }
+      openExternal(waWithText);
+      showQueueNotice("WhatsApp opened. Mark follow-up sent after you send manually.");
     } catch (e) {
       setAiMessageModal({
         lead,
         phase: "error",
         error: e instanceof Error ? e.message : "Bir hata oluştu",
       });
+    } finally {
+      setFollowUpBusyLeadId(null);
     }
   };
 
@@ -3326,9 +3438,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   const markSelectedAsContacted = () => {
+    let changed = false;
     for (const id of selectedLeadIds) {
       if (getLeadState(id).doNotContact) continue;
       setLeadStatus(id, "contacted");
+      changed = true;
+    }
+    if (changed) {
+      showQueueNotice("Follow-up scheduled for tomorrow");
     }
   };
 
@@ -3636,42 +3753,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const markQueueLeadSent = () => {
     if (!queueCurrentLead || !queueCurrentId) return;
     const id = queueCurrentLead.id;
-    const cur = getLeadState(id);
-    const ts = Date.now();
-    const hours = 24;
-    updateLead(id, {
-      status: "contacted",
-      contactedAt: cur.contactedAt ?? ts,
-      lastContactedAt: ts,
-      contactAttempts: (cur.contactAttempts ?? 0) + 1,
-      channel: "whatsapp",
-      nextFollowUpAt: ts + hours * 60 * 60 * 1000,
-      followUpAfterHours: hours,
-    });
-    void (async () => {
-      try {
-        const res = await fetch("/api/airtable/mark-sent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lead: {
-              business_name: queueCurrentLead.name,
-              whatsapp: queueCurrentLead.phone,
-              notes: queueCurrentLead._s.note ?? "",
-              contactAttempts: (cur.contactAttempts ?? 0) + 1,
-              lastContactedAt: ts,
-              nextFollowUpAt: ts + hours * 60 * 60 * 1000,
-            },
-          }),
-        });
-        const data = (await res.json()) as { configured?: boolean; warning?: string };
-        if (data.configured && data.warning) {
-          console.warn(data.warning);
-        }
-      } catch {
-        console.warn("Airtable mark-sent update skipped");
-      }
-    })();
+    applyOutreachConfirmed(id);
+    showQueueNotice("Follow-up scheduled for tomorrow");
     updateQueueItem(id, { queueStatus: "contacted" });
     setDailyOutreach((dprev) => {
       const day = localCalendarDayKey();
@@ -3775,6 +3858,52 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     goNextInQueue(true);
   };
 
+  const markFollowUpSent = (leadId: string) => {
+    const current = getLeadState(leadId);
+    if (current.doNotContact) return;
+    const ts = Date.now();
+    const nextAttempts = (current.contactAttempts ?? 0) + 1;
+    const nextFollowUpAt = nextAttempts >= 3 ? null : ts + 72 * 60 * 60 * 1000;
+    const doNotContact = nextAttempts >= 3;
+    updateLead(leadId, {
+      status: "contacted",
+      lastContactedAt: ts,
+      contactAttempts: nextAttempts,
+      channel: "whatsapp",
+      nextFollowUpAt,
+      doNotContact,
+      followUpAfterHours: nextAttempts >= 3 ? 72 : 72,
+    });
+    const lead = allRowsById.get(leadId);
+    if (!lead) return;
+    void (async () => {
+      try {
+        const res = await fetch("/api/airtable/mark-sent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lead: {
+              business_name: lead.name,
+              whatsapp: lead.phone,
+              notes: current.note ?? "",
+              contactAttempts: nextAttempts,
+              lastContactedAt: ts,
+              nextFollowUpAt,
+              doNotContact,
+              pipelineStage: doNotContact ? "do_not_contact" : "contacted",
+            },
+          }),
+        });
+        const data = (await res.json()) as { configured?: boolean; warning?: string };
+        if (data.configured && data.warning) {
+          console.warn(data.warning);
+        }
+      } catch {
+        console.warn("Airtable follow-up update skipped");
+      }
+    })();
+  };
+
   return (
     <div className="relative mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
       <header className="flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
@@ -3808,6 +3937,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           >
             Start New Session
           </button>
+          <a
+            href="/dashboard/follow-ups"
+            className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2 py-1 text-[11px] text-orange-200 transition hover:bg-orange-500/20"
+          >
+            Follow-ups
+          </a>
         </div>
       </header>
 
@@ -3967,7 +4102,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               </span>
                             )}
                           </div>
-                          <OutreachBadgesRow row={row} />
+                          <OutreachBadgesRow
+                            row={row}
+                            syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
+                          />
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top text-xs text-zinc-300">
@@ -4170,6 +4308,62 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           <p className="mt-2 text-[11px] text-zinc-500">
             Use &quot;Add to Queue&quot; on import or All Leads rows, or add selected leads in bulk.
           </p>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-orange-500/20 bg-orange-500/[0.04] px-4 py-3 ring-1 ring-inset ring-orange-500/10">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-orange-200">
+              Follow-Up Due
+            </h2>
+            <p className="mt-0.5 text-[11px] text-zinc-500">
+              Contacted leads due now (max 3 attempts)
+            </p>
+          </div>
+          <span className="rounded-md bg-black/20 px-2 py-1 text-[11px] text-orange-200">
+            {followUpDueRows.length} due
+          </span>
+        </div>
+        {followUpDueRows.length === 0 ? (
+          <p className="mt-2 text-[11px] text-zinc-500">No follow-up due right now.</p>
+        ) : (
+          <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1">
+            {followUpDueRows.map((row, index) => {
+              const attempts = row._s.contactAttempts ?? 0;
+              const dueAt = followUpTargetTimestamp(row._s);
+              return (
+                <div
+                  key={renderLeadKey("follow-up-due", row, index)}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-black/20 px-2.5 py-2"
+                >
+                  <div>
+                    <div className="text-xs font-medium text-zinc-100">{row.name}</div>
+                    <div className="text-[11px] text-zinc-500">
+                      {row.city} · Attempts {attempts} · Due {relativeCalendarLabel(dueAt)}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={followUpBusyLeadId === row.id}
+                      onClick={() => void startFollowUpOutreach(row)}
+                      className="rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-2.5 py-1.5 text-[11px] font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {followUpBusyLeadId === row.id ? "Preparing..." : "Follow Up"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => markFollowUpSent(row.id)}
+                      className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-medium text-sky-200 hover:bg-sky-500/20"
+                    >
+                      Mark Follow-Up Sent
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
       </section>
 
@@ -4528,6 +4722,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             <OutreachBadgesRow
                               row={row}
                               reimported={lastImportUpdatedIds.includes(row.id)}
+                              syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
                             />
                           </div>
                         </td>

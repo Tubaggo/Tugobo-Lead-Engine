@@ -19,7 +19,17 @@ function toStringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function toIsoOrNull(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value).toISOString();
+  }
+  return null;
+}
+
 function normalizeLead(raw: Record<string, unknown>): AirtableLeadPayload {
+  const contactAttempts = toNumber(raw.contact_attempts ?? raw.contactAttempts);
+  const doNotContact = Boolean(raw.do_not_contact ?? raw.doNotContact);
   return {
     business_name: toStringValue(raw.business_name),
     whatsapp: toStringValue(raw.whatsapp),
@@ -28,7 +38,64 @@ function normalizeLead(raw: Record<string, unknown>): AirtableLeadPayload {
     hot_score: toNumber(raw.hot_score),
     status: toStringValue(raw.status) || "new",
     notes: toStringValue(raw.notes),
+    contact_attempts: contactAttempts,
+    last_contacted_at: toIsoOrNull(raw.last_contacted_at ?? raw.lastContactedAt),
+    next_follow_up_at: toIsoOrNull(raw.next_follow_up_at ?? raw.nextFollowUpAt),
+    do_not_contact: doNotContact,
+    pipeline_stage:
+      toStringValue(raw.pipeline_stage) || (doNotContact ? "do_not_contact" : "contacted"),
   };
+}
+
+function isUnknownFieldError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("unknown field") || message.includes("cannot find field");
+}
+
+async function createOrUpdateWithFallback(
+  recordId: string | null,
+  payload: AirtableLeadPayload,
+): Promise<"added" | "updated"> {
+  const minimalFields = {
+    business_name: payload.business_name,
+    whatsapp: payload.whatsapp,
+    website: payload.website,
+    lead_score: payload.lead_score,
+    hot_score: payload.hot_score,
+    status: payload.status,
+    notes: payload.notes,
+  };
+  try {
+    if (recordId) {
+      await updateLeadRecord(recordId, payload);
+      return "updated";
+    }
+    await createLeadRecord(payload);
+    return "added";
+  } catch (error) {
+    if (!isUnknownFieldError(error)) throw error;
+    if (recordId) {
+      await updateLeadRecord(recordId, {
+        ...minimalFields,
+        contact_attempts: 0,
+        last_contacted_at: null,
+        next_follow_up_at: null,
+        do_not_contact: false,
+        pipeline_stage: "contacted",
+      });
+      return "updated";
+    }
+    await createLeadRecord({
+      ...minimalFields,
+      contact_attempts: 0,
+      last_contacted_at: null,
+      next_follow_up_at: null,
+      do_not_contact: false,
+      pipeline_stage: "contacted",
+    });
+    return "added";
+  }
 }
 
 export async function POST(req: Request) {
@@ -63,11 +130,10 @@ export async function POST(req: Request) {
         business_name: payload.business_name,
         whatsapp: payload.whatsapp,
       });
-      if (existing) {
-        await updateLeadRecord(existing.id, payload);
+      const result = await createOrUpdateWithFallback(existing?.id ?? null, payload);
+      if (result === "updated") {
         updated += 1;
       } else {
-        await createLeadRecord(payload);
         added += 1;
       }
     }
