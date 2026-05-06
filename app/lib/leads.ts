@@ -24,7 +24,9 @@ export type Lead = {
   /** Most recent import that touched this lead. */
   lastImportedAt?: number;
   /** Last outreach marked as contacted (mirrors workflow state). */
-  lastContactedAt?: number;
+  lastContactedAt?: number | null;
+  /** Next follow-up target in epoch ms. */
+  nextFollowUpAt?: number | null;
   /** Number of times outreach was marked contacted. */
   contactAttempts?: number;
   /** Import batch session id (last touch). */
@@ -33,6 +35,10 @@ export type Lead = {
   doNotContact?: boolean;
   /** Optional CRM stage mirror (e.g. Airtable pipeline_stage). */
   pipelineStage?: string;
+  /** Contact readiness intelligence score (0-100). */
+  contactReadinessScore?: number;
+  /** Manually marked invalid WhatsApp number. */
+  whatsappInvalid?: boolean;
   name: string;
   type: LeadType;
   city: string;
@@ -105,6 +111,8 @@ export type LeadStatusUpdate = {
   channel?: "whatsapp" | "phone" | "instagram" | "email" | null;
   /** Persisted DNC flag (also mirrored on stored ScoredLead for imports). */
   doNotContact?: boolean;
+  /** Persisted invalid WhatsApp flag; lead is blocked from outreach queue. */
+  whatsappInvalid?: boolean;
   contactAttempts?: number;
   lastContactedAt?: number | null;
   /** Epoch ms when a follow-up is due (set on outbound WhatsApp / contacted). */
@@ -913,6 +921,78 @@ export function getContactQuality(phone: string): ContactQuality {
   if (kind !== "mobile") return "low";
   if (normalizePhoneForWhatsApp(phone) !== null) return "high";
   return "medium";
+}
+
+export function computeContactReadinessScore(
+  lead: Pick<
+    Lead,
+    "phone" | "website" | "instagram" | "daysSinceLastReview" | "whatsappInvalid"
+  > & { hotScore: number },
+  contactQuality?: ContactQuality,
+  extras?: {
+    hasPhone?: boolean;
+    hasEmail?: boolean;
+    contactVerified?: boolean;
+  },
+): { score: number; reasons: string[] } {
+  let score = 0;
+  const reasons: string[] = [];
+  const hasWhatsapp = normalizePhoneForWhatsApp(lead.phone) !== null;
+  const hasWebsite = Boolean(lead.website?.trim());
+  const hasInstagram = Boolean(lead.instagram?.trim());
+  const hasPhone = extras?.hasPhone ?? Boolean(lead.phone?.trim());
+  const hasEmail = Boolean(extras?.hasEmail);
+  const contactVerified = Boolean(extras?.contactVerified);
+  const hasRecentReview =
+    typeof lead.daysSinceLastReview === "number" && lead.daysSinceLastReview <= 7;
+  const hotEnough = typeof lead.hotScore === "number" && lead.hotScore >= 60;
+  const isWhatsappInvalid = Boolean(lead.whatsappInvalid);
+  const quality = contactQuality ?? getContactQuality(lead.phone);
+
+  if (hasWhatsapp) {
+    score += 40;
+    reasons.push("WhatsApp available");
+  }
+  if (hasWebsite) {
+    score += 20;
+    reasons.push("Website available");
+  }
+  if (hasInstagram) {
+    score += 18;
+    reasons.push("Instagram available");
+  }
+  if (hasPhone) {
+    score += 12;
+    reasons.push("Phone available");
+  }
+  if (hasEmail) {
+    score += 12;
+    reasons.push("Email available");
+  }
+  if (contactVerified) {
+    score += 10;
+    reasons.push("Contact verified");
+  }
+  if (hasRecentReview) {
+    score += 8;
+    reasons.push("Recent review activity");
+  }
+  if (hotEnough) {
+    score += 8;
+    reasons.push("High hot score");
+  }
+
+  if (isWhatsappInvalid) score -= 40;
+  if (!hasWebsite) score -= 18;
+  if (!hasInstagram || quality === "low") score -= 18;
+  if (!hasPhone && !hasEmail) score -= 20;
+
+  // Hard cap if both primary instant channels are missing.
+  if (!hasWhatsapp && !hasInstagram) {
+    score = Math.min(score, 20);
+  }
+
+  return { score: Math.round(clamp(score)), reasons };
 }
 
 export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {

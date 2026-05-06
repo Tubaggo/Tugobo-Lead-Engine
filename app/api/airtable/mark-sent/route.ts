@@ -18,6 +18,8 @@ type MarkSentBody = {
     lastContactedAt?: unknown;
     nextFollowUpAt?: unknown;
     doNotContact?: unknown;
+    whatsappInvalid?: unknown;
+    contactReadinessScore?: unknown;
     pipelineStage?: unknown;
   };
 };
@@ -60,6 +62,8 @@ export async function POST(req: Request) {
     const lastContactedAt = asNumber(lead?.lastContactedAt);
     const nextFollowUpAt = asNumber(lead?.nextFollowUpAt);
     const doNotContact = Boolean(lead?.doNotContact);
+    const whatsappInvalid = Boolean(lead?.whatsappInvalid);
+    const contactReadinessScore = asNumber(lead?.contactReadinessScore) ?? 0;
     const pipelineStage = asString(lead?.pipelineStage) || "contacted";
     const rowStatus = asString(lead?.status) || "contacted";
     const patchFields: Record<string, unknown> = {
@@ -74,6 +78,8 @@ export async function POST(req: Request) {
       last_contacted_at: lastContactedAt ? new Date(lastContactedAt).toISOString() : null,
       next_follow_up_at: nextFollowUpAt ? new Date(nextFollowUpAt).toISOString() : null,
       do_not_contact: doNotContact,
+      whatsapp_invalid: whatsappInvalid,
+      contact_readiness_score: contactReadinessScore,
       pipeline_stage: pipelineStage,
     };
     const fallbackFields: Record<string, unknown> = {

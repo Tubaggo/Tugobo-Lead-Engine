@@ -24,6 +24,8 @@ export type AirtableLeadPayload = {
   next_follow_up_at: string | null;
   do_not_contact: boolean;
   pipeline_stage: string;
+  contact_readiness_score: number;
+  whatsapp_invalid: boolean;
 };
 
 function getEnv(name: string): string {

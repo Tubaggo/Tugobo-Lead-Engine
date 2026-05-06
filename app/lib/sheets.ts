@@ -1,7 +1,14 @@
 import "server-only";
 
 import { google, sheets_v4 } from "googleapis";
-import { getContactQuality, scoreHot, scoreLead, type ScoredLead } from "@/app/lib/leads";
+import {
+  getContactQuality,
+  scoreHot,
+  scoreLead,
+  type Lead,
+  type LeadType,
+  type ScoredLead,
+} from "@/app/lib/leads";
 
 export const SHEETS_COLUMNS = [
   "id",
@@ -131,7 +138,7 @@ export function normalizeIncomingLead(raw: Record<string, unknown>): {
   const name = asString(raw.business_name) || asString(raw.name) || "Unknown";
   const city = asString(raw.city) || "";
   const category = asString(raw.category) || asString(raw.type) || "Hotel";
-  const type =
+  const type: LeadType =
     category === "Hotel" ||
     category === "Boutique Hotel" ||
     category === "Bungalow" ||
@@ -143,7 +150,7 @@ export function normalizeIncomingLead(raw: Record<string, unknown>): {
   const website = asString(raw.website) || undefined;
   const reviewsCount = Math.max(0, Number(raw.review_count ?? raw.reviewsCount ?? 0) || 0);
   const rating = Number(raw.rating ?? 0) || 0;
-  const merged = {
+  const merged: Lead = {
     id,
     name,
     type,
@@ -171,6 +178,7 @@ export function normalizeIncomingLead(raw: Record<string, unknown>): {
     doNotContact: asBool(raw.do_not_contact ?? raw.doNotContact),
     contactAttempts: Number(raw.contact_attempts ?? raw.contactAttempts ?? 0) || 0,
     lastContactedAt: asEpoch(raw.last_contacted_at ?? raw.lastContactedAt),
+    nextFollowUpAt: asEpoch(raw.next_follow_up_at ?? raw.nextFollowUpAt),
   };
   const ls = scoreLead(merged);
   const hs = scoreHot(merged);

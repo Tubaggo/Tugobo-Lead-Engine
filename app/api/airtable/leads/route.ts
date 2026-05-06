@@ -39,7 +39,9 @@ function mapRecordToLead(
   const lastContactedAt = toIsoMs(record.fields.last_contacted_at);
   const nextFollowUpAt = toIsoMs(record.fields.next_follow_up_at);
   const doNotContact = Boolean(record.fields.do_not_contact);
+  const whatsappInvalid = Boolean(record.fields.whatsapp_invalid);
   const pipelineStage = toStringValue(record.fields.pipeline_stage).trim() || "";
+  const contactReadinessScore = toNumber(record.fields.contact_readiness_score);
 
   return {
     id: `airtable-${record.id}`,
@@ -72,6 +74,8 @@ function mapRecordToLead(
     lastContactedAt: lastContactedAt ?? undefined,
     nextFollowUpAt: nextFollowUpAt ?? undefined,
     doNotContact,
+    whatsappInvalid,
+    contactReadinessScore,
     pipelineStage,
   };
 }

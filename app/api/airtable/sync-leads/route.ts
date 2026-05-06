@@ -29,7 +29,8 @@ function toIsoOrNull(value: unknown): string | null {
 
 function normalizeLead(raw: Record<string, unknown>): AirtableLeadPayload {
   const contactAttempts = toNumber(raw.contact_attempts ?? raw.contactAttempts);
-  const doNotContact = Boolean(raw.do_not_contact ?? raw.doNotContact);
+  const whatsappInvalid = Boolean(raw.whatsapp_invalid ?? raw.whatsappInvalid);
+  const doNotContact = Boolean(raw.do_not_contact ?? raw.doNotContact) || whatsappInvalid;
   return {
     business_name: toStringValue(raw.business_name),
     whatsapp: toStringValue(raw.whatsapp),
@@ -44,6 +45,8 @@ function normalizeLead(raw: Record<string, unknown>): AirtableLeadPayload {
     do_not_contact: doNotContact,
     pipeline_stage:
       toStringValue(raw.pipeline_stage) || (doNotContact ? "do_not_contact" : "contacted"),
+    contact_readiness_score: toNumber(raw.contact_readiness_score ?? raw.contactReadinessScore),
+    whatsapp_invalid: whatsappInvalid,
   };
 }
 
@@ -83,6 +86,8 @@ async function createOrUpdateWithFallback(
         next_follow_up_at: null,
         do_not_contact: false,
         pipeline_stage: "contacted",
+        contact_readiness_score: payload.contact_readiness_score,
+        whatsapp_invalid: payload.whatsapp_invalid,
       });
       return "updated";
     }
@@ -93,6 +98,8 @@ async function createOrUpdateWithFallback(
       next_follow_up_at: null,
       do_not_contact: false,
       pipeline_stage: "contacted",
+      contact_readiness_score: payload.contact_readiness_score,
+      whatsapp_invalid: payload.whatsapp_invalid,
     });
     return "added";
   }
