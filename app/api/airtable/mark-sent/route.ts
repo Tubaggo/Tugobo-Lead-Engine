@@ -9,6 +9,10 @@ type MarkSentBody = {
   lead?: {
     business_name?: unknown;
     whatsapp?: unknown;
+    website?: unknown;
+    leadScore?: unknown;
+    hotScore?: unknown;
+    status?: unknown;
     notes?: unknown;
     contactAttempts?: unknown;
     lastContactedAt?: unknown;
@@ -57,8 +61,14 @@ export async function POST(req: Request) {
     const nextFollowUpAt = asNumber(lead?.nextFollowUpAt);
     const doNotContact = Boolean(lead?.doNotContact);
     const pipelineStage = asString(lead?.pipelineStage) || "contacted";
+    const rowStatus = asString(lead?.status) || "contacted";
     const patchFields: Record<string, unknown> = {
-      status: "contacted",
+      business_name: business_name || asString(lead?.business_name),
+      whatsapp: whatsapp || asString(lead?.whatsapp),
+      website: asString(lead?.website),
+      lead_score: asNumber(lead?.leadScore) ?? 0,
+      hot_score: asNumber(lead?.hotScore) ?? 0,
+      status: rowStatus,
       notes: asString(lead?.notes),
       contact_attempts: contactAttempts ?? 0,
       last_contacted_at: lastContactedAt ? new Date(lastContactedAt).toISOString() : null,
@@ -67,7 +77,7 @@ export async function POST(req: Request) {
       pipeline_stage: pipelineStage,
     };
     const fallbackFields: Record<string, unknown> = {
-      status: "contacted",
+      status: rowStatus,
       notes: asString(lead?.notes),
     };
 

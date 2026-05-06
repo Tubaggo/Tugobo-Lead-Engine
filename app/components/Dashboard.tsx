@@ -2076,6 +2076,11 @@ function LeadDetailContactSection({
 }
 
 /** Follow-up meta + Next Action + Send Message + status (single drawer block, no duplicate sections). */
+function pipelineStageLabel(s: LeadStatusUpdate): string {
+  if (s.doNotContact) return "do_not_contact";
+  return s.status;
+}
+
 function LeadDetailWorkflowSection({
   lead,
   setLeadStatus,
@@ -2102,6 +2107,8 @@ function LeadDetailWorkflowSection({
           label="Next follow-up"
           value={relativeCalendarLabel(s.nextFollowUpAt)}
         />
+        <KV label="Do not contact" value={s.doNotContact ? "Yes" : "No"} />
+        <KV label="Pipeline stage" value={pipelineStageLabel(s)} />
       </div>
 
       <div className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2.5 text-xs">
@@ -2443,6 +2450,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       : loadDailyOutreachState(),
   );
   const [queueActionNotice, setQueueActionNotice] = useState<string | null>(null);
+  const showQueueNotice = (msg: string) => {
+    setQueueActionNotice(msg);
+    window.setTimeout(() => setQueueActionNotice(null), 6500);
+  };
   const [outreachQueue, setOutreachQueue] = useState<OutreachQueueState>(() =>
     emptyOutreachQueueState(),
   );
@@ -3010,6 +3021,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         lastContactedAt: number;
         nextFollowUpAt: number | null;
         doNotContact: boolean;
+        notes: string;
+        pipelineStage: string;
       },
     ) => {
       const lead = allRowsById.get(leadId);
@@ -3022,12 +3035,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             lead: {
               business_name: lead.name,
               whatsapp: lead.phone,
-              notes: lead._s.note ?? "",
+              website: lead.website ?? "",
+              leadScore: lead.leadScore,
+              hotScore: lead.hotScore,
+              status: "contacted",
+              notes: payload.notes,
               contactAttempts: payload.contactAttempts,
               lastContactedAt: payload.lastContactedAt,
               nextFollowUpAt: payload.nextFollowUpAt,
               doNotContact: payload.doNotContact,
-              pipelineStage: "contacted",
+              pipelineStage: payload.pipelineStage,
             },
           }),
         });
@@ -3042,16 +3059,26 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     [allRowsById],
   );
 
+  const outreachConfirmationCopy = (newAttempts: number, doNotContact: boolean) => {
+    if (doNotContact || newAttempts >= 3) {
+      return "Max attempts reached. Lead marked Do Not Contact.";
+    }
+    if (newAttempts === 1) return "Follow-up scheduled for tomorrow";
+    if (newAttempts === 2) return "Next follow-up scheduled in 3 days";
+    return "Follow-up updated.";
+  };
+
   const applyOutreachConfirmed = useCallback(
-    (leadId: string) => {
-      let syncPayload:
-        | {
-            contactAttempts: number;
-            lastContactedAt: number;
-            nextFollowUpAt: number | null;
-            doNotContact: boolean;
-          }
-        | null = null;
+    (leadId: string): { newAttempts: number; doNotContact: boolean } | null => {
+      let syncPayload: {
+        contactAttempts: number;
+        lastContactedAt: number;
+        nextFollowUpAt: number | null;
+        doNotContact: boolean;
+        notes: string;
+        pipelineStage: string;
+      } | null = null;
+      let outcome: { newAttempts: number; doNotContact: boolean } | null = null;
       setStateMap((prev) => {
         const cur = normalizeStateEntry(prev[leadId]);
         if (cur.doNotContact) return prev;
@@ -3064,11 +3091,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               ? ts + 72 * 60 * 60 * 1000
               : null;
         const doNotContact = nextAttempts >= 3;
+        const pipelineStage = doNotContact ? "do_not_contact" : "contacted";
+        outcome = { newAttempts: nextAttempts, doNotContact };
         syncPayload = {
           contactAttempts: nextAttempts,
           lastContactedAt: ts,
           nextFollowUpAt,
           doNotContact,
+          notes: cur.note ?? "",
+          pipelineStage,
         };
         const next: StateMap = {
           ...prev,
@@ -3089,16 +3120,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         saveState(next);
         return next;
       });
-      if (syncPayload) {
+      if (syncPayload && outcome) {
         void syncContactedToAirtable(leadId, syncPayload);
       }
+      return outcome;
     },
     [syncContactedToAirtable],
   );
 
   const recordWhatsAppOutreach = useCallback(
     (id: string) => {
-      applyOutreachConfirmed(id);
+      const outcome = applyOutreachConfirmed(id);
+      if (outcome) {
+        showQueueNotice(
+          outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
+        );
+      }
     },
     [applyOutreachConfirmed],
   );
@@ -3113,7 +3150,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const ts = Date.now();
 
     if (status === "contacted") {
-      applyOutreachConfirmed(id);
+      const outcome = applyOutreachConfirmed(id);
+      if (outcome) {
+        showQueueNotice(
+          outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
+        );
+      }
       return;
     }
 
@@ -3310,22 +3352,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           return;
         }
         openExternal(link);
-        if (
-          st.status === "new" ||
-          st.status === "needs_follow_up" ||
-          st.status === "contacted"
-        ) {
-          recordWhatsAppOutreach(lead.id);
-        } else if (st.status === "replied" || st.status === "meeting") {
-          const ts = Date.now();
-          const hours = defaultFollowUpHours(st);
-          updateLead(lead.id, {
-            lastContactedAt: ts,
-            contactAttempts: (st.contactAttempts ?? 0) + 1,
-            nextFollowUpAt: ts + hours * 60 * 60 * 1000,
-            channel: "whatsapp",
-          });
-        }
+        showQueueNotice(
+          "WhatsApp opened. Use Mark Sent in the queue or set status to Contacted after you send.",
+        );
       } catch (e) {
         setAiMessageModal({
           lead,
@@ -3438,20 +3467,71 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   const markSelectedAsContacted = () => {
-    let changed = false;
-    for (const id of selectedLeadIds) {
-      if (getLeadState(id).doNotContact) continue;
-      setLeadStatus(id, "contacted");
-      changed = true;
-    }
-    if (changed) {
-      showQueueNotice("Follow-up scheduled for tomorrow");
-    }
-  };
+    const ids = selectedLeadIds.filter((id) => !getLeadState(id).doNotContact);
+    if (ids.length === 0) return;
+    type SyncP = {
+      contactAttempts: number;
+      lastContactedAt: number;
+      nextFollowUpAt: number | null;
+      doNotContact: boolean;
+      notes: string;
+      pipelineStage: string;
+    };
 
-  const showQueueNotice = (msg: string) => {
-    setQueueActionNotice(msg);
-    window.setTimeout(() => setQueueActionNotice(null), 6500);
+    setStateMap((prev) => {
+      const next: StateMap = { ...prev };
+      const syncList: { id: string; payload: SyncP }[] = [];
+      let lastOutcome: { newAttempts: number; doNotContact: boolean } | null = null;
+      for (const leadId of ids) {
+        const cur = normalizeStateEntry(next[leadId]);
+        if (cur.doNotContact) continue;
+        const ts = Date.now();
+        const nextAttempts = (cur.contactAttempts ?? 0) + 1;
+        const nextFollowUpAt =
+          nextAttempts === 1
+            ? ts + 24 * 60 * 60 * 1000
+            : nextAttempts === 2
+              ? ts + 72 * 60 * 60 * 1000
+              : null;
+        const doNotContact = nextAttempts >= 3;
+        const pipelineStage = doNotContact ? "do_not_contact" : "contacted";
+        lastOutcome = { newAttempts: nextAttempts, doNotContact };
+        const payload: SyncP = {
+          contactAttempts: nextAttempts,
+          lastContactedAt: ts,
+          nextFollowUpAt,
+          doNotContact,
+          notes: cur.note ?? "",
+          pipelineStage,
+        };
+        syncList.push({ id: leadId, payload });
+        next[leadId] = {
+          ...DEFAULT_STATE,
+          ...cur,
+          status: "contacted",
+          contactedAt: cur.contactedAt ?? ts,
+          lastContactedAt: ts,
+          contactAttempts: nextAttempts,
+          channel: "whatsapp",
+          nextFollowUpAt,
+          doNotContact,
+          followUpAfterHours: nextAttempts === 1 ? 24 : 72,
+          updatedAt: ts,
+        };
+      }
+      saveState(next);
+      queueMicrotask(() => {
+        for (const { id, payload } of syncList) {
+          void syncContactedToAirtable(id, payload);
+        }
+        if (lastOutcome) {
+          showQueueNotice(
+            outreachConfirmationCopy(lastOutcome.newAttempts, lastOutcome.doNotContact),
+          );
+        }
+      });
+      return next;
+    });
   };
 
   const activeQueueCount = useMemo(() => {
@@ -3753,8 +3833,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const markQueueLeadSent = () => {
     if (!queueCurrentLead || !queueCurrentId) return;
     const id = queueCurrentLead.id;
-    applyOutreachConfirmed(id);
-    showQueueNotice("Follow-up scheduled for tomorrow");
+    const outcome = applyOutreachConfirmed(id);
+    if (outcome) {
+      showQueueNotice(
+        outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
+      );
+    }
     updateQueueItem(id, { queueStatus: "contacted" });
     setDailyOutreach((dprev) => {
       const day = localCalendarDayKey();
@@ -3859,49 +3943,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   const markFollowUpSent = (leadId: string) => {
-    const current = getLeadState(leadId);
-    if (current.doNotContact) return;
-    const ts = Date.now();
-    const nextAttempts = (current.contactAttempts ?? 0) + 1;
-    const nextFollowUpAt = nextAttempts >= 3 ? null : ts + 72 * 60 * 60 * 1000;
-    const doNotContact = nextAttempts >= 3;
-    updateLead(leadId, {
-      status: "contacted",
-      lastContactedAt: ts,
-      contactAttempts: nextAttempts,
-      channel: "whatsapp",
-      nextFollowUpAt,
-      doNotContact,
-      followUpAfterHours: nextAttempts >= 3 ? 72 : 72,
-    });
-    const lead = allRowsById.get(leadId);
-    if (!lead) return;
-    void (async () => {
-      try {
-        const res = await fetch("/api/airtable/mark-sent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lead: {
-              business_name: lead.name,
-              whatsapp: lead.phone,
-              notes: current.note ?? "",
-              contactAttempts: nextAttempts,
-              lastContactedAt: ts,
-              nextFollowUpAt,
-              doNotContact,
-              pipelineStage: doNotContact ? "do_not_contact" : "contacted",
-            },
-          }),
-        });
-        const data = (await res.json()) as { configured?: boolean; warning?: string };
-        if (data.configured && data.warning) {
-          console.warn(data.warning);
-        }
-      } catch {
-        console.warn("Airtable follow-up update skipped");
-      }
-    })();
+    const outcome = applyOutreachConfirmed(leadId);
+    if (outcome) {
+      showQueueNotice(
+        outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
+      );
+    }
   };
 
   return (
