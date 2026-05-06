@@ -48,6 +48,8 @@ const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
 const DAILY_OUTREACH_STORAGE_KEY = "tugobo-lead-engine:daily-outreach-v1";
 /** Max leads staged for today's outreach queue (local calendar day). */
 const DAILY_OUTREACH_LIMIT = 20;
+const AUTO_QUEUE_COOLDOWN_DAYS = 2;
+const AUTO_QUEUE_RECENT_CONTACT_DAYS = 7;
 const IMPORT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const LEGACY_CREATED_AT_TS = Date.UTC(2024, 0, 1, 0, 0, 0, 0);
 
@@ -80,6 +82,9 @@ const DEFAULT_STATE: LeadStatusUpdate = {
   contactAttempts: 0,
   lastContactedAt: null,
   nextFollowUpAt: null,
+  pipelineStage: null,
+  queuedToday: false,
+  lastQueuedAt: null,
   followUpAfterHours: 24,
   repliedAt: null,
   meetingAt: null,
@@ -149,6 +154,8 @@ type DailyQueueItem = {
   queuedAt: number;
   updatedAt: number;
   preparedMessage: string;
+  preparedVariants?: { direct: string; soft: string; curiosity: string } | null;
+  selectedVariant?: "direct" | "soft" | "curiosity" | null;
   queueStatus: QueueMessageStatus;
 };
 
@@ -293,6 +300,16 @@ function coerceLastContactedAt(o: Record<string, unknown>): number | null {
   return coerceEpochMs(o.contactedAt);
 }
 
+function isSameLocalCalendarDayEpoch(a: number, b: number): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
 function normalizeStateEntry(v: unknown): LeadStatusUpdate {
   if (!v || typeof v !== "object") return { ...DEFAULT_STATE };
   const o = v as Record<string, unknown>;
@@ -312,6 +329,11 @@ function normalizeStateEntry(v: unknown): LeadStatusUpdate {
         ? channelRaw
         : DEFAULT_STATE.channel;
   const nextFu = coerceEpochMs(o.nextFollowUpAt);
+  const lastQueuedAt = coerceEpochMs(o.lastQueuedAt);
+  const queuedToday =
+    lastQueuedAt !== null && lastQueuedAt > 0
+      ? isSameLocalCalendarDayEpoch(lastQueuedAt, Date.now())
+      : Boolean(o.queuedToday);
   return {
     ...DEFAULT_STATE,
     status,
@@ -323,6 +345,14 @@ function normalizeStateEntry(v: unknown): LeadStatusUpdate {
     contactAttempts: coerceNonNegInt(o.contactAttempts, DEFAULT_STATE.contactAttempts ?? 0),
     lastContactedAt: coerceLastContactedAt(o),
     nextFollowUpAt: nextFu,
+    pipelineStage:
+      typeof o.pipelineStage === "string"
+        ? o.pipelineStage
+        : o.pipelineStage === null
+          ? null
+          : DEFAULT_STATE.pipelineStage ?? null,
+    queuedToday,
+    lastQueuedAt,
     followUpAfterHours:
       typeof o.followUpAfterHours === "number" && o.followUpAfterHours > 0
         ? o.followUpAfterHours
@@ -1028,6 +1058,8 @@ function emptyDailyQueueItem(ts = Date.now()): DailyQueueItem {
     queuedAt: ts,
     updatedAt: ts,
     preparedMessage: "",
+    preparedVariants: null,
+    selectedVariant: null,
     queueStatus: "queued",
   };
 }
@@ -1089,6 +1121,25 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
                   typeof v.queuedAt === "number" && Number.isFinite(v.queuedAt)
                     ? v.queuedAt
                     : Date.now();
+                const variants =
+                  v.preparedVariants &&
+                  typeof v.preparedVariants === "object" &&
+                  !Array.isArray(v.preparedVariants) &&
+                  typeof (v.preparedVariants as { direct?: unknown }).direct === "string" &&
+                  typeof (v.preparedVariants as { soft?: unknown }).soft === "string" &&
+                  typeof (v.preparedVariants as { curiosity?: unknown }).curiosity === "string"
+                    ? (v.preparedVariants as {
+                        direct: string;
+                        soft: string;
+                        curiosity: string;
+                      })
+                    : null;
+                const selected =
+                  v.selectedVariant === "direct" ||
+                  v.selectedVariant === "soft" ||
+                  v.selectedVariant === "curiosity"
+                    ? v.selectedVariant
+                    : null;
                 return [
                   id,
                   {
@@ -1099,6 +1150,8 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
                         : queuedAt,
                     preparedMessage:
                       typeof v.preparedMessage === "string" ? v.preparedMessage : "",
+                    preparedVariants: variants,
+                    selectedVariant: selected,
                     queueStatus:
                       v.queueStatus === "queued" ||
                       v.queueStatus === "prepared" ||
@@ -1176,6 +1229,58 @@ function isEligibleForDailyQueue(
   if (!queueLeadHasOutreachPath(row, finder)) return false;
   if (wasContactedToday(row._s, now)) return false;
   if (todayQueue.includes(row.id)) return false;
+  return true;
+}
+
+function hasValidOutboundContact(row: LeadTableRow, finder: ContactFinderResult | undefined): {
+  any: boolean;
+  whatsapp: boolean;
+} {
+  const waDigits = queueSessionWhatsAppDigits(row, finder);
+  const hasWhatsapp = Boolean(waDigits);
+  const any =
+    hasWhatsapp ||
+    Boolean(row.phone?.trim()) ||
+    Boolean(row.instagram?.trim()) ||
+    Boolean(row.website?.trim());
+  return { any, whatsapp: hasWhatsapp };
+}
+
+function isEligibleForAutoQueue(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  daily: DailyOutreachPersisted,
+  now: number,
+): boolean {
+  const s = row._s;
+  if (s.doNotContact) return false;
+  if (s.status === "won" || s.status === "lost") return false;
+  if (s.status === "replied" || s.status === "meeting" || s.status === "needs_follow_up") {
+    return false;
+  }
+  const attempts = s.contactAttempts ?? 0;
+  if (attempts >= 3) return false;
+  const lastContacted =
+    typeof s.lastContactedAt === "number" && s.lastContactedAt > 0
+      ? s.lastContactedAt
+      : typeof s.contactedAt === "number" && s.contactedAt > 0
+        ? s.contactedAt
+        : null;
+  if (lastContacted !== null) {
+    const recentCutoff = now - AUTO_QUEUE_RECENT_CONTACT_DAYS * 24 * 60 * 60 * 1000;
+    if (lastContacted >= recentCutoff) return false;
+  }
+  if (daily.todayQueue.includes(row.id)) return false;
+  const queuedToday = Boolean(s.queuedToday);
+  if (queuedToday) return false;
+  const lastQueuedAt =
+    typeof s.lastQueuedAt === "number" && Number.isFinite(s.lastQueuedAt) ? s.lastQueuedAt : null;
+  if (lastQueuedAt !== null) {
+    const cooldown = AUTO_QUEUE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
+    if (now - lastQueuedAt < cooldown) return false;
+  }
+  const contact = hasValidOutboundContact(row, finder);
+  if (!contact.any) return false;
   return true;
 }
 
@@ -2646,7 +2751,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             ? new Date(row._s.nextFollowUpAt).toISOString()
             : null,
         do_not_contact: Boolean(row._s.doNotContact),
-        pipeline_stage: row._s.status === "new" ? "new" : "contacted",
+        pipeline_stage: (() => {
+          if (row._s.doNotContact) return "lost";
+          if (row._s.status === "won") return "won";
+          if (row._s.status === "lost") return "lost";
+          if (row._s.status === "new") return "new";
+          return "contacted";
+        })(),
       }));
       if (payload.length === 0) {
         setAirtableSyncStatus("No valuable leads to sync yet.");
@@ -2702,6 +2813,58 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       }
       if (!res.ok) throw new Error(data.error || "Failed to load leads from Airtable");
       const incomingLeads = Array.isArray(data.leads) ? data.leads : [];
+      if (incomingLeads.length > 0) {
+        setStateMap((prev) => {
+          const next: StateMap = { ...prev };
+          const now = Date.now();
+          for (const l of incomingLeads) {
+            const id = l.id;
+            if (!id) continue;
+            const cur = normalizeStateEntry(next[id]);
+            const attempts =
+              typeof l.contactAttempts === "number" && Number.isFinite(l.contactAttempts)
+                ? Math.max(0, Math.floor(l.contactAttempts))
+                : cur.contactAttempts ?? 0;
+            const lastContactedAt =
+              typeof l.lastContactedAt === "number" && Number.isFinite(l.lastContactedAt)
+                ? l.lastContactedAt
+                : cur.lastContactedAt ?? null;
+            const nextFollowUpAt =
+              typeof l.nextFollowUpAt === "number" && Number.isFinite(l.nextFollowUpAt)
+                ? l.nextFollowUpAt
+                : cur.nextFollowUpAt ?? null;
+            const doNotContact =
+              typeof l.doNotContact === "boolean" ? l.doNotContact : Boolean(cur.doNotContact);
+            const pipelineStageRaw = (l as unknown as { pipelineStage?: unknown }).pipelineStage;
+            const pipelineStage = typeof pipelineStageRaw === "string" ? pipelineStageRaw : null;
+
+            let status: LeadStatus = cur.status;
+            if (pipelineStage === "won") status = "won";
+            else if (pipelineStage === "lost" || doNotContact) status = "lost";
+            else if (typeof nextFollowUpAt === "number" && nextFollowUpAt > 0) {
+              status = nextFollowUpAt <= now ? "needs_follow_up" : "contacted";
+            } else if (attempts > 0) {
+              status = "contacted";
+            } else {
+              status = "new";
+            }
+
+            next[id] = {
+              ...DEFAULT_STATE,
+              ...cur,
+              status,
+              contactAttempts: attempts,
+              lastContactedAt,
+              nextFollowUpAt,
+              doNotContact,
+              pipelineStage,
+              updatedAt: now,
+            };
+          }
+          saveState(next);
+          return next;
+        });
+      }
       const importTs = Date.now();
       const importSessionId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -3230,6 +3393,45 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return message;
   };
 
+  const generateLeadAiStylePack = async (
+    lead: ScoredLead,
+    followUp = false,
+  ): Promise<{ styles: { direct: string; soft: string; curiosity: string }; fallback: string }> => {
+    const res = await fetch("/api/generate-message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: lead.name,
+        type: lead.type,
+        location: `${lead.city}, ${lead.region}`,
+        leadScore: lead.leadScore,
+        hotScore: lead.hotScore,
+        followUp,
+      }),
+    });
+    const data = (await res.json()) as {
+      styles?: { direct?: string; soft?: string; curiosity?: string };
+      message?: string;
+      error?: string;
+      variations?: string[];
+    };
+    if (!res.ok) {
+      throw new Error(data.error || `Sunucu hatası (${res.status})`);
+    }
+    const styles = data.styles;
+    const direct = styles?.direct?.trim() ?? "";
+    const soft = styles?.soft?.trim() ?? "";
+    const curiosity = styles?.curiosity?.trim() ?? "";
+    const fallback =
+      (data.message?.trim() ||
+        (Array.isArray(data.variations) ? data.variations[0]?.trim() : "") ||
+        "") ?? "";
+    if (!direct || !soft || !curiosity) {
+      throw new Error("AI message styles missing");
+    }
+    return { styles: { direct, soft, curiosity }, fallback };
+  };
+
   const generateReplyHelperSuggestion = async (lead: LeadTableRow) => {
     const reply = ownerReplyDraft.trim();
     if (!reply) {
@@ -3549,6 +3751,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const addLeadIdsToDailyQueue = (ids: string[]) => {
     const now = Date.now();
     const day = localCalendarDayKey();
+    const actuallyAdded: string[] = [];
     setDailyOutreach((prev) => {
       const base =
         prev.queueDate === day
@@ -3603,6 +3806,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         nextQ.push(id);
         if (!nextLog.includes(id)) nextLog.push(id);
         nextItems[id] = emptyDailyQueueItem(now);
+        actuallyAdded.push(id);
         added++;
       }
       const next: DailyOutreachPersisted = {
@@ -3632,6 +3836,132 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       }
       return next;
     });
+    if (actuallyAdded.length > 0) {
+      setStateMap((prev) => {
+        const next: StateMap = { ...prev };
+        const ts = Date.now();
+        for (const id of actuallyAdded) {
+          const cur = normalizeStateEntry(next[id]);
+          next[id] = {
+            ...DEFAULT_STATE,
+            ...cur,
+            queuedToday: true,
+            lastQueuedAt: ts,
+            updatedAt: ts,
+          };
+        }
+        saveState(next);
+        return next;
+      });
+    }
+  };
+
+  const autoBuildTodayQueue = () => {
+    const now = Date.now();
+    const day = localCalendarDayKey();
+    const baseDaily =
+      dailyOutreach.queueDate === day ? dailyOutreach : loadDailyOutreachState();
+
+    const activeNow = baseDaily.todayQueue.filter((id) => {
+      const item = baseDaily.queueItems[id];
+      return (
+        item &&
+        (item.queueStatus === "queued" ||
+          item.queueStatus === "prepared" ||
+          item.queueStatus === "opened")
+      );
+    }).length;
+    const remaining = Math.max(0, DAILY_OUTREACH_LIMIT - activeNow);
+    if (remaining <= 0) {
+      showQueueNotice(`Queue already full (${DAILY_OUTREACH_LIMIT}/${DAILY_OUTREACH_LIMIT}).`);
+      return;
+    }
+
+    const candidates = allRows
+      .filter((row) =>
+        isEligibleForAutoQueue(row, contactFinderMap[row.id], baseDaily, now),
+      )
+      .map((row) => {
+        const contact = hasValidOutboundContact(row, contactFinderMap[row.id]);
+        return {
+          id: row.id,
+          hot: row.hotScore,
+          lead: row.leadScore,
+          hasWa: contact.whatsapp,
+          attempts: row._s.contactAttempts ?? 0,
+        };
+      })
+      .sort((a, b) => {
+        if (b.hot !== a.hot) return b.hot - a.hot;
+        if (b.lead !== a.lead) return b.lead - a.lead;
+        if (a.hasWa !== b.hasWa) return a.hasWa ? -1 : 1;
+        return a.attempts - b.attempts;
+      })
+      .slice(0, remaining);
+
+    if (candidates.length === 0) {
+      showQueueNotice("No eligible leads found in Master Lead Pool for auto-queue.");
+      return;
+    }
+
+    const addIds = candidates.map((c) => c.id);
+    const actuallyAdded: string[] = [];
+    setDailyOutreach((prev) => {
+      const base =
+        prev.queueDate === day
+          ? prev
+          : {
+              queueDate: day,
+              todayQueue: [],
+              todayLog: [],
+              queueItems: {},
+              completedToday: 0,
+              skippedToday: 0,
+              dncToday: 0,
+            };
+      const nextQ = [...base.todayQueue];
+      const nextLog = [...base.todayLog];
+      const nextItems: Record<string, DailyQueueItem> = { ...base.queueItems };
+
+      for (const id of addIds) {
+        if (nextQ.includes(id)) continue;
+        if (!allRowsById.has(id)) continue;
+        nextQ.push(id);
+        if (!nextLog.includes(id)) nextLog.push(id);
+        nextItems[id] = emptyDailyQueueItem(now);
+        actuallyAdded.push(id);
+      }
+
+      const next: DailyOutreachPersisted = {
+        ...base,
+        queueDate: day,
+        todayQueue: dedupeLeadIds(nextQ),
+        todayLog: dedupeLeadIds(nextLog),
+        queueItems: nextItems,
+      };
+      saveDailyOutreachState(next);
+      return next;
+    });
+
+    if (actuallyAdded.length > 0) {
+      setStateMap((prev) => {
+        const next: StateMap = { ...prev };
+        const ts = Date.now();
+        for (const id of actuallyAdded) {
+          const cur = normalizeStateEntry(next[id]);
+          next[id] = {
+            ...DEFAULT_STATE,
+            ...cur,
+            queuedToday: true,
+            lastQueuedAt: ts,
+            updatedAt: ts,
+          };
+        }
+        saveState(next);
+        return next;
+      });
+      showQueueNotice(`Auto-built queue: added ${actuallyAdded.length} lead(s).`);
+    }
   };
 
   const clearDailyQueue = () => {
@@ -3775,13 +4105,19 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const followUp = Boolean(outreachQueue.followUpById[queueCurrentId]);
     setOutreachQueue((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      const message = await generateLeadAiMessage(queueCurrentLead, followUp);
+      const pack = await generateLeadAiStylePack(queueCurrentLead, followUp);
+      const message = pack.styles.direct || pack.fallback;
       setOutreachQueue((prev) => ({
         ...prev,
         loading: false,
         messages: { ...prev.messages, [queueCurrentId]: message },
       }));
-      updateQueueItem(queueCurrentId, { preparedMessage: message, queueStatus: "prepared" });
+      updateQueueItem(queueCurrentId, {
+        preparedMessage: message,
+        preparedVariants: pack.styles,
+        selectedVariant: "direct",
+        queueStatus: "prepared",
+      });
     } catch (e) {
       setOutreachQueue((prev) => ({
         ...prev,
@@ -4025,6 +4361,57 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           hint={`${formatTRY(stats.totalRevenuePotential)} session pipeline / mo`}
           accent="emerald"
         />
+      </section>
+
+      {/* Morning Outreach */}
+      <section className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.04] p-4 backdrop-blur ring-1 ring-inset ring-emerald-400/10">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <div className="flex h-5 w-5 items-center justify-center rounded bg-emerald-500/20">
+                <IconSpark className="h-3.5 w-3.5 text-emerald-200" />
+              </div>
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-emerald-200">
+                Morning Outreach
+              </h2>
+            </div>
+            <p className="mt-1 text-[11px] text-zinc-400">
+              Queue {activeQueueCount}/{DAILY_OUTREACH_LIMIT} · Follow-ups due {followUpDueRows.length} · Contacted today{" "}
+              {dailyOutreach.completedToday}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={autoBuildTodayQueue}
+              className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25"
+            >
+              Auto Build Today&apos;s Queue
+            </button>
+            <button
+              type="button"
+              onClick={startDailyOutreachSession}
+              disabled={activeQueueCount === 0}
+              className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Start Outreach Session
+            </button>
+            <a
+              href="/dashboard/follow-ups"
+              className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2.5 py-1.5 text-xs font-medium text-orange-200 transition hover:bg-orange-500/20"
+            >
+              Open Follow-ups Today
+            </a>
+            <button
+              type="button"
+              onClick={() => void syncLeadsToAirtable()}
+              disabled={airtableBusy !== null}
+              className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Sync Airtable
+            </button>
+          </div>
+        </div>
       </section>
 
       {/* Import */}
@@ -5031,6 +5418,45 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
                       AI message preview
                     </div>
+                    {queueCurrentId &&
+                      dailyOutreach.queueItems[queueCurrentId]?.preparedVariants && (
+                        <div className="mb-2 flex flex-wrap gap-2">
+                          {(
+                            [
+                              { id: "direct", label: "Direct" },
+                              { id: "soft", label: "Soft" },
+                              { id: "curiosity", label: "Curiosity" },
+                            ] as const
+                          ).map((opt) => {
+                            const item = dailyOutreach.queueItems[queueCurrentId];
+                            const variants = item?.preparedVariants;
+                            const selected = item?.selectedVariant ?? null;
+                            const active = selected === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => {
+                                  if (!queueCurrentId || !variants) return;
+                                  const nextMsg = variants[opt.id];
+                                  updateQueueItem(queueCurrentId, {
+                                    selectedVariant: opt.id,
+                                    preparedMessage: nextMsg,
+                                    queueStatus: nextMsg.trim() ? "prepared" : "queued",
+                                  });
+                                }}
+                                className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                                  active
+                                    ? "border-violet-400/40 bg-violet-500/20 text-violet-100"
+                                    : "border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     {outreachQueue.loading ? (
                       <p className="text-zinc-400">Mesaj oluşturuluyor…</p>
                     ) : outreachQueue.error ? (

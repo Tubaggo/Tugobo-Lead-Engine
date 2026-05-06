@@ -31,6 +31,8 @@ export type Lead = {
   importSessionId?: string | null;
   /** Optional mirror; persisted workflow flag lives in {@link LeadStatusUpdate.doNotContact}. */
   doNotContact?: boolean;
+  /** Optional CRM stage mirror (e.g. Airtable pipeline_stage). */
+  pipelineStage?: string;
   name: string;
   type: LeadType;
   city: string;
@@ -107,6 +109,12 @@ export type LeadStatusUpdate = {
   lastContactedAt?: number | null;
   /** Epoch ms when a follow-up is due (set on outbound WhatsApp / contacted). */
   nextFollowUpAt?: number | null;
+  /** CRM-ish stage mirror (Airtable pipeline_stage). */
+  pipelineStage?: string | null;
+  /** Queue memory: whether this lead is queued for the current local calendar day. */
+  queuedToday?: boolean;
+  /** Queue memory: last time this lead was added to the outreach queue (epoch ms). */
+  lastQueuedAt?: number | null;
   /** Hours after last contact before auto “needs follow-up” (default 24 in UI). */
   followUpAfterHours?: number;
   repliedAt?: number | null;

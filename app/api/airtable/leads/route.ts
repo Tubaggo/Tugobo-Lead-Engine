@@ -10,6 +10,12 @@ function toStringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function toIsoMs(value: unknown): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function ensureHttpWebsite(website: string): string {
   const w = website.trim();
   if (!w) return "";
@@ -29,6 +35,11 @@ function mapRecordToLead(
   const hotScore = toNumber(record.fields.hot_score);
   const createdAtRaw = toStringValue(record.fields.created_at);
   const createdAtMs = Date.parse(createdAtRaw);
+  const contactAttempts = toNumber(record.fields.contact_attempts);
+  const lastContactedAt = toIsoMs(record.fields.last_contacted_at);
+  const nextFollowUpAt = toIsoMs(record.fields.next_follow_up_at);
+  const doNotContact = Boolean(record.fields.do_not_contact);
+  const pipelineStage = toStringValue(record.fields.pipeline_stage).trim() || "";
 
   return {
     id: `airtable-${record.id}`,
@@ -57,6 +68,11 @@ function mapRecordToLead(
     leadReasons: [],
     hotReasons: [],
     contactQuality: "low",
+    contactAttempts,
+    lastContactedAt: lastContactedAt ?? undefined,
+    nextFollowUpAt: nextFollowUpAt ?? undefined,
+    doNotContact,
+    pipelineStage,
   };
 }
 

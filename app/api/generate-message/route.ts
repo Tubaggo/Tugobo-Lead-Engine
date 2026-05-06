@@ -52,6 +52,39 @@ sizde de bu taraf bazen kopuyor mu?`,
   ];
 }
 
+type OutreachStyle = "direct" | "soft" | "curiosity";
+
+function buildStylePack(input: GenerateMessageBody): Record<OutreachStyle, string> {
+  const { location, followUp } = input;
+  const city = location.split(",")[0]?.trim() || location;
+
+  if (followUp) {
+    return {
+      direct: `Selam, ${city} tarafında sık gördüğümüz bir tablo var
+gece gelen taleplerin bir kısmı cevaplanmadan düşüyor
+siz de bu durumu yaşıyor musunuz?`,
+      soft: `Selam, ufak bir şey soracağım
+gece gelen mesajlar bazen yoğunlukta kaçabiliyor
+son dönemde sizde de oluyor mu?`,
+      curiosity: `Selam, merak ettim
+${city} tarafında işletmelerin çoğunda gece taleplerinde bir kırılma görüyoruz
+sizce sizde de bu yaşanıyor mu?`,
+    };
+  }
+
+  return {
+    direct: `Selam, ${city} tarafında çoğu işletmede aynı problem var
+gece gelen taleplerin ciddi kısmı cevapsız kalıyor
+siz de bunu yaşıyor musunuz?`,
+    soft: `Selam, bir şey sorabilir miyim?
+WhatsApp tarafında gelen taleplerin rezervasyona dönüşmesi sizde nasıl gidiyor
+son dönemde zayıflama hissettiniz mi?`,
+    curiosity: `Selam, merak ettim
+${city} tarafında bazı işletmelerde “mesaj var ama dönüşüm yok” kırılması görüyoruz
+sizce sizde de böyle bir nokta var mı?`,
+  };
+}
+
 export async function POST(req: Request) {
   let body: unknown;
   try {
@@ -97,6 +130,14 @@ export async function POST(req: Request) {
     followUp,
   });
   const message = pick(variations);
+  const styles = buildStylePack({
+    name,
+    type,
+    location,
+    leadScore,
+    hotScore,
+    followUp,
+  });
 
-  return NextResponse.json({ message, variations });
+  return NextResponse.json({ message, variations, styles });
 }
