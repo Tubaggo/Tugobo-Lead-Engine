@@ -58,6 +58,7 @@ const IMPORT_CACHE_KEY = "tugobo-lead-engine:import-cache-v1";
 const CONTACT_FINDER_MAP_KEY = "tugobo-lead-engine:contact-finder-map-v1";
 const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
 const DAILY_OUTREACH_STORAGE_KEY = "tugobo-lead-engine:daily-outreach-v1";
+const OUTREACH_LOG_KEY = "tugobo-lead-engine:outreach-log-v1";
 /** Max leads staged for today's outreach queue (local calendar day). */
 const DAILY_OUTREACH_LIMIT = 20;
 const AUTO_QUEUE_COOLDOWN_DAYS = 2;
@@ -163,6 +164,25 @@ type OutreachQueueSessionStats = {
 
 type QueueMessageStatus = "queued" | "prepared" | "opened" | "contacted" | "skipped";
 type QueueLeadSource = "latest_import" | "airtable" | "local_pool";
+
+type OutreachEventType =
+  | "message_prepared"
+  | "message_copied"
+  | "whatsapp_opened"
+  | "contacted"
+  | "follow_up_due";
+
+type OutreachMessageVariant = "soft" | "direct" | "consultative";
+
+type OutreachEvent = {
+  id: string;
+  leadId: string;
+  type: OutreachEventType;
+  messageVariant?: OutreachMessageVariant;
+  messagePreview?: string;
+  createdAt: string;
+  followUpAt?: string;
+};
 
 type DailyQueueItem = {
   queuedAt: number;
@@ -1243,6 +1263,57 @@ function saveDailyOutreachState(next: DailyOutreachPersisted) {
   }
 }
 
+function loadOutreachEvents(): Record<string, OutreachEvent[]> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(OUTREACH_LOG_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, OutreachEvent[]> = {};
+    for (const [leadId, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) continue;
+      const events: OutreachEvent[] = value
+        .map((row) => row as Partial<OutreachEvent>)
+        .filter(
+          (row) =>
+            typeof row.id === "string" &&
+            typeof row.leadId === "string" &&
+            typeof row.type === "string" &&
+            typeof row.createdAt === "string",
+        )
+        .map((row) => ({
+          id: row.id as string,
+          leadId: row.leadId as string,
+          type: row.type as OutreachEventType,
+          messageVariant:
+            row.messageVariant === "soft" ||
+            row.messageVariant === "direct" ||
+            row.messageVariant === "consultative"
+              ? row.messageVariant
+              : undefined,
+          messagePreview:
+            typeof row.messagePreview === "string" ? row.messagePreview : undefined,
+          createdAt: row.createdAt as string,
+          followUpAt: typeof row.followUpAt === "string" ? row.followUpAt : undefined,
+        }));
+      if (events.length > 0) out[leadId] = events;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveOutreachEvents(eventsByLead: Record<string, OutreachEvent[]>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(OUTREACH_LOG_KEY, JSON.stringify(eventsByLead));
+  } catch {
+    // ignore quota/serialization edge cases; UI stays functional in-memory.
+  }
+}
+
 function wasContactedToday(s: LeadStatusUpdate, now: number): boolean {
   const ts =
     typeof s.lastContactedAt === "number" && s.lastContactedAt > 0
@@ -1786,11 +1857,31 @@ function AiMessageModal({
   onClose,
   onRetry,
   onMarkContacted,
+  queuedForOutreach = false,
+  queueStatus = null,
+  onMarkPrepared,
+  onMarkOpened,
+  onMessageCopied,
+  onWhatsappOpened,
 }: {
   state: AiMessageModalState;
   onClose: () => void;
   onRetry: (lead: ScoredLead) => void;
   onMarkContacted: (id: string) => void;
+  queuedForOutreach?: boolean;
+  queueStatus?: QueueMessageStatus | null;
+  onMarkPrepared: (id: string) => void;
+  onMarkOpened: (id: string) => void;
+  onMessageCopied: (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => void;
+  onWhatsappOpened: (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<OutreachMessageStyle>("soft");
@@ -1810,6 +1901,8 @@ function AiMessageModal({
   const { lead } = state;
   const displayMessage =
     state.phase === "ready" ? state.styles[selectedStyle] || state.message : "";
+  const messageVariantForLog: OutreachMessageVariant =
+    selectedStyle === "premium" ? "consultative" : selectedStyle;
   const waReady =
     state.phase === "ready" ? whatsappLinkWithText(lead.phone, displayMessage) : null;
 
@@ -1818,6 +1911,8 @@ function AiMessageModal({
     try {
       await navigator.clipboard.writeText(displayMessage);
       setCopied(true);
+      onMarkPrepared(lead.id);
+      onMessageCopied(lead.id, messageVariantForLog, displayMessage);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
       setCopied(false);
@@ -1847,6 +1942,11 @@ function AiMessageModal({
               AI Message
             </h2>
             <p className="mt-0.5 text-xs text-zinc-500">{lead.name}</p>
+            {queuedForOutreach ? (
+              <div className="mt-1 inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-200">
+                In outreach queue{queueStatus ? ` · ${queueStatus}` : ""}
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
@@ -1915,6 +2015,9 @@ function AiMessageModal({
               <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
                 {displayMessage}
               </p>
+              <p className="text-[11px] text-zinc-500">
+                Manual outreach only — review before sending.
+              </p>
             </div>
           )}
         </div>
@@ -1933,7 +2036,11 @@ function AiMessageModal({
                 type="button"
                 onClick={() => {
                   openExternal(waReady);
-                  onMarkContacted(lead.id);
+                  onMarkOpened(lead.id);
+                  onWhatsappOpened(lead.id, messageVariantForLog, displayMessage);
+                  if (!queuedForOutreach) {
+                    onMarkContacted(lead.id);
+                  }
                 }}
                 className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
               >
@@ -2050,6 +2157,7 @@ function HotCard({
   onAddToQueue,
   queueDisabled = false,
   fromLatestImport = false,
+  outreachActivityLabel = "Not contacted",
 }: {
   lead: ScoredLead;
   rank: number;
@@ -2058,6 +2166,7 @@ function HotCard({
   onAddToQueue: (id: string) => void;
   queueDisabled?: boolean;
   fromLatestImport?: boolean;
+  outreachActivityLabel?: string;
 }) {
   return (
     <div className="group relative flex h-full min-w-[260px] flex-col rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-4 transition hover:border-orange-400/30 hover:from-orange-500/[0.05]">
@@ -2085,6 +2194,7 @@ function HotCard({
       <div className="text-xs text-zinc-400">
         {lead.city} · {lead.region}
       </div>
+      <div className="mt-1 text-[11px] text-zinc-500">Outreach: {outreachActivityLabel}</div>
       {fromLatestImport && (
         <div className="mt-2">
           <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
@@ -2747,12 +2857,14 @@ function LeadDetailWorkflowSection({
   onSendMessage,
   sendMessageBusy,
   now,
+  outreachActivityLabel,
 }: {
   lead: LeadTableRow;
   setLeadStatus: (id: string, status: LeadStatus) => void;
   onSendMessage: () => void;
   sendMessageBusy: boolean;
   now: number;
+  outreachActivityLabel: string;
 }) {
   const s = lead._s;
   const terminal = s.status === "won" || s.status === "lost";
@@ -2781,6 +2893,7 @@ function LeadDetailWorkflowSection({
           if (!timer) return null;
           return <p className="mt-1 text-zinc-400">{timer}</p>;
         })()}
+        <p className="mt-1 text-[11px] text-zinc-500">Outreach: {outreachActivityLabel}</p>
         <button
           type="button"
           disabled={sendDisabled}
@@ -2996,6 +3109,7 @@ function LeadDetailPanel({
   replyCopied,
   onCopyReplyHelper,
   onApplyReplyHelperSuggestion,
+  outreachActivityLabel,
   now,
 }: {
   selectedLead: LeadTableRow;
@@ -3018,6 +3132,7 @@ function LeadDetailPanel({
   replyCopied: boolean;
   onCopyReplyHelper: () => void;
   onApplyReplyHelperSuggestion: () => void;
+  outreachActivityLabel: string;
   now: number;
 }) {
   return (
@@ -3044,6 +3159,7 @@ function LeadDetailPanel({
           onSendMessage={onSendMessage}
           sendMessageBusy={sendMessageBusy}
           now={now}
+          outreachActivityLabel={outreachActivityLabel}
         />
         <LeadDetailReplyHelperSection
           lead={selectedLead}
@@ -3117,6 +3233,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     skippedToday: 0,
     dncToday: 0,
   });
+  const [outreachEventsByLead, setOutreachEventsByLead] = useState<
+    Record<string, OutreachEvent[]>
+  >({});
   const [queueActionNotice, setQueueActionNotice] = useState<string | null>(null);
   const showQueueNotice = (msg: string) => {
     setQueueActionNotice(msg);
@@ -3150,6 +3269,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     setLastImportUpdatedIds(lip.updatedIds);
     setContactFinderMap(loadContactFinderMap());
     setDailyOutreach(loadDailyOutreachState());
+    setOutreachEventsByLead(loadOutreachEvents());
     const meta = loadImportMeta();
     setHasImportRun(
       meta.hasRun ||
@@ -3158,6 +3278,66 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     );
     setDateLabel(buildTodayLabel());
   }, []);
+
+  const appendOutreachEvent = useCallback(
+    (
+      leadId: string,
+      type: OutreachEventType,
+      options?: {
+        messageVariant?: OutreachMessageVariant;
+        messagePreview?: string;
+        followUpAt?: string;
+      },
+    ) => {
+      const createdAt = new Date().toISOString();
+      const event: OutreachEvent = {
+        id: `${leadId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        leadId,
+        type,
+        createdAt,
+        messageVariant: options?.messageVariant,
+        messagePreview: options?.messagePreview
+          ? options.messagePreview.slice(0, 180)
+          : undefined,
+        followUpAt: options?.followUpAt,
+      };
+      setOutreachEventsByLead((prev) => {
+        const current = prev[leadId] ?? [];
+        const next = { ...prev, [leadId]: [...current, event].slice(-40) };
+        saveOutreachEvents(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const getLastOutreachActivityLabel = useCallback(
+    (leadId: string, s: LeadStatusUpdate, now: number): string => {
+      const stateDueAt =
+        typeof s.nextFollowUpAt === "number" && Number.isFinite(s.nextFollowUpAt)
+          ? s.nextFollowUpAt
+          : null;
+      const events = outreachEventsByLead[leadId] ?? [];
+      const latest = events[events.length - 1];
+      const eventDueAt = (() => {
+        for (let i = events.length - 1; i >= 0; i -= 1) {
+          const ts = Date.parse(events[i].followUpAt ?? "");
+          if (Number.isFinite(ts) && ts > 0) return ts;
+        }
+        return null;
+      })();
+      const dueAt = stateDueAt ?? eventDueAt;
+      if (dueAt && dueAt <= now) return "Follow-up due";
+      if (!latest) return "Not contacted";
+      if (latest.type === "message_prepared") return "Message prepared";
+      if (latest.type === "message_copied") return "Message copied";
+      if (latest.type === "whatsapp_opened") return "WhatsApp opened";
+      if (latest.type === "contacted") return "Contacted";
+      if (latest.type === "follow_up_due") return "Follow-up due";
+      return "Not contacted";
+    },
+    [outreachEventsByLead],
+  );
 
   useEffect(() => {
     const checkAirtable = async () => {
@@ -3871,11 +4051,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         return next;
       });
       if (syncPayload && outcome) {
+        appendOutreachEvent(leadId, "contacted", {
+          followUpAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+        });
         void syncContactedToAirtable(leadId, syncPayload);
       }
       return outcome;
     },
-    [allRowsById, syncContactedToAirtable],
+    [allRowsById, appendOutreachEvent, syncContactedToAirtable],
   );
 
   const recordWhatsAppOutreach = useCallback(
@@ -3894,6 +4077,43 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     // Follow-up visibility is derived from `nextFollowUpAt`; keep status stable.
     return () => {};
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const now = Date.now();
+    const dueSignals: Array<{ leadId: string; followUpAt: string }> = [];
+    for (const [leadId, s] of Object.entries(stateMap)) {
+      if (typeof s.nextFollowUpAt === "number" && s.nextFollowUpAt <= now) {
+        dueSignals.push({ leadId, followUpAt: new Date(s.nextFollowUpAt).toISOString() });
+      }
+    }
+    for (const [leadId, events] of Object.entries(outreachEventsByLead)) {
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const iso = events[i].followUpAt;
+        if (!iso) continue;
+        const ts = Date.parse(iso);
+        if (Number.isFinite(ts) && ts <= now) {
+          dueSignals.push({ leadId, followUpAt: iso });
+          break;
+        }
+      }
+    }
+    if (dueSignals.length === 0) return;
+    const seenDue = new Set<string>();
+    for (const item of dueSignals) {
+      const k = `${item.leadId}|${item.followUpAt}`;
+      if (seenDue.has(k)) continue;
+      seenDue.add(k);
+      const exists = (outreachEventsByLead[item.leadId] ?? []).some(
+        (e) => e.type === "follow_up_due" && e.followUpAt === item.followUpAt,
+      );
+      if (!exists) {
+        appendOutreachEvent(item.leadId, "follow_up_due", {
+          followUpAt: item.followUpAt,
+        });
+      }
+    }
+  }, [appendOutreachEvent, mounted, outreachEventsByLead, stateMap]);
 
   const setLeadStatus = (id: string, status: LeadStatus) => {
     const current = getLeadState(id);
@@ -4137,6 +4357,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     try {
       const pack = await generateLeadAiStylePack(lead, useFollowUpCopy);
       const message = pack.styles.soft || pack.fallback;
+      appendOutreachEvent(lead.id, "message_prepared", {
+        messageVariant: "soft",
+        messagePreview: message,
+      });
       setAiMessageModal({
         lead,
         phase: "ready",
@@ -4161,6 +4385,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     try {
       const pack = await generateLeadAiStylePack(lead, followUp);
       const message = pack.styles.soft || pack.fallback;
+      appendOutreachEvent(lead.id, "message_prepared", {
+        messageVariant: "soft",
+        messagePreview: message,
+      });
       setAiMessageModal({
         lead,
         phase: "ready",
@@ -4818,6 +5046,41 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
   };
 
+  const markAiMessagePrepared = (leadId: string) => {
+    appendOutreachEvent(leadId, "message_prepared");
+    if (!dailyOutreach.todayQueue.includes(leadId)) return;
+    const item = dailyOutreach.queueItems[leadId];
+    if (item?.queueStatus === "contacted" || item?.queueStatus === "skipped") return;
+    updateQueueItem(leadId, { queueStatus: "prepared" });
+  };
+
+  const markAiMessageOpened = (leadId: string) => {
+    if (!dailyOutreach.todayQueue.includes(leadId)) return;
+    const item = dailyOutreach.queueItems[leadId];
+    if (item?.queueStatus === "contacted" || item?.queueStatus === "skipped") return;
+    updateQueueItem(leadId, { queueStatus: "opened" });
+  };
+
+  const logAiMessageCopied = (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => {
+    appendOutreachEvent(leadId, "message_copied", { messageVariant, messagePreview });
+  };
+
+  const logWhatsappOpened = (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => {
+    appendOutreachEvent(leadId, "whatsapp_opened", {
+      messageVariant,
+      messagePreview,
+      followUpAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+  };
+
   const closeOutreachQueue = () => {
     setOutreachQueue(emptyOutreachQueueState());
   };
@@ -5335,6 +5598,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             </div>
                           ) : null;
                         })()}
+                        <div className="mt-0.5 text-[11px] text-zinc-500">
+                          Outreach: {getLastOutreachActivityLabel(row.id, row._s, renderNow)}
+                        </div>
                       </td>
                       <td className="px-4 py-3 align-top">
                         <div className="flex items-center gap-2">
@@ -5667,6 +5933,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
               queueDisabled={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
               fromLatestImport={useLatestImportHotLeads}
+              outreachActivityLabel={getLastOutreachActivityLabel(lead.id, lead._s, renderNow)}
             />
           ))}
         </div>
@@ -6006,6 +6273,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               </div>
                             ) : null;
                           })()}
+                          <div className="mt-0.5 text-[11px] text-zinc-500">
+                            Outreach: {getLastOutreachActivityLabel(row.id, s, renderNow)}
+                          </div>
                         </td>
                         <td className="px-4 py-3 align-top">
                           <div className="flex items-center gap-2">
@@ -6159,6 +6429,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         onClose={() => setAiMessageModal(null)}
         onRetry={(l) => void startAiMessage(l)}
         onMarkContacted={recordWhatsAppOutreach}
+        queuedForOutreach={
+          aiMessageModal ? dailyOutreach.todayQueue.includes(aiMessageModal.lead.id) : false
+        }
+        queueStatus={
+          aiMessageModal ? (dailyOutreach.queueItems[aiMessageModal.lead.id]?.queueStatus ?? null) : null
+        }
+        onMarkPrepared={markAiMessagePrepared}
+        onMarkOpened={markAiMessageOpened}
+        onMessageCopied={logAiMessageCopied}
+        onWhatsappOpened={logWhatsappOpened}
       />
 
       {outreachQueue.open && (outreachQueue.complete || queueCurrentLead) && (
@@ -6470,6 +6750,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 replyCopied={replyCopied}
                 onCopyReplyHelper={() => void copyReplyHelperSuggestion()}
                 onApplyReplyHelperSuggestion={() => applyReplyHelperSuggestion(openLead)}
+                outreachActivityLabel={getLastOutreachActivityLabel(
+                  openLead.id,
+                  openLead._s,
+                  renderNow,
+                )}
                 now={renderNow}
               />
             </aside>
