@@ -35,7 +35,11 @@ import {
 import {
   leadDedupeKey,
 } from "@/app/lib/generate";
-import type { LeadAiInsight, OpportunityLevel } from "@/app/lib/intelligence/ai-insight";
+import type {
+  LeadAiInsight,
+  OpportunityLevel,
+  OutreachMessageStyle,
+} from "@/app/lib/intelligence/ai-insight";
 import {
   getWhyThisLeadReasons,
   type WhyThisLeadEnrichment,
@@ -164,8 +168,8 @@ type DailyQueueItem = {
   queuedAt: number;
   updatedAt: number;
   preparedMessage: string;
-  preparedVariants?: { direct: string; soft: string; curiosity: string } | null;
-  selectedVariant?: "direct" | "soft" | "curiosity" | null;
+  preparedVariants?: { direct: string; soft: string; premium: string } | null;
+  selectedVariant?: OutreachMessageStyle | null;
   source?: QueueLeadSource;
   readinessScore?: number;
   queueRankScore?: number;
@@ -1142,18 +1146,27 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
                   !Array.isArray(v.preparedVariants) &&
                   typeof (v.preparedVariants as { direct?: unknown }).direct === "string" &&
                   typeof (v.preparedVariants as { soft?: unknown }).soft === "string" &&
-                  typeof (v.preparedVariants as { curiosity?: unknown }).curiosity === "string"
-                    ? (v.preparedVariants as {
-                        direct: string;
-                        soft: string;
-                        curiosity: string;
-                      })
+                  (typeof (v.preparedVariants as { premium?: unknown }).premium === "string" ||
+                    typeof (v.preparedVariants as { curiosity?: unknown }).curiosity ===
+                      "string")
+                    ? {
+                        direct: (v.preparedVariants as { direct: string }).direct,
+                        soft: (v.preparedVariants as { soft: string }).soft,
+                        premium:
+                          (v.preparedVariants as { premium?: string; curiosity?: string })
+                            .premium ??
+                          (v.preparedVariants as { premium?: string; curiosity?: string })
+                            .curiosity ??
+                          "",
+                      }
                     : null;
+                const rawSelected = (v as { selectedVariant?: unknown }).selectedVariant;
                 const selected =
-                  v.selectedVariant === "direct" ||
-                  v.selectedVariant === "soft" ||
-                  v.selectedVariant === "curiosity"
-                    ? v.selectedVariant
+                  rawSelected === "direct" ||
+                  rawSelected === "soft" ||
+                  rawSelected === "premium" ||
+                  rawSelected === "curiosity"
+                    ? rawSelected
                     : null;
                 const source =
                   v.source === "latest_import" ||
@@ -1172,7 +1185,7 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
                     preparedMessage:
                       typeof v.preparedMessage === "string" ? v.preparedMessage : "",
                     preparedVariants: variants,
-                    selectedVariant: selected,
+                    selectedVariant: selected === "curiosity" ? "premium" : selected,
                     source,
                     readinessScore:
                       typeof v.readinessScore === "number" && Number.isFinite(v.readinessScore)
@@ -1751,7 +1764,13 @@ function IconSpark({ className = "" }: { className?: string }) {
 type AiMessageModalState =
   | null
   | { lead: ScoredLead; phase: "loading" }
-  | { lead: ScoredLead; phase: "ready"; message: string }
+  | {
+      lead: ScoredLead;
+      phase: "ready";
+      message: string;
+      styles: Record<OutreachMessageStyle, string>;
+      selectedStyle: OutreachMessageStyle;
+    }
   | { lead: ScoredLead; phase: "error"; error: string };
 
 type ReplyHelperSuggestion = {
@@ -1774,23 +1793,30 @@ function AiMessageModal({
   onMarkContacted: (id: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [selectedStyle, setSelectedStyle] = useState<OutreachMessageStyle>("soft");
 
   useEffect(() => {
     setCopied(false);
   }, [state]);
 
+  useEffect(() => {
+    if (state?.phase === "ready") {
+      setSelectedStyle(state.selectedStyle);
+    }
+  }, [state]);
+
   if (!state) return null;
 
   const { lead } = state;
+  const displayMessage =
+    state.phase === "ready" ? state.styles[selectedStyle] || state.message : "";
   const waReady =
-    state.phase === "ready"
-      ? whatsappLinkWithText(lead.phone, state.message)
-      : null;
+    state.phase === "ready" ? whatsappLinkWithText(lead.phone, displayMessage) : null;
 
   const handleCopy = async () => {
     if (state.phase !== "ready") return;
     try {
-      await navigator.clipboard.writeText(state.message);
+      await navigator.clipboard.writeText(displayMessage);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -1863,9 +1889,33 @@ function AiMessageModal({
             </div>
           )}
           {state.phase === "ready" && (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
-              {state.message}
-            </p>
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    { id: "soft", label: "Soft" },
+                    { id: "direct", label: "Direct" },
+                    { id: "premium", label: "Consultative" },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setSelectedStyle(opt.id)}
+                    className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                      selectedStyle === opt.id
+                        ? "border-violet-400/40 bg-violet-500/20 text-violet-100"
+                        : "border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
+                {displayMessage}
+              </p>
+            </div>
           )}
         </div>
 
@@ -3907,6 +3957,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     lead: ScoredLead,
     followUp = false,
   ): Promise<string> => {
+    const hasWhatsAppPath = Boolean(whatsappLink(lead.phone));
     const res = await fetch("/api/generate-message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3917,6 +3968,17 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         leadScore: lead.leadScore,
         hotScore: lead.hotScore,
         followUp,
+        intelligenceScore: lead.intelligenceScore ?? 0,
+        smartLeadScoreV2: lead.smartLeadScoreV2,
+        reviewIntelligenceScore: lead.reviewIntelligenceScore ?? 0,
+        contactQuality: lead.contactQuality,
+        hasWhatsAppPath,
+        hasInstagram: lead.hasInstagram,
+        hasOwnWebsite: lead.hasOwnWebsite,
+        channels: lead.channels,
+        businessSignals: lead.businessSignals ?? [],
+        painPointSummary: lead.painPointSummary ?? [],
+        outreachAngle: lead.outreachAngle ?? "",
       }),
     });
     const data = (await res.json()) as { message?: string; error?: string };
@@ -3933,7 +3995,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const generateLeadAiStylePack = async (
     lead: ScoredLead,
     followUp = false,
-  ): Promise<{ styles: { direct: string; soft: string; curiosity: string }; fallback: string }> => {
+  ): Promise<{ styles: { direct: string; soft: string; premium: string }; fallback: string }> => {
+    const hasWhatsAppPath = Boolean(whatsappLink(lead.phone));
     const res = await fetch("/api/generate-message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3944,10 +4007,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         leadScore: lead.leadScore,
         hotScore: lead.hotScore,
         followUp,
+        intelligenceScore: lead.intelligenceScore ?? 0,
+        smartLeadScoreV2: lead.smartLeadScoreV2,
+        reviewIntelligenceScore: lead.reviewIntelligenceScore ?? 0,
+        contactQuality: lead.contactQuality,
+        hasWhatsAppPath,
+        hasInstagram: lead.hasInstagram,
+        hasOwnWebsite: lead.hasOwnWebsite,
+        channels: lead.channels,
+        businessSignals: lead.businessSignals ?? [],
+        painPointSummary: lead.painPointSummary ?? [],
+        outreachAngle: lead.outreachAngle ?? "",
       }),
     });
     const data = (await res.json()) as {
-      styles?: { direct?: string; soft?: string; curiosity?: string };
+      styles?: { direct?: string; soft?: string; premium?: string; curiosity?: string };
       message?: string;
       error?: string;
       variations?: string[];
@@ -3958,15 +4032,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const styles = data.styles;
     const direct = styles?.direct?.trim() ?? "";
     const soft = styles?.soft?.trim() ?? "";
-    const curiosity = styles?.curiosity?.trim() ?? "";
+    const premium = (styles?.premium?.trim() ?? styles?.curiosity?.trim() ?? "").trim();
     const fallback =
       (data.message?.trim() ||
         (Array.isArray(data.variations) ? data.variations[0]?.trim() : "") ||
         "") ?? "";
-    if (!direct || !soft || !curiosity) {
+    if (!direct || !soft || !premium) {
       throw new Error("AI message styles missing");
     }
-    return { styles: { direct, soft, curiosity }, fallback };
+    return { styles: { direct, soft, premium }, fallback };
   };
 
   const generateReplyHelperSuggestion = async (lead: LeadTableRow) => {
@@ -4061,11 +4135,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const useFollowUpCopy = st.status === "needs_follow_up";
     setAiMessageModal({ lead, phase: "loading" });
     try {
-      const message = await generateLeadAiMessage(lead, useFollowUpCopy);
+      const pack = await generateLeadAiStylePack(lead, useFollowUpCopy);
+      const message = pack.styles.soft || pack.fallback;
       setAiMessageModal({
         lead,
         phase: "ready",
         message,
+        styles: pack.styles,
+        selectedStyle: "soft",
       });
     } catch (e) {
       setAiMessageModal({
@@ -4079,32 +4156,26 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const drawerSendMessage = async (lead: LeadTableRow) => {
     const st = getLeadState(lead.id);
     if (st.doNotContact) return;
-    const wa = whatsappLink(lead.phone);
     const followUp = st.status === "needs_follow_up";
-    if (wa) {
-      setDrawerSendBusy(true);
-      try {
-        const message = await generateLeadAiMessage(lead, followUp);
-        const link = whatsappLinkWithText(lead.phone, message);
-        if (!link) {
-          setAiMessageModal({ lead, phase: "ready", message });
-          return;
-        }
-        openExternal(link);
-        showQueueNotice(
-          "WhatsApp opened. Use Mark Sent in the queue or set status to Contacted after you send.",
-        );
-      } catch (e) {
-        setAiMessageModal({
-          lead,
-          phase: "error",
-          error: e instanceof Error ? e.message : "Bir hata oluştu",
-        });
-      } finally {
-        setDrawerSendBusy(false);
-      }
-    } else {
-      void startAiMessage(lead);
+    setDrawerSendBusy(true);
+    try {
+      const pack = await generateLeadAiStylePack(lead, followUp);
+      const message = pack.styles.soft || pack.fallback;
+      setAiMessageModal({
+        lead,
+        phase: "ready",
+        message,
+        styles: pack.styles,
+        selectedStyle: "soft",
+      });
+    } catch (e) {
+      setAiMessageModal({
+        lead,
+        phase: "error",
+        error: e instanceof Error ? e.message : "Bir hata oluştu",
+      });
+    } finally {
+      setDrawerSendBusy(false);
     }
   };
 
@@ -6213,7 +6284,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             [
                               { id: "direct", label: "Direct" },
                               { id: "soft", label: "Soft" },
-                              { id: "curiosity", label: "Curiosity" },
+                              { id: "premium", label: "Consultative" },
                             ] as const
                           ).map((opt) => {
                             const item = dailyOutreach.queueItems[queueCurrentId];

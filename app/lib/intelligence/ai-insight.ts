@@ -38,6 +38,14 @@ export type LeadAiInsight = {
   source: AiInsightSource;
 };
 
+export type OutreachMessageStyle = "soft" | "direct" | "premium";
+
+export type LeadWhatsAppMessagePack = {
+  message: string;
+  styles: Record<OutreachMessageStyle, string>;
+  weakSignals: boolean;
+};
+
 const SEVERITY_RANK: Record<"low" | "medium" | "high", number> = {
   low: 1,
   medium: 2,
@@ -241,6 +249,192 @@ function hasMeaningfulSignals(lead: LeadForAiInsight): boolean {
   if ((lead.reviewIntelligenceScore ?? 0) >= 28) return true;
   if (lead.hotScore >= 58 || lead.leadScore >= 58) return true;
   return false;
+}
+
+type MessageSignalTheme =
+  | "communication_risk"
+  | "booking_flow_gap"
+  | "instagram_demand"
+  | "whatsapp_flow"
+  | "direct_booking_opportunity"
+  | "general_hospitality";
+
+function pickMessageSignalTheme(lead: LeadForAiInsight): MessageSignalTheme {
+  const angle = getOutreachAngle(lead).toLowerCase();
+  const pains = getPainPointSummary(lead, 4).map((p) => p.toLowerCase());
+  const signals = new Set(lead.businessSignals ?? []);
+  const hasComm =
+    angle.includes("response") ||
+    angle.includes("communication") ||
+    angle.includes("whatsapp replies") ||
+    pains.some(
+      (p) =>
+        p.includes("response") || p.includes("communication") || p.includes("reachability"),
+    );
+  if (hasComm) return "communication_risk";
+
+  const hasBookingGap =
+    signals.has("conversion_gap") ||
+    angle.includes("booking") ||
+    angle.includes("reservation") ||
+    pains.some((p) => p.includes("booking") || p.includes("reservation"));
+  if (hasBookingGap) return "booking_flow_gap";
+
+  const hasInstagramDemand =
+    lead.hasInstagram ||
+    signals.has("instagram_presence_gap") ||
+    angle.includes("instagram");
+  if (hasInstagramDemand) return "instagram_demand";
+
+  if (lead.hasWhatsAppPath && lead.contactQuality !== "low") return "whatsapp_flow";
+
+  if (signals.has("ota_dependency") || signals.has("single_channel_risk")) {
+    return "direct_booking_opportunity";
+  }
+
+  return "general_hospitality";
+}
+
+/** Short, consultative WhatsApp copy variants for review/copy flow. */
+export function generateWhatsAppMessage(
+  lead: LeadForAiInsight,
+  opts?: { followUp?: boolean },
+): LeadWhatsAppMessagePack {
+  const followUp = opts?.followUp === true;
+  const weakSignals = !hasMeaningfulSignals(lead);
+  const theme = pickMessageSignalTheme(lead);
+
+  if (weakSignals) {
+    const soft =
+      "Merhaba, konaklama işletmelerinde rezervasyon öncesi mesaj akışını daha düzenli hale getirmeye odaklanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.";
+    const direct =
+      "Merhaba, konaklama tarafında ilk talebi kaçırmadan ilerleten kısa bir mesaj akışı kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.";
+    const premium =
+      "Merhaba, turizm tarafında rezervasyon öncesi iletişimi daha net hale getiren sade bir çerçeve uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.";
+    return { message: soft, styles: { soft, direct, premium }, weakSignals };
+  }
+
+  const templates: Record<
+    MessageSignalTheme,
+    Record<OutreachMessageStyle, { base: string; followUp: string }>
+  > = {
+    communication_risk: {
+      soft: {
+        base: "Merhaba, konaklama işletmelerinde özellikle yoğun saatlerde gelen mesajların kaçmaması için kısa bir akış uyguluyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir not bırakmak istedim. Yoğun saatlerde geciken dönüşleri azaltmak için pratik bir mesaj düzeni kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+      },
+      direct: {
+        base: "Merhaba, rezervasyon öncesi mesajlara daha hızlı dönüş almayı sağlayan net bir akış kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        followUp:
+          "Merhaba, hızlı hatırlatma bırakayım. Mesajlara geç dönüşü azaltan kısa bir düzenimiz var. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+      },
+      premium: {
+        base: "Merhaba, birçok konaklama işletmesinde talep geliyor fakat geciken yanıtlar dönüşümü düşürüyor. Bu noktayı iyileştiren turizm odaklı bir yaklaşım uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        followUp:
+          "Merhaba, tekrar rahatsız etmeyeyim diye kısa yazıyorum. Özellikle yoğun dönemlerde yanıt süresini toparlayan bir çerçeveyle ilerliyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+      },
+    },
+    booking_flow_gap: {
+      soft: {
+        base: "Merhaba, konaklama işletmelerinde talebin rezervasyona daha net ilerlemesi için sade bir mesaj akışı kuruyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir not bırakayım. Gelen taleplerin rezervasyona dönüşmesini kolaylaştıran pratik bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+      },
+      direct: {
+        base: "Merhaba, soru aşamasındaki talepleri daha hızlı rezervasyona çeviren kısa bir yöntem kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        followUp:
+          "Merhaba, tekrar yazıyorum. Talebi rezervasyona taşıyan kısa yöntemi dilerseniz 2 dakikada özetleyebilirim.",
+      },
+      premium: {
+        base: "Merhaba, turizmde çoğu zaman ilgi var ama rezervasyona giden adımlar net kalmıyor. Bu geçişi güçlendiren konaklama odaklı bir sistem kurguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir hatırlatma bırakayım. Talepten rezervasyona geçişi sadeleştiren bir çerçevemiz var. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+      },
+    },
+    instagram_demand: {
+      soft: {
+        base: "Merhaba, Instagram'dan gelen taleplerin sıcakken rezervasyona dönmesi için kısa bir mesaj düzeni kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir not bırakayım. Instagram taleplerini bekletmeden rezervasyona taşıyan pratik bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+      },
+      direct: {
+        base: "Merhaba, Instagram ve WhatsApp hattındaki talepleri daha hızlı rezervasyona çeviren bir akış kuruyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        followUp:
+          "Merhaba, tekrar yazıyorum. Instagram'dan gelen talepler için kullandığımız hızlı rezervasyon akışını isterseniz kısaca paylaşabilirim.",
+      },
+      premium: {
+        base: "Merhaba, konaklama işletmelerinde sosyal medyadan ilgi geliyor fakat rezervasyona dönüş net olmayabiliyor. Bu dönüşümü güçlendiren turizm odaklı bir yaklaşım uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir hatırlatma bırakayım. Sosyal medya talebinin rezervasyona daha net ilerlemesi için sade bir çerçeveyle ilerliyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+      },
+    },
+    whatsapp_flow: {
+      soft: {
+        base: "Merhaba, WhatsApp hattına gelen taleplerin kaybolmaması için konaklama tarafında kısa bir akış kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir not bırakayım. WhatsApp'ta gelen talepleri daha düzenli takip etmek için pratik bir yapı kuruyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+      },
+      direct: {
+        base: "Merhaba, WhatsApp'tan gelen rezervasyon sorularını daha hızlı sonuca götüren bir yöntem kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        followUp:
+          "Merhaba, tekrar yazıyorum. WhatsApp akışını hızlandıran kısa yöntemimizi isterseniz 2 dakikada paylaşabilirim.",
+      },
+      premium: {
+        base: "Merhaba, birçok konaklama işletmesinde WhatsApp trafiği güçlü ama akış net olmadığında fırsatlar kaçabiliyor. Bu tarafı sadeleştiren turizm odaklı bir sistem uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir hatırlatma bırakayım. WhatsApp tarafında talebi daha kontrollü ilerleten bir çerçevemiz var. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+      },
+    },
+    direct_booking_opportunity: {
+      soft: {
+        base: "Merhaba, konaklama işletmelerinde doğrudan rezervasyon payını artırmaya odaklanan kısa bir iletişim akışı kuruyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir not bırakayım. Doğrudan rezervasyon payını destekleyen pratik bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+      },
+      direct: {
+        base: "Merhaba, üçüncü taraf kanallara bağlı kalmadan daha fazla doğrudan rezervasyon almak için uygulanabilir bir yöntem kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        followUp:
+          "Merhaba, tekrar yazıyorum. Doğrudan rezervasyon tarafını güçlendiren kısa yöntemi isterseniz kısaca paylaşabilirim.",
+      },
+      premium: {
+        base: "Merhaba, turizmde görünürlük yüksek olsa da doğrudan rezervasyona dönen pay çoğu zaman sınırlı kalıyor. Bu dengeyi iyileştiren konaklama odaklı bir yapı uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir hatırlatma bırakayım. Kanal dengesini doğrudan rezervasyon lehine toparlayan bir çerçeve kullanıyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+      },
+    },
+    general_hospitality: {
+      soft: {
+        base: "Merhaba, konaklama işletmelerinde rezervasyon öncesi iletişimi sadeleştiren kısa bir sistem kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir not bırakayım. İlk temas ile rezervasyon arasındaki süreci daha düzenli hale getiren bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+      },
+      direct: {
+        base: "Merhaba, konaklama tarafında talebi daha hızlı rezervasyona taşıyan pratik bir yöntem uyguluyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        followUp:
+          "Merhaba, tekrar yazıyorum. Talebi rezervasyona taşıyan kısa yöntemi dilerseniz 2 dakikada özetleyebilirim.",
+      },
+      premium: {
+        base: "Merhaba, turizmde rezervasyon öncesi iletişim net olduğunda dönüşüm belirgin şekilde iyileşiyor. Bu alana özel sade bir sistemle ilerliyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        followUp:
+          "Merhaba, kısa bir hatırlatma bırakayım. Rezervasyon öncesi iletişimi daha tutarlı hale getiren bir çerçeve kullanıyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+      },
+    },
+  };
+
+  const selected = templates[theme];
+  if (followUp) {
+    const soft = selected.soft.followUp;
+    const direct = selected.direct.followUp;
+    const premium = selected.premium.followUp;
+    return { message: soft, styles: { soft, direct, premium }, weakSignals };
+  }
+
+  const soft = selected.soft.base;
+  const direct = selected.direct.base;
+  const premium = selected.premium.base;
+
+  return { message: soft, styles: { soft, direct, premium }, weakSignals };
 }
 
 function buildAiInsightParagraph(lead: LeadForAiInsight): string {

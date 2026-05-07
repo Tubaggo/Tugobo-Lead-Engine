@@ -1,4 +1,9 @@
 import { NextResponse } from "next/server";
+import {
+  generateWhatsAppMessage,
+  type LeadForAiInsight,
+} from "@/app/lib/intelligence/ai-insight";
+import type { BusinessSignal } from "@/app/lib/intelligence/signals";
 
 type GenerateMessageBody = {
   name: string;
@@ -7,82 +12,21 @@ type GenerateMessageBody = {
   leadScore: number;
   hotScore: number;
   followUp?: boolean;
+  intelligenceScore?: number;
+  smartLeadScoreV2?: number;
+  reviewIntelligenceScore?: number;
+  contactQuality?: "high" | "medium" | "low";
+  hasWhatsAppPath?: boolean;
+  hasInstagram?: boolean;
+  hasOwnWebsite?: boolean;
+  channels?: string[];
+  businessSignals?: BusinessSignal[];
+  painPointSummary?: string[];
+  outreachAngle?: string;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function pick<T>(items: readonly T[]): T {
-  return items[Math.floor(Math.random() * items.length)]!;
-}
-
-/**
- * Rule-based copy — konuşma dilinde, 3 satır ve kısa akış.
- * Yapı: gözlem → problem → cevap daveti.
- */
-function buildOutreachVariations(input: GenerateMessageBody): string[] {
-  const { location, followUp } = input;
-  const city = location.split(",")[0]?.trim() || location;
-
-  if (followUp) {
-    return [
-      `Selam, ${city} tarafında yine aynı tabloyu görüyoruz
-gece gelen taleplerin bir kısmı cevaplanmadan düşüyor
-sizde de bu durum oluyor mu?`,
-      `Selam, çoğu işletmede takip tam bu noktada aksıyor
-mesaj geliyor ama rezervasyona dönen taraf zayıf kalıyor
-siz de son dönemde yaşıyor musunuz?`,
-      `Selam, genelde gece saatlerinde burada kaçırılıyor
-rezervasyon soruları geç kalınca konuşma yarım kalıyor
-siz de buna denk geliyor musunuz?`,
-    ];
-  }
-
-  return [
-    `Selam, ${city} tarafında çoğu işletmede aynı durum var
-gece gelen taleplerin ciddi kısmı çoğu zaman cevapsız kalıyor
-siz de bu durumu yaşıyor musunuz?`,
-    `Selam, genelde tam burada kaçırılıyor gibi oluyor
-mesaj geliyor ama rezervasyona dönüşen taraf zayıf kalıyor
-siz de bunu fark ettiniz mi?`,
-    `Selam, çoğu küçük otelde benzerini sık görüyoruz
-WhatsApp dolu ama gece gelen rezervasyon talebi sönüyor
-sizde de bu taraf bazen kopuyor mu?`,
-  ];
-}
-
-type OutreachStyle = "direct" | "soft" | "curiosity";
-
-function buildStylePack(input: GenerateMessageBody): Record<OutreachStyle, string> {
-  const { location, followUp } = input;
-  const city = location.split(",")[0]?.trim() || location;
-
-  if (followUp) {
-    return {
-      direct: `Selam, ${city} tarafında sık gördüğümüz bir tablo var
-gece gelen taleplerin bir kısmı cevaplanmadan düşüyor
-siz de bu durumu yaşıyor musunuz?`,
-      soft: `Selam, ufak bir şey soracağım
-gece gelen mesajlar bazen yoğunlukta kaçabiliyor
-son dönemde sizde de oluyor mu?`,
-      curiosity: `Selam, merak ettim
-${city} tarafında işletmelerin çoğunda gece taleplerinde bir kırılma görüyoruz
-sizce sizde de bu yaşanıyor mu?`,
-    };
-  }
-
-  return {
-    direct: `Selam, ${city} tarafında çoğu işletmede aynı problem var
-gece gelen taleplerin ciddi kısmı cevapsız kalıyor
-siz de bunu yaşıyor musunuz?`,
-    soft: `Selam, bir şey sorabilir miyim?
-WhatsApp tarafında gelen taleplerin rezervasyona dönüşmesi sizde nasıl gidiyor
-son dönemde zayıflama hissettiniz mi?`,
-    curiosity: `Selam, merak ettim
-${city} tarafında bazı işletmelerde “mesaj var ama dönüşüm yok” kırılması görüyoruz
-sizce sizde de böyle bir nokta var mı?`,
-  };
 }
 
 export async function POST(req: Request) {
@@ -107,6 +51,30 @@ export async function POST(req: Request) {
   const leadScore = Number(body.leadScore);
   const hotScore = Number(body.hotScore);
   const followUp = body.followUp === true;
+  const intelligenceScore = Number(body.intelligenceScore ?? 0);
+  const smartLeadScoreV2 =
+    body.smartLeadScoreV2 === undefined ? undefined : Number(body.smartLeadScoreV2);
+  const reviewIntelligenceScore = Number(body.reviewIntelligenceScore ?? 0);
+  const contactQuality =
+    body.contactQuality === "high" ||
+    body.contactQuality === "medium" ||
+    body.contactQuality === "low"
+      ? body.contactQuality
+      : "medium";
+  const hasWhatsAppPath = body.hasWhatsAppPath === true;
+  const hasInstagram = body.hasInstagram === true;
+  const hasOwnWebsite = body.hasOwnWebsite === true;
+  const channels = Array.isArray(body.channels)
+    ? body.channels.filter((v): v is string => typeof v === "string")
+    : [];
+  const businessSignals = Array.isArray(body.businessSignals)
+    ? body.businessSignals.filter((v): v is BusinessSignal => typeof v === "string")
+    : [];
+  const painPointSummary = Array.isArray(body.painPointSummary)
+    ? body.painPointSummary.filter((v): v is string => typeof v === "string")
+    : [];
+  const outreachAngle =
+    typeof body.outreachAngle === "string" ? body.outreachAngle.trim() : "";
 
   if (!name || !type || !location) {
     return NextResponse.json(
@@ -121,23 +89,38 @@ export async function POST(req: Request) {
     );
   }
 
-  const variations = buildOutreachVariations({
-    name,
-    type,
-    location,
-    leadScore,
+  const leadInput: LeadForAiInsight = {
     hotScore,
-    followUp,
-  });
-  const message = pick(variations);
-  const styles = buildStylePack({
-    name,
-    type,
-    location,
     leadScore,
-    hotScore,
-    followUp,
-  });
+    intelligenceScore: Number.isFinite(intelligenceScore) ? intelligenceScore : 0,
+    smartLeadScoreV2:
+      typeof smartLeadScoreV2 === "number" && Number.isFinite(smartLeadScoreV2)
+        ? smartLeadScoreV2
+        : undefined,
+    reviewIntelligenceScore: Number.isFinite(reviewIntelligenceScore)
+      ? reviewIntelligenceScore
+      : 0,
+    contactQuality,
+    hasWhatsAppPath,
+    hasInstagram,
+    hasOwnWebsite,
+    channels,
+    businessSignals,
+    heuristicOutreachAngle: outreachAngle || undefined,
+    reviewPainPoints: painPointSummary.map((summary) => ({
+      category: "other",
+      severity: "medium",
+      summary: `${location}: ${summary}`.slice(0, 180),
+    })),
+  };
 
-  return NextResponse.json({ message, variations, styles });
+  const pack = generateWhatsAppMessage(leadInput, { followUp });
+  const variations = [pack.styles.soft, pack.styles.direct, pack.styles.premium];
+  return NextResponse.json({
+    message: pack.message,
+    variations,
+    styles: pack.styles,
+    weakSignals: pack.weakSignals,
+    meta: { name, type, location },
+  });
 }
