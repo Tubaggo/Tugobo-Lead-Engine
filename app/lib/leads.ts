@@ -1,3 +1,14 @@
+import {
+  generateLeadInsight,
+  type LeadForAiInsight,
+  type OpportunityLevel,
+  type AiInsightSource,
+} from "./intelligence/ai-insight";
+import { buildExtractedSignals, type BusinessSignal } from "./intelligence/signals";
+
+export type { BusinessSignal };
+export type { OpportunityLevel, AiInsightSource };
+
 export type LeadType =
   | "Hotel"
   | "Boutique Hotel"
@@ -62,12 +73,64 @@ export type Lead = {
 
 export type ContactQuality = "high" | "medium" | "low";
 
+export type ReviewPainPointCategory =
+  | "response_delay"
+  | "unreachable"
+  | "reservation"
+  | "communication"
+  | "cleanliness"
+  | "value"
+  | "other";
+
+export type ReviewPainPoint = {
+  id: string;
+  category: ReviewPainPointCategory;
+  summary: string;
+  severity: "low" | "medium" | "high";
+  evidence?: { reviewId: string; excerpt: string }[];
+  firstSeen?: string;
+  lastSeen?: string;
+  frequency?: number;
+  confidence?: number;
+};
+
+export type WebsiteIntelligenceSummary = {
+  hasWhatsAppLink?: boolean;
+  hasTelLink?: boolean;
+  hasBookingCtaText?: boolean;
+  hasBookingEngine?: boolean;
+  mobileViewportPresent?: boolean;
+  confidence?: number;
+  errors?: string[];
+};
+
 export type ScoredLead = Lead & {
   leadScore: number;
   hotScore: number;
   leadReasons: string[];
   hotReasons: string[];
   contactQuality: ContactQuality;
+  /** Rule-based signals; recomputed on score/sanitize */
+  businessSignals?: BusinessSignal[];
+  whyThisLead?: string[];
+  heuristicOutreachAngle?: string;
+  /** Structured “consultative opportunity” score (0–100), not the same as leadScore */
+  intelligenceScore?: number;
+  /** Review-derived operational/commercial pain points when evidence exists. */
+  reviewPainPoints?: ReviewPainPoint[];
+  reviewIntelligenceScore?: number;
+  reviewAnalyzedAt?: number;
+  /** Optional next-generation scoring fields; older records may not have them. */
+  smartLeadScoreV2?: number;
+  priorityScore?: number;
+  priorityDelta?: number;
+  websiteIntelligence?: WebsiteIntelligenceSummary;
+  /** AI insight layer (rules by default; optional LLM via `/api/ai-insight`). */
+  aiInsight?: string;
+  outreachAngle?: string;
+  painPointSummary?: string[];
+  opportunityLevel?: OpportunityLevel;
+  aiInsightSource?: AiInsightSource;
 };
 
 function normalizePhoneDedupe(phone?: string): string | null {
@@ -995,11 +1058,85 @@ export function computeContactReadinessScore(
   return { score: Math.round(clamp(score)), reasons };
 }
 
+export function toLeadForAiInsight(s: ScoredLead): LeadForAiInsight {
+  const hasWhatsAppPath = normalizePhoneForWhatsApp(s.phone) !== null;
+  return {
+    businessSignals: s.businessSignals,
+    reviewPainPoints: s.reviewPainPoints?.map((p) => ({
+      category: p.category,
+      severity: p.severity,
+      summary: p.summary,
+    })),
+    websiteIntelligence: s.websiteIntelligence,
+    heuristicOutreachAngle: s.heuristicOutreachAngle,
+    hotScore:
+      typeof s.hotScore === "number" && Number.isFinite(s.hotScore)
+        ? s.hotScore
+        : 0,
+    leadScore:
+      typeof s.leadScore === "number" && Number.isFinite(s.leadScore)
+        ? s.leadScore
+        : 0,
+    intelligenceScore: s.intelligenceScore,
+    smartLeadScoreV2: s.smartLeadScoreV2,
+    reviewIntelligenceScore: s.reviewIntelligenceScore,
+    contactQuality:
+      s.contactQuality === "high" ||
+      s.contactQuality === "medium" ||
+      s.contactQuality === "low"
+        ? s.contactQuality
+        : getContactQuality(s.phone),
+    hasWhatsAppPath,
+    hasInstagram: Boolean(s.hasInstagram),
+    hasOwnWebsite: Boolean(s.hasOwnWebsite),
+    channels: s.channels ?? [],
+  };
+}
+
+function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
+  const hasWhatsAppPath = normalizePhoneForWhatsApp(s.phone) !== null;
+  const intel = buildExtractedSignals({
+    hasOwnWebsite: s.hasOwnWebsite,
+    hasInstagram: s.hasInstagram,
+    channels: s.channels,
+    rating: s.rating,
+    reviewsCount: s.reviewsCount,
+    daysSinceLastReview: s.daysSinceLastReview,
+    units: s.units,
+    pricePerNight: s.pricePerNight,
+    occupancy30d: s.occupancy30d,
+    contactQuality: s.contactQuality,
+    hasWhatsAppPath,
+    phoneMissing: !s.phone?.trim(),
+  });
+  const base: ScoredLead = {
+    ...s,
+    businessSignals: intel.signals,
+    whyThisLead: intel.whyThisLead,
+    heuristicOutreachAngle: intel.heuristicOutreachAngle,
+    intelligenceScore: intel.intelligenceScore,
+  };
+  const ai = generateLeadInsight(toLeadForAiInsight(base), "rules");
+  return {
+    ...base,
+    aiInsight: ai.aiInsight,
+    outreachAngle: ai.outreachAngle,
+    painPointSummary: ai.painPointSummary,
+    opportunityLevel: ai.opportunityLevel,
+    aiInsightSource: ai.source,
+  };
+}
+
+/** Attach or refresh structured intelligence fields (safe to call after merges). */
+export function enrichScoredLeadIntelligence(s: ScoredLead): ScoredLead {
+  return attachStructuredIntelligence(s);
+}
+
 export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
   return leads.map((l) => {
     const lead = scoreLead(l);
     const hot = scoreHot(l);
-    return {
+    const base: ScoredLead = {
       ...l,
       leadScore: lead.score,
       leadReasons: lead.reasons,
@@ -1007,6 +1144,7 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
       hotReasons: hot.reasons,
       contactQuality: getContactQuality(l.phone),
     };
+    return attachStructuredIntelligence(base);
   });
 }
 

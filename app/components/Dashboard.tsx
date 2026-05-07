@@ -19,6 +19,7 @@ import {
   type LeadType,
   normalizePhoneForWhatsApp,
   dedupeLeads,
+  enrichScoredLeadIntelligence,
   type ScoredLead,
   STATUS_LABEL,
   STATUS_ORDER,
@@ -34,6 +35,12 @@ import {
 import {
   leadDedupeKey,
 } from "@/app/lib/generate";
+import type { LeadAiInsight, OpportunityLevel } from "@/app/lib/intelligence/ai-insight";
+import {
+  getWhyThisLeadReasons,
+  type WhyThisLeadEnrichment,
+  type WhyThisLeadReason,
+} from "@/app/lib/intelligence/why-this-lead";
 import ImportPanel, {
   type ImportRequest,
   type ImportResult,
@@ -618,7 +625,7 @@ function coerceBool(b: unknown, fallback: boolean): boolean {
 
 /** Repair persisted / merged leads so list fields cannot balloon the detail drawer. */
 function sanitizeScoredLeadForUi(lead: ScoredLead): ScoredLead {
-  return {
+  const cleaned: ScoredLead = {
     ...lead,
     name: coerceTextField(lead.name, ""),
     type: lead.type,
@@ -646,6 +653,7 @@ function sanitizeScoredLeadForUi(lead: ScoredLead): ScoredLead {
     hotReasons: normalizeStringList(lead.hotReasons),
     channels: normalizeChannelList(lead.channels),
   };
+  return enrichScoredLeadIntelligence(cleaned);
 }
 
 function sanitizeContactFinderResult(r: ContactFinderResult): ContactFinderResult {
@@ -880,14 +888,14 @@ function upsertScoredFields(
   };
   const ls = scoreLead(merged);
   const hs = scoreHot(merged);
-  return {
+  return enrichScoredLeadIntelligence({
     ...merged,
     leadScore: ls.score,
     leadReasons: ls.reasons,
     hotScore: hs.score,
     hotReasons: hs.reasons,
     contactQuality: getContactQuality(merged.phone),
-  };
+  });
 }
 
 function mergeImportBatchMaster(
@@ -2044,6 +2052,27 @@ function HotCard({
           </span>
         ))}
       </div>
+      <WhyThisLeadChips lead={lead} limit={3} />
+      <div className="mt-2 rounded-md border border-cyan-400/20 bg-cyan-500/[0.06] px-2.5 py-2">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-cyan-200/90">
+            Outreach angle
+          </span>
+          <span className={aiSourceBadgeClass(lead.aiInsightSource ?? "rules")}>
+            {lead.aiInsightSource === "llm" ? "Model" : "Rules"}
+          </span>
+        </div>
+        <p className="line-clamp-2 text-[10px] leading-relaxed text-zinc-300">
+          {pickOutreachAngleText(lead.outreachAngle, lead.painPointSummary)}
+        </p>
+      </div>
+      {lead.opportunityLevel ? (
+        <div className="mt-2">
+          <span className={opportunityPillClass(lead.opportunityLevel)}>
+            Opp · {lead.opportunityLevel}
+          </span>
+        </div>
+      ) : null}
       <div className="mt-auto flex items-center justify-between pt-4">
         <StatusPill status={status} />
         <div className="flex items-center gap-1.5">
@@ -2120,6 +2149,340 @@ function LeadDetailScoreSummary({ lead }: { lead: LeadTableRow }) {
         reasons={lead.hotReasons}
         tone="hot"
       />
+    </div>
+  );
+}
+
+const WHY_THIS_LEAD_FALLBACK =
+  "No strong intelligence signals yet. Enrich this lead to generate better recommendations.";
+
+const AI_INSIGHT_FALLBACK =
+  "Not enough intelligence signals yet. Enrich this lead to generate better insight.";
+const OUTREACH_ANGLE_FALLBACK = "No strong outreach angle detected yet.";
+const WEAK_OUTREACH_ANGLES = new Set([
+  "Offer a lightweight way to handle reservation inquiries faster.",
+  "Explore whether inquiry handling and direct booking match guest expectations.",
+]);
+
+function pickOutreachAngleText(
+  outreachAngle?: string,
+  painPointSummary?: readonly string[],
+): string {
+  const normalized = outreachAngle?.trim() ?? "";
+  if (normalized && !WEAK_OUTREACH_ANGLES.has(normalized)) {
+    return normalized;
+  }
+  const topPain = (painPointSummary ?? [])[0]?.toLowerCase() ?? "";
+  if (topPain.includes("response") || topPain.includes("communication")) {
+    return "Reduce response delays during peak inquiry hours.";
+  }
+  if (topPain.includes("booking") || topPain.includes("reservation")) {
+    return "Improve direct booking conversion flow.";
+  }
+  if (topPain.includes("instagram")) {
+    return "Capture more Instagram-driven reservations.";
+  }
+  return OUTREACH_ANGLE_FALLBACK;
+}
+
+function aiSourceBadgeClass(source: LeadAiInsight["source"]): string {
+  if (source === "llm") {
+    return "inline-flex items-center rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-cyan-100 ring-1 ring-inset ring-cyan-400/35";
+  }
+  return "inline-flex items-center rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-300 ring-1 ring-inset ring-zinc-400/25";
+}
+
+function opportunityPillClass(level: OpportunityLevel): string {
+  const base =
+    "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ring-1 ring-inset";
+  if (level === "high") {
+    return `${base} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`;
+  }
+  if (level === "medium") {
+    return `${base} bg-amber-500/15 text-amber-200 ring-amber-400/35`;
+  }
+  return `${base} bg-zinc-500/15 text-zinc-300 ring-zinc-400/25`;
+}
+
+function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
+  const [llmAvailable, setLlmAvailable] = useState(false);
+  const [refined, setRefined] = useState<LeadAiInsight | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/ai-insight")
+      .then((r) => r.json())
+      .then((d: { configured?: boolean }) => {
+        if (!cancelled) setLlmAvailable(Boolean(d.configured));
+      })
+      .catch(() => {
+        if (!cancelled) setLlmAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setRefined(null);
+    setError(null);
+  }, [lead.id]);
+
+  const base: LeadAiInsight = {
+    aiInsight: lead.aiInsight ?? "",
+    outreachAngle: lead.outreachAngle ?? "",
+    painPointSummary: lead.painPointSummary ?? [],
+    opportunityLevel: lead.opportunityLevel ?? "low",
+    source: lead.aiInsightSource ?? "rules",
+  };
+
+  const active = refined ?? base;
+
+  const hasBody =
+    active.aiInsight.trim().length > 0 ||
+    active.painPointSummary.length > 0 ||
+    active.outreachAngle.trim().length > 0;
+
+  async function refineWithLlm() {
+    if (!llmAvailable || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ai-insight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead }),
+      });
+      const data = (await res.json()) as LeadAiInsight & { error?: string };
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setRefined({
+        aiInsight: data.aiInsight,
+        outreachAngle: data.outreachAngle,
+        painPointSummary: Array.isArray(data.painPointSummary)
+          ? data.painPointSummary
+          : [],
+        opportunityLevel:
+          data.opportunityLevel === "low" ||
+          data.opportunityLevel === "medium" ||
+          data.opportunityLevel === "high"
+            ? data.opportunityLevel
+            : "medium",
+        source: data.source === "llm" ? "llm" : "rules",
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Refine failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-cyan-400/15 bg-cyan-500/[0.04] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-cyan-200/90">
+          AI insight
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={aiSourceBadgeClass(active.source)}>
+            {active.source === "llm" ? "Model" : "Rules"}
+          </span>
+          {llmAvailable ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void refineWithLlm()}
+              className="inline-flex items-center rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium text-cyan-100 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy ? "Refining…" : "Polish with AI"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {!hasBody ? (
+        <div className="rounded-lg border border-dashed border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-zinc-500">
+          {AI_INSIGHT_FALLBACK}
+        </div>
+      ) : (
+        <>
+          {active.aiInsight.trim() ? (
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                Insight summary
+              </div>
+              <p className="text-xs leading-relaxed text-zinc-200">{active.aiInsight}</p>
+            </div>
+          ) : null}
+
+          {active.painPointSummary.length > 0 ? (
+            <div>
+              <div className="mb-1.5 text-[10px] uppercase tracking-wider text-zinc-500">
+                Pain points
+              </div>
+              <ul className="space-y-1 text-xs text-zinc-300">
+                {active.painPointSummary.map((line) => (
+                  <li key={line} className="flex gap-2">
+                    <span className="text-cyan-400" aria-hidden>
+                      •
+                    </span>
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/[0.06] px-3 py-2">
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-cyan-200/90">
+              Outreach angle
+            </div>
+            <p className="text-xs leading-relaxed text-zinc-200">
+              {pickOutreachAngleText(active.outreachAngle, active.painPointSummary)}
+            </p>
+          </div>
+
+        </>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+          Opportunity
+        </span>
+        <span className={opportunityPillClass(active.opportunityLevel)}>
+          {active.opportunityLevel}
+        </span>
+      </div>
+
+      {error ? <div className="text-[11px] text-rose-300">{error}</div> : null}
+    </div>
+  );
+}
+
+function whyThisLeadToneClass(tone: WhyThisLeadReason["tone"]) {
+  if (tone === "review") return "text-amber-200 ring-amber-400/30 bg-amber-500/10";
+  if (tone === "contact") return "text-emerald-200 ring-emerald-400/30 bg-emerald-500/10";
+  if (tone === "digital") return "text-sky-200 ring-sky-400/30 bg-sky-500/10";
+  if (tone === "priority") return "text-violet-200 ring-violet-400/30 bg-violet-500/10";
+  return "text-zinc-200 ring-white/10 bg-white/5";
+}
+
+function WhyThisLeadChips({
+  lead,
+  enrichment,
+  limit = 3,
+  showFallback = false,
+}: {
+  lead: ScoredLead;
+  enrichment?: WhyThisLeadEnrichment;
+  limit?: number;
+  showFallback?: boolean;
+}) {
+  const reasons = getWhyThisLeadReasons(lead, { enrichment, limit });
+  if (reasons.length === 0) {
+    return showFallback ? (
+      <div className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+        {WHY_THIS_LEAD_FALLBACK}
+      </div>
+    ) : null;
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {reasons.map((reason) => (
+        <span
+          key={reason.id}
+          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ring-1 ring-inset ${whyThisLeadToneClass(reason.tone)}`}
+          title="Why this lead?"
+        >
+          {reason.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function WhyThisLeadReasonList({
+  lead,
+  enrichment,
+}: {
+  lead: ScoredLead;
+  enrichment?: WhyThisLeadEnrichment;
+}) {
+  const reasons = getWhyThisLeadReasons(lead, { enrichment, limit: 5 });
+  if (reasons.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-zinc-500">
+        {WHY_THIS_LEAD_FALLBACK}
+      </div>
+    );
+  }
+
+  return (
+    <ul className="space-y-1.5 text-xs text-zinc-200">
+      {reasons.map((reason) => (
+        <li key={reason.id} className="flex gap-2">
+          <span className="mt-0.5 shrink-0 text-emerald-400" aria-hidden>
+            ✓
+          </span>
+          <span>{reason.label}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function LeadDetailIntelligenceSection({
+  lead,
+  finderPersisted,
+}: {
+  lead: LeadTableRow;
+  finderPersisted?: ContactFinderResult;
+}) {
+  const angle = lead.heuristicOutreachAngle?.trim() ?? "";
+  const intel = lead.intelligenceScore ?? 0;
+  const badges = lead.businessSignals ?? [];
+
+  return (
+    <div className="space-y-3 rounded-xl border border-violet-400/20 bg-violet-500/[0.04] p-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-violet-200/90">
+          Lead intelligence
+        </div>
+        <div
+          className="tabular-nums text-sm font-semibold text-violet-100"
+          title="Signal-based opportunity score (structured data, not star rating)"
+        >
+          {intel}
+        </div>
+      </div>
+      <div>
+        <div className="mb-2 text-[11px] uppercase tracking-wider text-zinc-500">
+          Why this lead?
+        </div>
+        <WhyThisLeadReasonList lead={lead} enrichment={finderPersisted} />
+      </div>
+      {badges.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {badges.slice(0, 8).map((b) => (
+            <span
+              key={b}
+              className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] capitalize text-zinc-400 ring-1 ring-inset ring-white/10"
+            >
+              {b.replace(/_/g, " ")}
+            </span>
+          ))}
+        </div>
+      )}
+      {angle ? (
+        <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-zinc-300">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+            Consultative angle ·{" "}
+          </span>
+          {angle}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2612,6 +2975,11 @@ function LeadDetailPanel({
       <LeadDetailHeader lead={selectedLead} onClose={onClose} />
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
         <LeadDetailScoreSummary lead={selectedLead} />
+        <LeadDetailIntelligenceSection
+          lead={selectedLead}
+          finderPersisted={finderPersisted}
+        />
+        <LeadDetailAiInsightSection lead={selectedLead} />
         <LeadDetailMetrics lead={selectedLead} />
         <LeadDetailContactSection
           lead={selectedLead}
@@ -4119,11 +4487,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         category === "weak_contact" ? 18 : category === "needs_finder" ? 10 : 0;
       const noContactPenalty = category === "no_contact" ? 35 : 0;
       const readyBoost = category === "ready_now" ? 8 : category === "good_contact" ? 4 : 0;
+      const intel =
+        typeof row.intelligenceScore === "number" && Number.isFinite(row.intelligenceScore)
+          ? row.intelligenceScore
+          : 0;
       const rank =
         readiness.score * 0.55 +
         row.hotScore * 0.25 +
         row.leadScore * 0.15 +
         sourceBonus(c.source) * 0.05 +
+        intel * 0.06 +
         readyBoost -
         weakPenalty -
         noContactPenalty;
@@ -4861,6 +5234,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
                             now={renderNow}
                           />
+                          <WhyThisLeadChips
+                            lead={row}
+                            enrichment={contactFinderMap[row.id]}
+                            limit={3}
+                          />
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top text-xs text-zinc-300">
@@ -5529,6 +5907,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               reimported={lastImportUpdatedIds.includes(row.id)}
                               syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
                               now={renderNow}
+                            />
+                            <WhyThisLeadChips
+                              lead={row}
+                              enrichment={contactFinderMap[row.id]}
+                              limit={3}
                             />
                           </div>
                         </td>

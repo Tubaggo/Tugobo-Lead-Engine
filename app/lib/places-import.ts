@@ -3,6 +3,7 @@ import {
   type Lead,
   type LeadType,
   type ScoredLead,
+  enrichScoredLeadIntelligence,
   getContactQuality,
   scoreHot,
   scoreLead,
@@ -164,12 +165,12 @@ export function mapGooglePlaceToScoredLead(
   const ls = scoreLead(lead);
   const hs = scoreHot(lead);
 
-  return {
+  return enrichScoredLeadIntelligence({
     ...lead,
     leadScore: ls.score,
     leadReasons: ls.reasons,
     hotScore: hs.score,
     hotReasons: hs.reasons,
     contactQuality: getContactQuality(lead.phone),
-  };
+  });
 }

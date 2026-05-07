@@ -2,6 +2,7 @@ import "server-only";
 
 import { google, sheets_v4 } from "googleapis";
 import {
+  enrichScoredLeadIntelligence,
   getContactQuality,
   scoreHot,
   scoreLead,
@@ -182,15 +183,16 @@ export function normalizeIncomingLead(raw: Record<string, unknown>): {
   };
   const ls = scoreLead(merged);
   const hs = scoreHot(merged);
+  const base: ScoredLead = {
+    ...merged,
+    leadScore: Number(raw.lead_score ?? raw.leadScore ?? ls.score) || ls.score,
+    leadReasons: Array.isArray(raw.leadReasons) ? raw.leadReasons.map((x) => String(x)) : ls.reasons,
+    hotScore: Number(raw.hot_score ?? raw.hotScore ?? hs.score) || hs.score,
+    hotReasons: Array.isArray(raw.hotReasons) ? raw.hotReasons.map((x) => String(x)) : hs.reasons,
+    contactQuality: (asString(raw.contact_quality) as ScoredLead["contactQuality"]) || getContactQuality(phone),
+  };
   return {
-    lead: {
-      ...merged,
-      leadScore: Number(raw.lead_score ?? raw.leadScore ?? ls.score) || ls.score,
-      leadReasons: Array.isArray(raw.leadReasons) ? raw.leadReasons.map((x) => String(x)) : ls.reasons,
-      hotScore: Number(raw.hot_score ?? raw.hotScore ?? hs.score) || hs.score,
-      hotReasons: Array.isArray(raw.hotReasons) ? raw.hotReasons.map((x) => String(x)) : hs.reasons,
-      contactQuality: (asString(raw.contact_quality) as ScoredLead["contactQuality"]) || getContactQuality(phone),
-    },
+    lead: enrichScoredLeadIntelligence(base),
     state: {
       status: asString(raw.status) || "new",
       note: asString(raw.notes ?? raw.note),

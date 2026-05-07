@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { listAllLeadRecords, getAirtableConnection } from "@/app/lib/airtable";
-import type { ScoredLead } from "@/app/lib/leads";
+import {
+  enrichScoredLeadIntelligence,
+  getContactQuality,
+  type ScoredLead,
+} from "@/app/lib/leads";
 
 function toNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -31,6 +35,7 @@ function mapRecordToLead(
   const city = toStringValue(record.fields.city).trim() || "Unknown";
   const region = toStringValue(record.fields.region).trim() || city;
   const website = ensureHttpWebsite(toStringValue(record.fields.website));
+  const phone = toStringValue(record.fields.whatsapp);
   const leadScore = toNumber(record.fields.lead_score);
   const hotScore = toNumber(record.fields.hot_score);
   const createdAtRaw = toStringValue(record.fields.created_at);
@@ -43,14 +48,14 @@ function mapRecordToLead(
   const pipelineStage = toStringValue(record.fields.pipeline_stage).trim() || "";
   const contactReadinessScore = toNumber(record.fields.contact_readiness_score);
 
-  return {
+  return enrichScoredLeadIntelligence({
     id: `airtable-${record.id}`,
     name: businessName || `Airtable Lead ${index + 1}`,
     type: "Hotel",
     city,
     region,
     contactName: "",
-    phone: toStringValue(record.fields.whatsapp),
+    phone,
     instagram: undefined,
     website: website || undefined,
     units: 0,
@@ -69,7 +74,7 @@ function mapRecordToLead(
     hotScore,
     leadReasons: [],
     hotReasons: [],
-    contactQuality: "low",
+    contactQuality: getContactQuality(phone),
     contactAttempts,
     lastContactedAt: lastContactedAt ?? undefined,
     nextFollowUpAt: nextFollowUpAt ?? undefined,
@@ -77,7 +82,7 @@ function mapRecordToLead(
     whatsappInvalid,
     contactReadinessScore,
     pipelineStage,
-  };
+  });
 }
 
 export async function GET() {

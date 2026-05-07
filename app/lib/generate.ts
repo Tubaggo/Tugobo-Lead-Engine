@@ -2,6 +2,7 @@ import {
   type Channel,
   type Lead,
   type LeadType,
+  enrichScoredLeadIntelligence,
   getContactQuality,
   scoreLead,
   scoreHot,
@@ -509,14 +510,14 @@ export function generateScoredLeads(
   return raw.map((l) => {
     const ls = scoreLead(l);
     const hs = scoreHot(l);
-    return {
+    return enrichScoredLeadIntelligence({
       ...l,
       leadScore: ls.score,
       leadReasons: ls.reasons,
       hotScore: hs.score,
       hotReasons: hs.reasons,
       contactQuality: getContactQuality(l.phone),
-    };
+    });
   });
 }
 
