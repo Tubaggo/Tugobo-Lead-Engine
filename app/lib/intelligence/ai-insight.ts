@@ -1,4 +1,5 @@
 import type { BusinessSignal } from "./signals";
+import type { OutreachIntelligenceProfile } from "./outreach-intelligence";
 
 export type OpportunityLevel = "low" | "medium" | "high";
 
@@ -28,6 +29,12 @@ export type LeadForAiInsight = {
   hasInstagram: boolean;
   hasOwnWebsite: boolean;
   channels: readonly string[];
+  /**
+   * Optional outreach intelligence profile.
+   * When present, message generation adapts tone (consultative, relationship,
+   * conversion-focused, etc.) instead of always defaulting to soft.
+   */
+  outreachIntelligence?: OutreachIntelligenceProfile;
 };
 
 export type LeadAiInsight = {
@@ -259,7 +266,39 @@ type MessageSignalTheme =
   | "direct_booking_opportunity"
   | "general_hospitality";
 
+function approachToTheme(
+  approach: NonNullable<LeadForAiInsight["outreachIntelligence"]>["salesApproach"],
+  lead: LeadForAiInsight,
+): MessageSignalTheme | null {
+  switch (approach) {
+    case "whatsapp-speed":
+      return "communication_risk";
+    case "direct-booking":
+      return "direct_booking_opportunity";
+    case "conversion-gap":
+      return "booking_flow_gap";
+    case "social-demand":
+      return "instagram_demand";
+    case "guest-experience":
+      return "communication_risk";
+    case "operational-efficiency":
+      if (lead.hasWhatsAppPath && lead.contactQuality !== "low") {
+        return "whatsapp_flow";
+      }
+      return "general_hospitality";
+    default:
+      return null;
+  }
+}
+
 function pickMessageSignalTheme(lead: LeadForAiInsight): MessageSignalTheme {
+  // Outreach intelligence (when present) is the strongest signal for tone.
+  const profile = lead.outreachIntelligence;
+  if (profile) {
+    const fromApproach = approachToTheme(profile.salesApproach, lead);
+    if (fromApproach) return fromApproach;
+  }
+
   const angle = getOutreachAngle(lead).toLowerCase();
   const pains = getPainPointSummary(lead, 4).map((p) => p.toLowerCase());
   const signals = new Set(lead.businessSignals ?? []);
@@ -295,6 +334,29 @@ function pickMessageSignalTheme(lead: LeadForAiInsight): MessageSignalTheme {
   return "general_hospitality";
 }
 
+/**
+ * Maps an outreach style to the WhatsApp message variant we ship as the
+ * default `message`. Other variants stay available in `styles` for the UI.
+ */
+function styleVariantFor(
+  style: NonNullable<LeadForAiInsight["outreachIntelligence"]>["outreachStyle"],
+): OutreachMessageStyle {
+  switch (style) {
+    case "consultative":
+      return "premium";
+    case "relationship":
+      return "soft";
+    case "educational":
+      return "soft";
+    case "direct":
+      return "direct";
+    case "conversion-focused":
+      return "direct";
+    default:
+      return "soft";
+  }
+}
+
 /** Short, consultative WhatsApp copy variants for review/copy flow. */
 export function generateWhatsAppMessage(
   lead: LeadForAiInsight,
@@ -303,6 +365,9 @@ export function generateWhatsAppMessage(
   const followUp = opts?.followUp === true;
   const weakSignals = !hasMeaningfulSignals(lead);
   const theme = pickMessageSignalTheme(lead);
+  const preferredVariant: OutreachMessageStyle = lead.outreachIntelligence
+    ? styleVariantFor(lead.outreachIntelligence.outreachStyle)
+    : "soft";
 
   if (weakSignals) {
     const soft =
@@ -311,7 +376,8 @@ export function generateWhatsAppMessage(
       "Merhaba, konaklama tarafında ilk talebi kaçırmadan ilerleten kısa bir mesaj akışı kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.";
     const premium =
       "Merhaba, turizm tarafında rezervasyon öncesi iletişimi daha net hale getiren sade bir çerçeve uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.";
-    return { message: soft, styles: { soft, direct, premium }, weakSignals };
+    const styles = { soft, direct, premium };
+    return { message: styles[preferredVariant], styles, weakSignals };
   }
 
   const templates: Record<
@@ -427,14 +493,16 @@ export function generateWhatsAppMessage(
     const soft = selected.soft.followUp;
     const direct = selected.direct.followUp;
     const premium = selected.premium.followUp;
-    return { message: soft, styles: { soft, direct, premium }, weakSignals };
+    const styles = { soft, direct, premium };
+    return { message: styles[preferredVariant], styles, weakSignals };
   }
 
   const soft = selected.soft.base;
   const direct = selected.direct.base;
   const premium = selected.premium.base;
+  const styles = { soft, direct, premium };
 
-  return { message: soft, styles: { soft, direct, premium }, weakSignals };
+  return { message: styles[preferredVariant], styles, weakSignals };
 }
 
 function buildAiInsightParagraph(lead: LeadForAiInsight): string {

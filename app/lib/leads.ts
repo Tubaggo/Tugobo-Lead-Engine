@@ -5,9 +5,14 @@ import {
   type AiInsightSource,
 } from "./intelligence/ai-insight";
 import { buildExtractedSignals, type BusinessSignal } from "./intelligence/signals";
+import {
+  deriveOutreachIntelligence,
+  type OutreachIntelligenceProfile,
+} from "./intelligence/outreach-intelligence";
 
 export type { BusinessSignal };
 export type { OpportunityLevel, AiInsightSource };
+export type { OutreachIntelligenceProfile };
 
 export type LeadType =
   | "Hotel"
@@ -137,6 +142,8 @@ export type ScoredLead = Lead & {
   painPointSummary?: string[];
   opportunityLevel?: OpportunityLevel;
   aiInsightSource?: AiInsightSource;
+  /** Rule-based outreach intelligence profile — how the lead should be approached. */
+  outreachIntelligence?: OutreachIntelligenceProfile;
 };
 
 function normalizePhoneDedupe(phone?: string): string | null {
@@ -1256,6 +1263,7 @@ export function toLeadForAiInsight(s: ScoredLead): LeadForAiInsight {
     hasInstagram: Boolean(s.hasInstagram),
     hasOwnWebsite: Boolean(s.hasOwnWebsite),
     channels: s.channels ?? [],
+    outreachIntelligence: s.outreachIntelligence,
   };
 }
 
@@ -1283,13 +1291,39 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     intelligenceScore: intel.intelligenceScore,
   };
   const ai = generateLeadInsight(toLeadForAiInsight(base), "rules");
-  return {
+  const withAi: ScoredLead = {
     ...base,
     aiInsight: ai.aiInsight,
     outreachAngle: ai.outreachAngle,
     painPointSummary: ai.painPointSummary,
     opportunityLevel: ai.opportunityLevel,
     aiInsightSource: ai.source,
+  };
+  const outreachIntelligence = deriveOutreachIntelligence({
+    businessTier: withAi.businessTier,
+    hasWhatsAppPath,
+    hasInstagram: Boolean(withAi.hasInstagram),
+    hasOwnWebsite: Boolean(withAi.hasOwnWebsite),
+    contactQuality: withAi.contactQuality,
+    channels: withAi.channels ?? [],
+    businessSignals: withAi.businessSignals,
+    reviewPainPoints: withAi.reviewPainPoints?.map((p) => ({
+      category: p.category,
+      severity: p.severity,
+    })),
+    hotScore: withAi.hotScore,
+    leadScore: withAi.leadScore,
+    opportunityScore: withAi.opportunityScore,
+    opportunityLevel: withAi.opportunityLevel,
+    communicationRisk: withAi.communicationRisk,
+    intelligenceScore: withAi.intelligenceScore,
+    websiteIntelligence: withAi.websiteIntelligence,
+    units: withAi.units,
+    pricePerNight: withAi.pricePerNight,
+  });
+  return {
+    ...withAi,
+    outreachIntelligence,
   };
 }
 

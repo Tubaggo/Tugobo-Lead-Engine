@@ -41,6 +41,19 @@ import type {
   OutreachMessageStyle,
 } from "@/app/lib/intelligence/ai-insight";
 import {
+  LEAD_TEMPERATURE_LABEL,
+  OUTREACH_STYLE_LABEL,
+  RECOMMENDED_CHANNEL_LABEL,
+  SALES_APPROACH_LABEL,
+  URGENCY_LABEL,
+  type LeadTemperature,
+  type OutreachIntelligenceProfile,
+  type OutreachStyle,
+  type OutreachUrgency,
+  type RecommendedChannel,
+  type SalesApproach,
+} from "@/app/lib/intelligence/outreach-intelligence";
+import {
   getWhyThisLeadReasons,
   type WhyThisLeadEnrichment,
   type WhyThisLeadReason,
@@ -1957,16 +1970,16 @@ function AiMessageModal({
         onClick={onClose}
         className="absolute inset-0 bg-black/70 backdrop-blur-sm"
       />
-      <div className="relative z-10 w-full max-w-lg rounded-xl border border-white/10 bg-zinc-950 shadow-2xl ring-1 ring-white/5">
+      <div className="relative z-10 flex max-h-[92vh] w-full max-w-lg flex-col rounded-xl border border-white/10 bg-zinc-950 shadow-2xl ring-1 ring-white/5">
         <div className="flex items-start justify-between border-b border-white/10 px-4 py-3">
-          <div>
+          <div className="min-w-0 pr-2">
             <h2
               id="ai-message-title"
               className="text-sm font-semibold text-zinc-100"
             >
               AI Message
             </h2>
-            <p className="mt-0.5 text-xs text-zinc-500">{lead.name}</p>
+            <p className="mt-0.5 break-words text-xs text-zinc-500">{lead.name}</p>
             {queuedForOutreach ? (
               <div className="mt-1 inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-200">
                 In outreach queue{queueStatus ? ` · ${queueStatus}` : ""}
@@ -1991,7 +2004,7 @@ function AiMessageModal({
           </button>
         </div>
 
-        <div className="max-h-[70vh] overflow-y-auto px-4 py-3 sm:max-h-[min(60vh,28rem)]">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:max-h-[min(60vh,28rem)]">
           {state.phase === "loading" && (
             <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
               <div
@@ -2252,10 +2265,32 @@ function HotCard({
         </p>
       </div>
       {lead.opportunityLevel ? (
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className={opportunityPillClass(lead.opportunityLevel)}>
             Opp · {lead.opportunityLevel}
           </span>
+          {lead.outreachIntelligence ? (
+            <span
+              className={temperaturePillClass(lead.outreachIntelligence.leadTemperature)}
+              title={`Lead temperature: ${LEAD_TEMPERATURE_LABEL[lead.outreachIntelligence.leadTemperature]}`}
+            >
+              <span className="text-[9px] uppercase tracking-wider opacity-70">
+                Temp
+              </span>
+              <span>{LEAD_TEMPERATURE_LABEL[lead.outreachIntelligence.leadTemperature]}</span>
+            </span>
+          ) : null}
+          {lead.outreachIntelligence ? (
+            <span
+              className={salesApproachPillClass(lead.outreachIntelligence.salesApproach)}
+              title={`Best approach: ${SALES_APPROACH_LABEL[lead.outreachIntelligence.salesApproach]}`}
+            >
+              <span className="text-[9px] uppercase tracking-wider opacity-70">
+                Approach
+              </span>
+              <span>{SALES_APPROACH_LABEL[lead.outreachIntelligence.salesApproach]}</span>
+            </span>
+          ) : null}
         </div>
       ) : null}
       <div className="mt-auto flex items-center justify-between pt-4">
@@ -2387,6 +2422,140 @@ function opportunityPillClass(level: OpportunityLevel): string {
     return `${base} bg-amber-500/15 text-amber-200 ring-amber-400/35`;
   }
   return `${base} bg-zinc-500/15 text-zinc-300 ring-zinc-400/25`;
+}
+
+const OUTREACH_PILL_BASE =
+  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset";
+
+function temperaturePillClass(t: LeadTemperature): string {
+  if (t === "hot") {
+    return `${OUTREACH_PILL_BASE} bg-rose-500/12 text-rose-200 ring-rose-400/35`;
+  }
+  if (t === "warm") {
+    return `${OUTREACH_PILL_BASE} bg-amber-500/12 text-amber-200 ring-amber-400/30`;
+  }
+  return `${OUTREACH_PILL_BASE} bg-sky-500/10 text-sky-200 ring-sky-400/25`;
+}
+
+function outreachStylePillClass(s: OutreachStyle): string {
+  if (s === "consultative") {
+    return `${OUTREACH_PILL_BASE} bg-indigo-500/10 text-indigo-200 ring-indigo-400/25`;
+  }
+  if (s === "conversion-focused") {
+    return `${OUTREACH_PILL_BASE} bg-emerald-500/10 text-emerald-200 ring-emerald-400/25`;
+  }
+  if (s === "direct") {
+    return `${OUTREACH_PILL_BASE} bg-cyan-500/10 text-cyan-200 ring-cyan-400/25`;
+  }
+  if (s === "relationship") {
+    return `${OUTREACH_PILL_BASE} bg-pink-500/10 text-pink-200 ring-pink-400/25`;
+  }
+  return `${OUTREACH_PILL_BASE} bg-zinc-500/12 text-zinc-200 ring-zinc-400/25`;
+}
+
+function salesApproachPillClass(approach: SalesApproach): string {
+  if (approach === "whatsapp-speed") {
+    return `${OUTREACH_PILL_BASE} bg-emerald-500/10 text-emerald-200 ring-emerald-400/25`;
+  }
+  if (approach === "direct-booking") {
+    return `${OUTREACH_PILL_BASE} bg-indigo-500/10 text-indigo-200 ring-indigo-400/25`;
+  }
+  if (approach === "conversion-gap") {
+    return `${OUTREACH_PILL_BASE} bg-amber-500/10 text-amber-200 ring-amber-400/25`;
+  }
+  if (approach === "social-demand") {
+    return `${OUTREACH_PILL_BASE} bg-pink-500/10 text-pink-200 ring-pink-400/25`;
+  }
+  if (approach === "guest-experience") {
+    return `${OUTREACH_PILL_BASE} bg-cyan-500/10 text-cyan-200 ring-cyan-400/25`;
+  }
+  return `${OUTREACH_PILL_BASE} bg-violet-500/10 text-violet-200 ring-violet-400/25`;
+}
+
+function recommendedChannelPillClass(c: RecommendedChannel): string {
+  if (c === "whatsapp") {
+    return `${OUTREACH_PILL_BASE} bg-emerald-500/10 text-emerald-200 ring-emerald-400/25`;
+  }
+  if (c === "instagram") {
+    return `${OUTREACH_PILL_BASE} bg-pink-500/10 text-pink-200 ring-pink-400/25`;
+  }
+  if (c === "phone") {
+    return `${OUTREACH_PILL_BASE} bg-sky-500/10 text-sky-200 ring-sky-400/25`;
+  }
+  return `${OUTREACH_PILL_BASE} bg-zinc-500/12 text-zinc-200 ring-zinc-400/25`;
+}
+
+function urgencyPillClass(u: OutreachUrgency): string {
+  if (u === "high") {
+    return `${OUTREACH_PILL_BASE} bg-rose-500/12 text-rose-200 ring-rose-400/30`;
+  }
+  if (u === "medium") {
+    return `${OUTREACH_PILL_BASE} bg-amber-500/10 text-amber-200 ring-amber-400/25`;
+  }
+  return `${OUTREACH_PILL_BASE} bg-zinc-500/10 text-zinc-300 ring-zinc-400/25`;
+}
+
+/** Full four-pill block for the lead detail drawer. */
+function OutreachIntelligencePanel({
+  profile,
+}: {
+  profile?: OutreachIntelligenceProfile;
+}) {
+  if (!profile) return null;
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+          Outreach intelligence
+        </span>
+        <span className={urgencyPillClass(profile.urgencyLevel)}>
+          <span className="text-[9px] uppercase tracking-wider opacity-70">
+            Urgency
+          </span>
+          <span>{URGENCY_LABEL[profile.urgencyLevel]}</span>
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+            Best approach
+          </span>
+          <span className={salesApproachPillClass(profile.salesApproach)}>
+            {SALES_APPROACH_LABEL[profile.salesApproach]}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+            Style
+          </span>
+          <span className={outreachStylePillClass(profile.outreachStyle)}>
+            {OUTREACH_STYLE_LABEL[profile.outreachStyle]}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+            Best channel
+          </span>
+          <span className={recommendedChannelPillClass(profile.recommendedChannel)}>
+            {RECOMMENDED_CHANNEL_LABEL[profile.recommendedChannel]}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">
+            Lead temperature
+          </span>
+          <span className={temperaturePillClass(profile.leadTemperature)}>
+            {LEAD_TEMPERATURE_LABEL[profile.leadTemperature]}
+          </span>
+        </div>
+      </div>
+      {profile.rationale.length > 0 ? (
+        <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-zinc-500">
+          {profile.rationale.filter(Boolean).slice(0, 3).join(" · ")}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
@@ -2538,6 +2707,28 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
         <span className={opportunityPillClass(active.opportunityLevel)}>
           {active.opportunityLevel}
         </span>
+        {lead.outreachIntelligence ? (
+          <span
+            className={outreachStylePillClass(lead.outreachIntelligence.outreachStyle)}
+            title={`Style: ${OUTREACH_STYLE_LABEL[lead.outreachIntelligence.outreachStyle]}`}
+          >
+            <span className="text-[9px] uppercase tracking-wider opacity-70">
+              Style
+            </span>
+            <span>{OUTREACH_STYLE_LABEL[lead.outreachIntelligence.outreachStyle]}</span>
+          </span>
+        ) : null}
+        {lead.outreachIntelligence ? (
+          <span
+            className={recommendedChannelPillClass(lead.outreachIntelligence.recommendedChannel)}
+            title={`Best channel: ${RECOMMENDED_CHANNEL_LABEL[lead.outreachIntelligence.recommendedChannel]}`}
+          >
+            <span className="text-[9px] uppercase tracking-wider opacity-70">
+              Channel
+            </span>
+            <span>{RECOMMENDED_CHANNEL_LABEL[lead.outreachIntelligence.recommendedChannel]}</span>
+          </span>
+        ) : null}
       </div>
 
       {error ? <div className="text-[11px] text-rose-300">{error}</div> : null}
@@ -2642,6 +2833,7 @@ function LeadDetailIntelligenceSection({
           {intel}
         </div>
       </div>
+      <OutreachIntelligencePanel profile={lead.outreachIntelligence} />
       <div>
         <div className="mb-2 text-[11px] uppercase tracking-wider text-zinc-500">
           Why this lead?
@@ -4241,6 +4433,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         businessSignals: lead.businessSignals ?? [],
         painPointSummary: lead.painPointSummary ?? [],
         outreachAngle: lead.outreachAngle ?? "",
+        outreachIntelligence: lead.outreachIntelligence,
       }),
     });
     const data = (await res.json()) as { message?: string; error?: string };
@@ -4280,6 +4473,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         businessSignals: lead.businessSignals ?? [],
         painPointSummary: lead.painPointSummary ?? [],
         outreachAngle: lead.outreachAngle ?? "",
+        outreachIntelligence: lead.outreachIntelligence,
       }),
     });
     const data = (await res.json()) as {
@@ -5693,7 +5887,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                 ? `Instagram · @${row.instagram}`
                                 : "No Instagram on file"
                             }
-                            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                            className={`inline-flex h-10 w-10 items-center justify-center rounded-md border transition sm:h-8 sm:w-8 ${
                               ig
                                 ? "border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20"
                                 : "border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed"
@@ -5706,7 +5900,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             disabled={row._s.doNotContact}
                             onClick={() => void startAiMessage(row)}
                             title="Kişiselleştirilmiş AI mesajı"
-                            className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 sm:text-xs"
+                            className="inline-flex h-10 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:text-xs"
                           >
                             <IconSpark className="h-3.5 w-3.5 shrink-0" />
                             AI Message
@@ -5718,7 +5912,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                 type="button"
                                 onClick={() => void startFollowUpOutreach(row)}
                                 title="Kısa hatırlatma mesajı ve WhatsApp"
-                                className="inline-flex h-8 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:text-xs"
+                                className="inline-flex h-10 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:h-8 sm:text-xs"
                               >
                                 Follow Up
                               </button>
@@ -5743,7 +5937,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             })()}
                             title="Add to today’s outreach queue (max 20)"
                             onClick={() => addLeadIdsToDailyQueue([row.id])}
-                            className="inline-flex h-8 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="inline-flex h-10 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8"
                           >
                             Add to Queue
                           </button>
@@ -6009,7 +6203,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         {allLeadsOpen && (
           <>
             <section className="flex flex-col gap-3 border-b border-white/5 p-3 md:flex-row md:items-center md:justify-between">
-              <div className="flex flex-1 items-center gap-2">
+              <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
                 <div className="relative flex-1">
                   <input
                     value={query}
@@ -6023,7 +6217,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   onChange={(e) =>
                     setSort(e.target.value as "readiness" | "hot" | "lead" | "name")
                   }
-                  className="rounded-md border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 sm:w-auto"
                 >
                   <option value="readiness">Sort: Contact Readiness</option>
                   <option value="hot">Sort: Hot Score</option>
@@ -6370,7 +6564,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                   ? `Instagram · @${row.instagram}`
                                   : "No Instagram on file"
                               }
-                              className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                              className={`inline-flex h-10 w-10 items-center justify-center rounded-md border transition sm:h-8 sm:w-8 ${
                                 ig
                                   ? "border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20"
                                   : "border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed"
@@ -6383,7 +6577,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               disabled={s.doNotContact}
                               onClick={() => void startAiMessage(row)}
                               title="Kişiselleştirilmiş AI mesajı"
-                              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 sm:text-xs"
+                              className="inline-flex h-10 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:text-xs"
                             >
                               <IconSpark className="h-3.5 w-3.5 shrink-0" />
                               AI Message
@@ -6395,7 +6589,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                   type="button"
                                   onClick={() => void startFollowUpOutreach(row)}
                                   title="Kısa hatırlatma mesajı ve WhatsApp"
-                                  className="inline-flex h-8 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:text-xs"
+                                  className="inline-flex h-10 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:h-8 sm:text-xs"
                                 >
                                   Follow Up
                                 </button>
@@ -6420,14 +6614,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               })()}
                               title="Add to today’s outreach queue"
                               onClick={() => addLeadIdsToDailyQueue([row.id])}
-                              className="inline-flex h-8 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                              className="inline-flex h-10 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8"
                             >
                               Queue
                             </button>
                             <button
                               onClick={() => setOpenId(row.id)}
                               title="Open notes"
-                              className={`relative inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                              className={`relative inline-flex h-10 w-10 items-center justify-center rounded-md border transition sm:h-8 sm:w-8 ${
                                 s.note
                                   ? "border-amber-400/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
                                   : "border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"

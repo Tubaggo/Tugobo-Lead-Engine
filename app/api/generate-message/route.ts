@@ -4,6 +4,14 @@ import {
   type LeadForAiInsight,
 } from "@/app/lib/intelligence/ai-insight";
 import type { BusinessSignal } from "@/app/lib/intelligence/signals";
+import type {
+  OutreachIntelligenceProfile,
+  OutreachStyle,
+  OutreachUrgency,
+  SalesApproach,
+  RecommendedChannel,
+  LeadTemperature,
+} from "@/app/lib/intelligence/outreach-intelligence";
 
 type GenerateMessageBody = {
   name: string;
@@ -23,10 +31,87 @@ type GenerateMessageBody = {
   businessSignals?: BusinessSignal[];
   painPointSummary?: string[];
   outreachAngle?: string;
+  outreachIntelligence?: OutreachIntelligenceProfile;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+const VALID_STYLES: ReadonlySet<OutreachStyle> = new Set<OutreachStyle>([
+  "consultative",
+  "direct",
+  "educational",
+  "relationship",
+  "conversion-focused",
+]);
+
+const VALID_URGENCY: ReadonlySet<OutreachUrgency> = new Set<OutreachUrgency>([
+  "low",
+  "medium",
+  "high",
+]);
+
+const VALID_APPROACH: ReadonlySet<SalesApproach> = new Set<SalesApproach>([
+  "whatsapp-speed",
+  "direct-booking",
+  "conversion-gap",
+  "operational-efficiency",
+  "social-demand",
+  "guest-experience",
+]);
+
+const VALID_CHANNEL: ReadonlySet<RecommendedChannel> = new Set<RecommendedChannel>([
+  "whatsapp",
+  "instagram",
+  "phone",
+  "website-form",
+]);
+
+const VALID_TEMPERATURE: ReadonlySet<LeadTemperature> = new Set<LeadTemperature>([
+  "cold",
+  "warm",
+  "hot",
+]);
+
+function parseOutreachIntelligence(
+  raw: unknown,
+): OutreachIntelligenceProfile | undefined {
+  if (!isRecord(raw)) return undefined;
+  const style = raw.outreachStyle;
+  const urgency = raw.urgencyLevel;
+  const approach = raw.salesApproach;
+  const channel = raw.recommendedChannel;
+  const temperature = raw.leadTemperature;
+  if (
+    typeof style !== "string" ||
+    typeof urgency !== "string" ||
+    typeof approach !== "string" ||
+    typeof channel !== "string" ||
+    typeof temperature !== "string"
+  ) {
+    return undefined;
+  }
+  if (
+    !VALID_STYLES.has(style as OutreachStyle) ||
+    !VALID_URGENCY.has(urgency as OutreachUrgency) ||
+    !VALID_APPROACH.has(approach as SalesApproach) ||
+    !VALID_CHANNEL.has(channel as RecommendedChannel) ||
+    !VALID_TEMPERATURE.has(temperature as LeadTemperature)
+  ) {
+    return undefined;
+  }
+  const rationale = Array.isArray(raw.rationale)
+    ? raw.rationale.filter((x): x is string => typeof x === "string")
+    : [];
+  return {
+    outreachStyle: style as OutreachStyle,
+    urgencyLevel: urgency as OutreachUrgency,
+    salesApproach: approach as SalesApproach,
+    recommendedChannel: channel as RecommendedChannel,
+    leadTemperature: temperature as LeadTemperature,
+    rationale,
+  };
 }
 
 export async function POST(req: Request) {
@@ -75,6 +160,7 @@ export async function POST(req: Request) {
     : [];
   const outreachAngle =
     typeof body.outreachAngle === "string" ? body.outreachAngle.trim() : "";
+  const outreachIntelligence = parseOutreachIntelligence(body.outreachIntelligence);
 
   if (!name || !type || !location) {
     return NextResponse.json(
@@ -112,6 +198,7 @@ export async function POST(req: Request) {
       severity: "medium",
       summary: `${location}: ${summary}`.slice(0, 180),
     })),
+    outreachIntelligence,
   };
 
   const pack = generateWhatsAppMessage(leadInput, { followUp });
@@ -121,6 +208,12 @@ export async function POST(req: Request) {
     variations,
     styles: pack.styles,
     weakSignals: pack.weakSignals,
-    meta: { name, type, location },
+    meta: {
+      name,
+      type,
+      location,
+      outreachStyle: outreachIntelligence?.outreachStyle ?? null,
+      salesApproach: outreachIntelligence?.salesApproach ?? null,
+    },
   });
 }
