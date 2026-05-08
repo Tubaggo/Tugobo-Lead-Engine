@@ -1,3 +1,4 @@
+import type { EnrichmentV2Profile } from "./enrichment-v2";
 /** Mirrors {@link import("@/app/lib/leads").Channel} — kept local to avoid circular imports. */
 type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
 
@@ -19,7 +20,12 @@ export type BusinessSignal =
   | "review_volume_operational_scale"
   | "landline_or_unclear_phone"
   | "no_listed_phone"
-  | "premium_without_owned_funnel";
+  | "premium_without_owned_funnel"
+  | "weak_booking_cta"
+  | "no_booking_flow"
+  | "external_only_booking_dependency"
+  | "weak_contact_visibility"
+  | "low_operational_activity";
 
 export type LeadSignalInput = {
   hasOwnWebsite: boolean;
@@ -37,6 +43,8 @@ export type LeadSignalInput = {
   hasWhatsAppPath: boolean;
   /** True when phone field empty */
   phoneMissing: boolean;
+  /** Optional deterministic enrichment outputs from existing structured fields. */
+  enrichment?: EnrichmentV2Profile;
 };
 
 export type ExtractedSignals = {
@@ -64,6 +72,11 @@ const SIGNAL_WEIGHT: Partial<Record<BusinessSignal, number>> = {
   active_marketing_surface: 5,
   direct_contact_possible: 8,
   review_volume_operational_scale: 4,
+  weak_booking_cta: 8,
+  no_booking_flow: 10,
+  external_only_booking_dependency: 11,
+  weak_contact_visibility: 8,
+  low_operational_activity: 6,
 };
 
 function hasOta(channels: Channel[]): boolean {
@@ -139,6 +152,15 @@ export function extractBusinessSignals(input: LeadSignalInput): BusinessSignal[]
     out.push("premium_without_owned_funnel");
   }
 
+  const e = input.enrichment;
+  if (e) {
+    if (e.hasWeakBookingCta) out.push("weak_booking_cta");
+    if (e.hasNoBookingFlow) out.push("no_booking_flow");
+    if (e.hasExternalOnlyBooking) out.push("external_only_booking_dependency");
+    if (e.hasWeakContactVisibility) out.push("weak_contact_visibility");
+    if (e.operationalActivity < 40) out.push("low_operational_activity");
+  }
+
   return uniq(out);
 }
 
@@ -157,6 +179,11 @@ const SIGNAL_COPY: Record<BusinessSignal, string> = {
   landline_or_unclear_phone: "Phone looks like landline or unclear for instant chat",
   no_listed_phone: "No phone on listing — harder to reach quickly",
   premium_without_owned_funnel: "Premium ADR without a strong owned-site funnel",
+  weak_booking_cta: "Booking call-to-action appears weak or unclear",
+  no_booking_flow: "No clear direct booking flow detected",
+  external_only_booking_dependency: "Booking path appears dependent on external OTA surfaces",
+  weak_contact_visibility: "Contact visibility is weak (no clear fast contact path)",
+  low_operational_activity: "Operational activity appears relatively low recently",
 };
 
 function whyBullets(signals: BusinessSignal[]): string[] {
@@ -172,6 +199,11 @@ function whyBullets(signals: BusinessSignal[]): string[] {
     "direct_contact_possible",
     "review_volume_operational_scale",
     "premium_without_owned_funnel",
+    "external_only_booking_dependency",
+    "no_booking_flow",
+    "weak_booking_cta",
+    "weak_contact_visibility",
+    "low_operational_activity",
     "landline_or_unclear_phone",
     "no_listed_phone",
     "active_marketing_surface",

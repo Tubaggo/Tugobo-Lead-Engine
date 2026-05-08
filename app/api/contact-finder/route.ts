@@ -25,6 +25,15 @@ type ContactFinderResponse = {
     | "Website email"
     | "Website homepage";
   reason: string;
+  websiteIntelligence?: {
+    hasWhatsAppLink: boolean;
+    hasTelLink: boolean;
+    hasBookingCtaText: boolean;
+    hasBookingEngine: boolean;
+    mobileViewportPresent: boolean;
+    socialLinksQuality: number;
+    confidence: number;
+  };
 };
 
 function normalizeWebsite(input: string): string {
@@ -50,9 +59,30 @@ function extractWhatsappLinks(html: string): string[] {
   return uniq(matches.map((m) => m.replace(/[),.;]+$/g, "")));
 }
 
+function extractTelLinks(html: string): string[] {
+  const matches = html.match(/tel:[^"'<>\s]+/gi) ?? [];
+  return uniq(matches.map((m) => m.replace(/[),.;]+$/g, "")));
+}
+
 function extractEmails(text: string): string[] {
   const matches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? [];
   return uniq(matches);
+}
+
+function hasMobileViewport(html: string): boolean {
+  return /<meta[^>]*name=["']viewport["'][^>]*>/i.test(html);
+}
+
+function hasBookingCtaText(html: string): boolean {
+  return /(rezervasyon|book\s*now|check\s*availability|availability|book\s*direct|hemen\s*rezervasyon)/i.test(
+    html,
+  );
+}
+
+function hasBookingEngineLink(html: string): boolean {
+  return /(book(?:ing)?\.|airbnb\.|expedia\.|hotels\.com|synxis|cloudbeds|littlehotelier|sirvoy|innroad|booking\s*engine)/i.test(
+    html,
+  );
 }
 
 function classifyPhones(text: string): { mobile: string[]; landline: string[] } {
@@ -238,6 +268,23 @@ function pickBestContact(data: {
   };
 }
 
+function estimateSocialLinksQuality(data: {
+  instagram: string[];
+  whatsapp: string[];
+  emails: string[];
+  phonesMobile: string[];
+  phonesLandline: string[];
+}): number {
+  let score = 12;
+  if (data.instagram.length > 0) score += 32;
+  if (data.whatsapp.length > 0) score += 28;
+  if (data.emails.length > 0) score += 12;
+  if (data.phonesMobile.length > 0) score += 14;
+  else if (data.phonesLandline.length > 0) score += 6;
+  if (data.instagram.length > 0 && data.whatsapp.length > 0) score += 6;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
 export async function POST(req: Request) {
   let body: { website?: string };
   try {
@@ -272,9 +319,20 @@ export async function POST(req: Request) {
       .replace(/<[^>]+>/g, " ");
 
     const foundWhatsapp = extractWhatsappLinks(html);
+    const foundTel = extractTelLinks(html);
     const foundInstagram = extractInstagramLinks(html);
     const foundEmails = extractEmails(visibleText);
     const phones = classifyPhones(visibleText);
+    const hasViewport = hasMobileViewport(html);
+    const bookingCta = hasBookingCtaText(html);
+    const bookingEngine = hasBookingEngineLink(html);
+    const socialLinksQuality = estimateSocialLinksQuality({
+      instagram: foundInstagram,
+      whatsapp: foundWhatsapp,
+      emails: foundEmails,
+      phonesMobile: phones.mobile,
+      phonesLandline: phones.landline,
+    });
 
     const result = pickBestContact({
       website: url,
@@ -284,6 +342,22 @@ export async function POST(req: Request) {
       instagram: foundInstagram,
       emails: foundEmails,
     });
+
+    const confidenceBase =
+      (bookingCta ? 24 : 0) +
+      (bookingEngine ? 24 : 0) +
+      (hasViewport ? 18 : 0) +
+      (foundWhatsapp.length > 0 ? 20 : 0) +
+      (foundTel.length > 0 ? 14 : 0);
+    result.websiteIntelligence = {
+      hasWhatsAppLink: foundWhatsapp.length > 0,
+      hasTelLink: foundTel.length > 0,
+      hasBookingCtaText: bookingCta,
+      hasBookingEngine: bookingEngine,
+      mobileViewportPresent: hasViewport,
+      socialLinksQuality,
+      confidence: Math.max(0, Math.min(100, confidenceBase)),
+    };
 
     return NextResponse.json(result);
   } catch {

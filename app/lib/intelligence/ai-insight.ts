@@ -118,6 +118,16 @@ function signalPainLabel(signal: BusinessSignal): string | null {
       return "Phone not ideal for instant outreach";
     case "no_listed_phone":
       return "No listed phone";
+    case "weak_booking_cta":
+      return "Booking CTA appears weak or unclear";
+    case "no_booking_flow":
+      return "No clear direct booking flow";
+    case "external_only_booking_dependency":
+      return "Booking path appears external/OTA dependent";
+    case "weak_contact_visibility":
+      return "Weak contact visibility on public surfaces";
+    case "low_operational_activity":
+      return "Recent operational activity looks softer";
     default:
       return null;
   }
@@ -146,6 +156,11 @@ export function getPainPointSummary(
     "missing_own_website",
     "single_channel_risk",
     "premium_without_owned_funnel",
+    "external_only_booking_dependency",
+    "no_booking_flow",
+    "weak_booking_cta",
+    "weak_contact_visibility",
+    "low_operational_activity",
     "instagram_presence_gap",
     "review_recency_stale",
     "landline_or_unclear_phone",

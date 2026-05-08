@@ -9,10 +9,19 @@ import {
   deriveOutreachIntelligence,
   type OutreachIntelligenceProfile,
 } from "./intelligence/outreach-intelligence";
+import { buildEnrichmentV2Profile } from "./intelligence/enrichment-v2";
 
 export type { BusinessSignal };
 export type { OpportunityLevel, AiInsightSource };
 export type { OutreachIntelligenceProfile };
+
+export type OutreachPriorityBucket = "today" | "high" | "medium" | "low" | "archive";
+export type RecommendedAction =
+  | "send_whatsapp"
+  | "follow_up"
+  | "research_more"
+  | "wait"
+  | "skip";
 
 export type LeadType =
   | "Hotel"
@@ -132,6 +141,11 @@ export type ScoredLead = Lead & {
   opportunityScore?: number;
   outreachFit?: number;
   digitalMaturity?: number;
+  bookingFlowStrength?: number;
+  otaDependencyLikelihood?: number;
+  socialDemandStrength?: number;
+  communicationHealth?: number;
+  operationalActivity?: number;
   communicationRisk?: number;
   priorityScore?: number;
   priorityDelta?: number;
@@ -144,6 +158,26 @@ export type ScoredLead = Lead & {
   aiInsightSource?: AiInsightSource;
   /** Rule-based outreach intelligence profile — how the lead should be approached. */
   outreachIntelligence?: OutreachIntelligenceProfile;
+  /** Outreach prioritization layer; independent from leadScore. */
+  outreachPriority?: number;
+  priorityBucket?: OutreachPriorityBucket;
+  recommendedAction?: RecommendedAction;
+};
+
+export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {
+  today: "Today",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  archive: "Archive",
+};
+
+export const RECOMMENDED_ACTION_LABEL: Record<RecommendedAction, string> = {
+  send_whatsapp: "Send WhatsApp",
+  follow_up: "Follow Up",
+  research_more: "Research More",
+  wait: "Wait",
+  skip: "Skip",
 };
 
 function normalizePhoneDedupe(phone?: string): string | null {
@@ -925,38 +959,6 @@ function scoreOutreachFit(l: Lead, contactQuality: ContactQuality): { score: num
   return { score: Math.round(clamp(s)), notes };
 }
 
-function scoreDigitalMaturity(l: Lead): number {
-  // Higher = more mature owned funnel. For opportunity, we’ll use (100 - maturity) as “weakness”.
-  let s = 35;
-  if (l.hasOwnWebsite || Boolean(l.website?.trim())) s += 22;
-  if (l.hasInstagram || Boolean(l.instagram?.trim())) s += 16;
-  if (l.channels?.includes("Direct")) s += 18;
-  if ((l.channels?.length ?? 0) >= 3) s += 6;
-  if (!l.hasOwnWebsite && !Boolean(l.website?.trim())) s -= 10;
-  if (!l.hasInstagram && !Boolean(l.instagram?.trim())) s -= 8;
-  if ((l.channels?.length ?? 0) <= 1) s -= 8;
-  return Math.round(clamp(s));
-}
-
-function scoreBusinessActivity(l: Lead): number {
-  let s = 0;
-  const reviews = typeof l.reviewsCount === "number" && Number.isFinite(l.reviewsCount) ? l.reviewsCount : 0;
-  const occ = typeof l.occupancy30d === "number" && Number.isFinite(l.occupancy30d) ? l.occupancy30d : 0;
-  const recency = typeof l.daysSinceLastReview === "number" && Number.isFinite(l.daysSinceLastReview) ? l.daysSinceLastReview : 999;
-
-  // Review volume (capped) is a throughput proxy, not “quality”.
-  s += Math.min(500, reviews) * 0.08; // up to 40
-  // Recency: active business tends to have recent signals.
-  if (recency <= 1) s += 30;
-  else if (recency <= 3) s += 22;
-  else if (recency <= 7) s += 14;
-  else if (recency <= 14) s += 8;
-  // Demand proxy
-  s += clamp((occ - 0.45) * 70, 0, 30);
-
-  return Math.round(clamp(s));
-}
-
 function scoreCommunicationRisk(l: Lead, signals: BusinessSignal[]): number {
   let s = 0;
   if (signals.includes("reputation_risk")) s += 55;
@@ -1004,6 +1006,19 @@ export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
   const tier = calculateBusinessTier(l);
 
   const hasWhatsAppPath = normalizePhoneForWhatsApp(l.phone) !== null;
+  const enrichment = buildEnrichmentV2Profile({
+    hasOwnWebsite: l.hasOwnWebsite || Boolean(l.website?.trim()),
+    hasInstagram: l.hasInstagram || Boolean(l.instagram?.trim()),
+    website: l.website,
+    channels: l.channels,
+    rating: l.rating,
+    reviewsCount: l.reviewsCount,
+    daysSinceLastReview: l.daysSinceLastReview,
+    occupancy30d: l.occupancy30d,
+    contactQuality,
+    hasWhatsAppPath,
+    phoneMissing: !l.phone?.trim(),
+  });
   const intel = buildExtractedSignals({
     hasOwnWebsite: l.hasOwnWebsite,
     hasInstagram: l.hasInstagram,
@@ -1017,11 +1032,12 @@ export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
     contactQuality,
     hasWhatsAppPath,
     phoneMissing: !l.phone?.trim(),
+    enrichment,
   });
 
   const outreach = scoreOutreachFit(l, contactQuality);
-  const digitalMaturity = scoreDigitalMaturity(l);
-  const activity = scoreBusinessActivity(l);
+  const digitalMaturity = enrichment.digitalMaturity;
+  const activity = enrichment.operationalActivity;
   const communicationRisk = scoreCommunicationRisk(l, intel.signals);
   const opp = scoreOpportunityFromSignals(tier, intel.signals, outreach.score, digitalMaturity);
 
@@ -1269,6 +1285,20 @@ export function toLeadForAiInsight(s: ScoredLead): LeadForAiInsight {
 
 function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
   const hasWhatsAppPath = normalizePhoneForWhatsApp(s.phone) !== null;
+  const enrichment = buildEnrichmentV2Profile({
+    hasOwnWebsite: s.hasOwnWebsite || Boolean(s.website?.trim()),
+    hasInstagram: s.hasInstagram || Boolean(s.instagram?.trim()),
+    website: s.website,
+    channels: s.channels,
+    rating: s.rating,
+    reviewsCount: s.reviewsCount,
+    daysSinceLastReview: s.daysSinceLastReview,
+    occupancy30d: s.occupancy30d,
+    contactQuality: s.contactQuality,
+    hasWhatsAppPath,
+    phoneMissing: !s.phone?.trim(),
+    websiteIntelligence: s.websiteIntelligence,
+  });
   const intel = buildExtractedSignals({
     hasOwnWebsite: s.hasOwnWebsite,
     hasInstagram: s.hasInstagram,
@@ -1282,9 +1312,16 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     contactQuality: s.contactQuality,
     hasWhatsAppPath,
     phoneMissing: !s.phone?.trim(),
+    enrichment,
   });
   const base: ScoredLead = {
     ...s,
+    digitalMaturity: enrichment.digitalMaturity,
+    bookingFlowStrength: enrichment.bookingFlowStrength,
+    otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
+    socialDemandStrength: enrichment.socialDemandStrength,
+    communicationHealth: enrichment.communicationHealth,
+    operationalActivity: enrichment.operationalActivity,
     businessSignals: intel.signals,
     whyThisLead: intel.whyThisLead,
     heuristicOutreachAngle: intel.heuristicOutreachAngle,
@@ -1321,10 +1358,166 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     units: withAi.units,
     pricePerNight: withAi.pricePerNight,
   });
+  const outreachPriority = calculateOutreachPriority(
+    {
+      ...withAi,
+      outreachIntelligence,
+    },
+    Date.now(),
+  );
+  const priorityBucket = getPriorityBucket(
+    {
+      ...withAi,
+      outreachIntelligence,
+    },
+    outreachPriority,
+    Date.now(),
+  );
+  const recommendedAction = getRecommendedAction(
+    {
+      ...withAi,
+      outreachIntelligence,
+    },
+    priorityBucket,
+    outreachPriority,
+    Date.now(),
+  );
   return {
     ...withAi,
     outreachIntelligence,
+    outreachPriority,
+    priorityBucket,
+    recommendedAction,
   };
+}
+
+function hasFollowUpDue(lead: Pick<ScoredLead, "nextFollowUpAt">, now: number): boolean {
+  if (typeof lead.nextFollowUpAt === "number" && Number.isFinite(lead.nextFollowUpAt)) {
+    return lead.nextFollowUpAt <= now;
+  }
+  return false;
+}
+
+function wasContactedRecently(
+  lead: Pick<ScoredLead, "lastContactedAt">,
+  now: number,
+): boolean {
+  const last =
+    typeof lead.lastContactedAt === "number" && lead.lastContactedAt > 0
+      ? lead.lastContactedAt
+      : null;
+  if (last === null) return false;
+  return now - last < 72 * 60 * 60 * 1000;
+}
+
+function importAgeDays(lead: Pick<ScoredLead, "lastImportedAt" | "createdAt">, now: number): number {
+  const ts =
+    typeof lead.lastImportedAt === "number" && Number.isFinite(lead.lastImportedAt)
+      ? lead.lastImportedAt
+      : typeof lead.createdAt === "number" && Number.isFinite(lead.createdAt)
+        ? lead.createdAt
+        : null;
+  if (ts === null) return 999;
+  return (now - ts) / (24 * 60 * 60 * 1000);
+}
+
+export function calculateOutreachPriority(lead: ScoredLead, now = Date.now()): number {
+  let score = 45;
+  const businessSignals = new Set(lead.businessSignals ?? []);
+  const hasWhatsApp = normalizePhoneForWhatsApp(lead.phone) !== null && !lead.whatsappInvalid;
+  const readiness = typeof lead.contactReadinessScore === "number" ? lead.contactReadinessScore : 0;
+  const opportunity = typeof lead.opportunityScore === "number" ? lead.opportunityScore : 0;
+  const operationalActivity = typeof lead.operationalActivity === "number" ? lead.operationalActivity : 0;
+  const temperature = lead.outreachIntelligence?.leadTemperature ?? "cold";
+  const ageDays = importAgeDays(lead, now);
+  const followUpDue = hasFollowUpDue(lead, now);
+  const recentlyContacted = wasContactedRecently(lead, now);
+  const attempts = lead.contactAttempts ?? 0;
+  const tier = lead.businessTier ?? "micro";
+  const isDoNotContact =
+    Boolean(lead.doNotContact) ||
+    lead.pipelineStage === "lost" ||
+    lead.pipelineStage === "won";
+  const unreachable =
+    Boolean(lead.whatsappInvalid) ||
+    (!hasWhatsApp && lead.contactQuality === "low" && !lead.instagram && !lead.website);
+
+  if (hasWhatsApp) score += 18;
+  if (readiness >= 70) score += 12;
+  if (temperature === "hot") score += 14;
+  else if (temperature === "warm") score += 8;
+  if (followUpDue) score += 16;
+  if (tier === "premium" || tier === "medium") score += 8;
+  if (operationalActivity >= 60) score += 8;
+  if (businessSignals.has("conversion_gap")) score += 10;
+  if (opportunity >= 70) score += 12;
+  if (ageDays <= 2) score += 9;
+  else if (ageDays <= 7) score += 5;
+  if (!recentlyContacted) score += 6;
+
+  if (ageDays > 30) score -= 16;
+  if (ageDays > 60) score -= 8;
+  if (attempts >= 2) score -= 10;
+  if (attempts >= 3) score -= 18;
+  if (operationalActivity > 0 && operationalActivity < 35) score -= 12;
+  if (businessSignals.has("low_operational_activity")) score -= 10;
+  if (recentlyContacted) score -= 14;
+  if (unreachable) score -= 24;
+  if (isDoNotContact) score -= 80;
+
+  return Math.round(clamp(score));
+}
+
+export function getPriorityBucket(
+  lead: ScoredLead,
+  outreachPriority: number,
+  now = Date.now(),
+): OutreachPriorityBucket {
+  const hasWhatsApp = normalizePhoneForWhatsApp(lead.phone) !== null && !lead.whatsappInvalid;
+  const followUpDue = hasFollowUpDue(lead, now);
+  const tier = lead.businessTier ?? "micro";
+  const opportunity = typeof lead.opportunityScore === "number" ? lead.opportunityScore : 0;
+  const temperature = lead.outreachIntelligence?.leadTemperature ?? "cold";
+  const attempts = lead.contactAttempts ?? 0;
+  const isDoNotContact =
+    Boolean(lead.doNotContact) ||
+    lead.pipelineStage === "lost" ||
+    lead.pipelineStage === "won";
+
+  if (isDoNotContact || attempts >= 4) return "archive";
+  if (temperature === "hot" && hasWhatsApp && followUpDue) return "today";
+  if ((tier === "premium" || tier === "medium") && opportunity >= 72) {
+    return outreachPriority >= 85 ? "today" : "high";
+  }
+  if (outreachPriority >= 85) return "today";
+  if (outreachPriority >= 70) return "high";
+  if (outreachPriority >= 50) return "medium";
+  if (outreachPriority >= 30) return "low";
+  return "archive";
+}
+
+export function getRecommendedAction(
+  lead: ScoredLead,
+  priorityBucket: OutreachPriorityBucket,
+  outreachPriority: number,
+  now = Date.now(),
+): RecommendedAction {
+  const attempts = lead.contactAttempts ?? 0;
+  const isDoNotContact =
+    Boolean(lead.doNotContact) ||
+    lead.pipelineStage === "lost" ||
+    lead.pipelineStage === "won";
+  if (isDoNotContact || priorityBucket === "archive") return "skip";
+  if (attempts >= 3) return "wait";
+  if (hasFollowUpDue(lead, now)) return "follow_up";
+  const hasWhatsApp = normalizePhoneForWhatsApp(lead.phone) !== null && !lead.whatsappInvalid;
+  if (hasWhatsApp && (priorityBucket === "today" || priorityBucket === "high")) {
+    return "send_whatsapp";
+  }
+  const readiness = typeof lead.contactReadinessScore === "number" ? lead.contactReadinessScore : 0;
+  if (readiness < 45 || lead.contactQuality === "low") return "research_more";
+  if (outreachPriority >= 55) return "follow_up";
+  return "wait";
 }
 
 /** Attach or refresh structured intelligence fields (safe to call after merges). */
@@ -1336,18 +1529,37 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
   return leads.map((l) => {
     const v3 = calculateLeadScoreV3(l);
     const hot = scoreHot(l);
+    const contactQuality = getContactQuality(l.phone);
+    const enrichment = buildEnrichmentV2Profile({
+      hasOwnWebsite: l.hasOwnWebsite || Boolean(l.website?.trim()),
+      hasInstagram: l.hasInstagram || Boolean(l.instagram?.trim()),
+      website: l.website,
+      channels: l.channels,
+      rating: l.rating,
+      reviewsCount: l.reviewsCount,
+      daysSinceLastReview: l.daysSinceLastReview,
+      occupancy30d: l.occupancy30d,
+      contactQuality,
+      hasWhatsAppPath: normalizePhoneForWhatsApp(l.phone) !== null,
+      phoneMissing: !l.phone?.trim(),
+    });
     const base: ScoredLead = {
       ...l,
       leadScore: v3.leadScore,
       leadReasons: v3.reasons.slice(0, 4),
       hotScore: hot.score,
       hotReasons: hot.reasons,
-      contactQuality: getContactQuality(l.phone),
+      contactQuality,
       smartLeadScoreV2: v3.leadScore,
       businessTier: v3.businessTier,
       opportunityScore: v3.opportunityScore,
       outreachFit: v3.outreachFit,
       digitalMaturity: v3.digitalMaturity,
+      bookingFlowStrength: enrichment.bookingFlowStrength,
+      otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
+      socialDemandStrength: enrichment.socialDemandStrength,
+      communicationHealth: enrichment.communicationHealth,
+      operationalActivity: enrichment.operationalActivity,
       communicationRisk: v3.communicationRisk,
     };
     return attachStructuredIntelligence(base);

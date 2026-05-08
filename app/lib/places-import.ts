@@ -62,6 +62,23 @@ export type GoogleDetailsResult = {
   url?: string;
 };
 
+const OTA_HOST_HINTS = ["booking.com", "airbnb.", "hotels.com", "expedia."] as const;
+
+function parseHostname(raw?: string): string | null {
+  if (!raw?.trim()) return null;
+  try {
+    const u = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+    return u.hostname.toLowerCase();
+  } catch {
+    return raw.replace(/^https?:\/\//i, "").split("/")[0]?.toLowerCase() ?? null;
+  }
+}
+
+function hostIncludesAny(hostname: string | null, hints: readonly string[]): boolean {
+  if (!hostname) return false;
+  return hints.some((h) => hostname.includes(h));
+}
+
 export function mapGooglePlaceToScoredLead(
   textResult: GoogleTextResult,
   details: GoogleDetailsResult | null,
@@ -86,7 +103,12 @@ export function mapGooglePlaceToScoredLead(
   const phone = phoneRaw.trim() || "";
 
   const website = normalizeWebsiteUrl(details?.website);
-  const hasOwnWebsite = Boolean(website);
+  const websiteHost = parseHostname(details?.website ?? website);
+  const hasInstagram = hostIncludesAny(websiteHost, ["instagram.com"]);
+  const hasOwnWebsite =
+    Boolean(website) &&
+    !hasInstagram &&
+    !hostIncludesAny(websiteHost, OTA_HOST_HINTS);
 
   const types = textResult.types?.length
     ? textResult.types
@@ -123,9 +145,13 @@ export function mapGooglePlaceToScoredLead(
     ),
   );
 
-  const channels: Channel[] = hasOwnWebsite
-    ? ["Booking", "Direct"]
-    : ["Booking", "Airbnb"];
+  const channelsSet = new Set<Channel>();
+  channelsSet.add("Booking");
+  if (hostIncludesAny(websiteHost, ["airbnb."])) channelsSet.add("Airbnb");
+  if (hostIncludesAny(websiteHost, ["booking.com"])) channelsSet.add("Booking");
+  if (hasOwnWebsite) channelsSet.add("Direct");
+  if (!hasOwnWebsite && channelsSet.size === 1) channelsSet.add("Airbnb");
+  const channels: Channel[] = Array.from(channelsSet);
 
   const daysSinceLastReview = rRange(placeId, 6, 0, 12);
   const daysOnPlatform = Math.min(
@@ -155,7 +181,7 @@ export function mapGooglePlaceToScoredLead(
     rating: Math.round(rating * 10) / 10,
     channels,
     hasOwnWebsite,
-    hasInstagram: false,
+    hasInstagram,
     reviewsCount,
     daysSinceLastReview,
     daysOnPlatform,

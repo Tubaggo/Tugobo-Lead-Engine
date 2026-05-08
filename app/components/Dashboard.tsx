@@ -27,6 +27,10 @@ import {
   computeContactReadinessScore,
   getTurkishPhoneKind,
   instagramLink,
+  OUTREACH_PRIORITY_BUCKET_LABEL,
+  RECOMMENDED_ACTION_LABEL,
+  type OutreachPriorityBucket,
+  type RecommendedAction,
   scoreHot,
   scoreLead,
   whatsappLink,
@@ -1562,6 +1566,22 @@ function scoreColor(score: number) {
   return "text-zinc-400";
 }
 
+function priorityBucketPillClass(bucket: OutreachPriorityBucket): string {
+  if (bucket === "today") return `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/40`;
+  if (bucket === "high") return `${badgeBase} bg-orange-500/15 text-orange-200 ring-orange-400/40`;
+  if (bucket === "medium") return `${badgeBase} bg-sky-500/15 text-sky-200 ring-sky-400/35`;
+  if (bucket === "low") return `${badgeBase} bg-zinc-500/15 text-zinc-200 ring-zinc-400/30`;
+  return `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`;
+}
+
+function actionPillClass(action: RecommendedAction): string {
+  if (action === "send_whatsapp") return `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`;
+  if (action === "follow_up") return `${badgeBase} bg-orange-500/15 text-orange-200 ring-orange-400/40`;
+  if (action === "research_more") return `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`;
+  if (action === "wait") return `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/35`;
+  return `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`;
+}
+
 const badgeBase =
   "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset";
 
@@ -1638,6 +1658,20 @@ function OutreachBadgesRow({
       label: "\u26A0 Outreach Risk",
     });
   }
+  if (row.priorityBucket) {
+    chips.push({
+      key: "priority-bucket",
+      cls: priorityBucketPillClass(row.priorityBucket),
+      label: `Priority ${OUTREACH_PRIORITY_BUCKET_LABEL[row.priorityBucket]}`,
+    });
+  }
+  if (row.recommendedAction) {
+    chips.push({
+      key: "recommended-action",
+      cls: actionPillClass(row.recommendedAction),
+      label: RECOMMENDED_ACTION_LABEL[row.recommendedAction],
+    });
+  }
   chips.push({
     key: "readiness",
     cls:
@@ -1653,6 +1687,28 @@ function OutreachBadgesRow({
     cls: `${badgeBase} bg-white/5 text-zinc-200 ring-white/15`,
     label: `Contact ${CONTACT_QUALITY_LABEL[row.contactQuality]}`,
   });
+  if (
+    typeof row.bookingFlowStrength === "number" &&
+    Number.isFinite(row.bookingFlowStrength) &&
+    row.bookingFlowStrength < 45
+  ) {
+    chips.push({
+      key: "booking-gap-v2",
+      cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/35`,
+      label: "Booking flow weak",
+    });
+  }
+  if (
+    typeof row.otaDependencyLikelihood === "number" &&
+    Number.isFinite(row.otaDependencyLikelihood) &&
+    row.otaDependencyLikelihood >= 72
+  ) {
+    chips.push({
+      key: "ota-high-v2",
+      cls: `${badgeBase} bg-sky-500/15 text-sky-200 ring-sky-400/35`,
+      label: "OTA dependent",
+    });
+  }
   if (last) {
     if (isSameLocalCalendarDay(last, now)) {
       chips.push({
@@ -2233,6 +2289,20 @@ function HotCard({
         {lead.city} · {lead.region}
       </div>
       <div className="mt-1 text-[11px] text-zinc-500">Outreach: {outreachActivityLabel}</div>
+      {(lead.priorityBucket || lead.recommendedAction) && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {lead.priorityBucket ? (
+            <span className={priorityBucketPillClass(lead.priorityBucket)}>
+              {OUTREACH_PRIORITY_BUCKET_LABEL[lead.priorityBucket]}
+            </span>
+          ) : null}
+          {lead.recommendedAction ? (
+            <span className={actionPillClass(lead.recommendedAction)}>
+              {RECOMMENDED_ACTION_LABEL[lead.recommendedAction]}
+            </span>
+          ) : null}
+        </div>
+      )}
       {fromLatestImport && (
         <div className="mt-2">
           <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
@@ -3433,7 +3503,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [contactChannelFilter, setContactChannelFilter] = useState<
     "all" | ContactChannelCat
   >("all");
-  const [sort, setSort] = useState<"readiness" | "hot" | "lead" | "name">("readiness");
+  const [sort, setSort] = useState<"priority" | "readiness" | "hot" | "lead" | "name">("priority");
   const [openId, setOpenId] = useState<string | null>(null);
   const [drawerSendBusy, setDrawerSendBusy] = useState(false);
   const [draftNote, setDraftNote] = useState("");
@@ -3714,6 +3784,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       });
       const payload = valuableRows.map((row) => ({
         contact_readiness_score: rowReadiness(row).score,
+        outreach_priority:
+          typeof row.outreachPriority === "number" && Number.isFinite(row.outreachPriority)
+            ? row.outreachPriority
+            : 0,
+        priority_bucket: row.priorityBucket ?? "",
+        recommended_action: row.recommendedAction ?? "",
         whatsapp_invalid: Boolean(row._s.whatsappInvalid),
         business_name: row.name,
         whatsapp: row.phone ?? "",
@@ -3979,6 +4055,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         const br = rowReadinessWithFinder(b, contactFinderMap[b.id]).score;
         return br - ar;
       }
+      if (sort === "priority") {
+        const ar = typeof a.outreachPriority === "number" ? a.outreachPriority : 0;
+        const br = typeof b.outreachPriority === "number" ? b.outreachPriority : 0;
+        if (br !== ar) return br - ar;
+      }
       if (sort === "hot") return b.hotScore - a.hotScore;
       if (sort === "lead") return b.leadScore - a.leadScore;
       return a.name.localeCompare(b.name);
@@ -4021,7 +4102,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           contactQuality: getContactQuality(l.phone || full.phone),
         };
       })
-      .sort((a, b) => b.hotScore - a.hotScore)
+      .sort((a, b) => {
+        const ap = typeof a.outreachPriority === "number" ? a.outreachPriority : 0;
+        const bp = typeof b.outreachPriority === "number" ? b.outreachPriority : 0;
+        if (bp !== ap) return bp - ap;
+        return b.hotScore - a.hotScore;
+      })
       .slice(0, 5);
   }, [hotLeadsSource, allRowsById]);
 
@@ -5026,9 +5112,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         typeof row.intelligenceScore === "number" && Number.isFinite(row.intelligenceScore)
           ? row.intelligenceScore
           : 0;
+      const outreachPriority =
+        typeof row.outreachPriority === "number" && Number.isFinite(row.outreachPriority)
+          ? row.outreachPriority
+          : 0;
       const rank =
         readiness.score * 0.55 +
-        row.hotScore * 0.25 +
+        outreachPriority * 0.28 +
+        row.hotScore * 0.12 +
         row.leadScore * 0.15 +
         sourceBonus(c.source) * 0.05 +
         intel * 0.06 +
@@ -6153,11 +6244,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-zinc-300">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
               {useLatestImportHotLeads
-                ? "Hot Leads from Last Import"
-                : "Today&apos;s Hot Leads"}
+                ? "Today&apos;s Best Outreach Targets (Last Import)"
+                : "Today&apos;s Best Outreach Targets"}
             </h2>
             <p className="text-xs text-zinc-500">
-              Showing top opportunities from your latest search
+              Prioritized by real outreach opportunity
             </p>
           </div>
         </div>
@@ -6215,10 +6306,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 <select
                   value={sort}
                   onChange={(e) =>
-                    setSort(e.target.value as "readiness" | "hot" | "lead" | "name")
+                    setSort(e.target.value as "priority" | "readiness" | "hot" | "lead" | "name")
                   }
                   className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 sm:w-auto"
                 >
+                  <option value="priority">Sort: Outreach Priority</option>
                   <option value="readiness">Sort: Contact Readiness</option>
                   <option value="hot">Sort: Hot Score</option>
                   <option value="lead">Sort: Lead Score</option>
