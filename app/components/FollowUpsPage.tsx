@@ -224,7 +224,7 @@ export default function FollowUpsPage() {
   return (
     <main className="min-h-screen bg-zinc-950 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 lg:grid-cols-[180px_1fr]">
-        <aside className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+        <aside className="rounded-xl border border-white/10 bg-white/[0.02] p-3 lg:sticky lg:top-4 lg:self-start">
           <div className="text-[11px] uppercase tracking-wider text-zinc-500">Navigation</div>
           <nav className="mt-2 space-y-1.5 text-sm">
             <Link href="/" className="block rounded-md px-2 py-1.5 text-zinc-300 hover:bg-white/5">
@@ -298,7 +298,7 @@ export default function FollowUpsPage() {
                       Last action: {lead.last_outreach_action || "-"} · Status:{" "}
                       {followUpStatus(lead)}
                     </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                       <button
                         type="button"
                         disabled={!wa || busyId === lead.recordId}
@@ -306,7 +306,7 @@ export default function FollowUpsPage() {
                           if (!wa) return;
                           window.open(`https://wa.me/${wa}`, "_blank", "noopener,noreferrer");
                         }}
-                        className="rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="w-full rounded-md border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
                         Send WhatsApp
                       </button>
@@ -314,7 +314,7 @@ export default function FollowUpsPage() {
                         type="button"
                         disabled={busyId === lead.recordId}
                         onClick={() => void runAction(lead.recordId, "mark_contacted")}
-                        className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="w-full rounded-md border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-200 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
                         Mark Contacted
                       </button>
@@ -322,7 +322,7 @@ export default function FollowUpsPage() {
                         type="button"
                         disabled={busyId === lead.recordId}
                         onClick={() => void runAction(lead.recordId, "no_response")}
-                        className="rounded-md border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="w-full rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
                         No Response
                       </button>
@@ -330,7 +330,7 @@ export default function FollowUpsPage() {
                         type="button"
                         disabled={busyId === lead.recordId}
                         onClick={() => void runAction(lead.recordId, "do_not_contact")}
-                        className="rounded-md border border-rose-400/30 bg-rose-500/10 px-2.5 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="w-full rounded-md border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm font-medium text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
                         Do Not Contact
                       </button>

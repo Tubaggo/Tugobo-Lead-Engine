@@ -15,9 +15,42 @@ The product helps teams **prioritize who to talk to**, **why they matter**, and 
 
 ## Target market
 
-- **Primary:** Small and mid-sized hospitality operators in Türkiye (coastal, cultural, and domestic leisure destinations).
+- **Primary:** Independent hospitality operators in Türkiye (coastal, cultural, and domestic leisure destinations).
 - **Buyers / users:** Agencies, revenue consultants, SaaS vendors serving hotels, and internal sales teams selling B2B hospitality tools.
 - **Geography:** Türkiye-first, with a model that can extend to similar markets where Google Maps + messaging channels dominate discovery.
+
+## ICP (segmented)
+
+Tugobo should still support small businesses, but the **strongest early leads** are typically **independent properties** with enough operational volume to feel ROI:
+
+- Boutique hotels
+- Bungalow / tiny house businesses
+- Independent hotels
+- 20–120 room accommodation businesses
+- Small/medium independent resorts
+
+Signals that correlate with strong fit:
+
+- Active **Instagram** / **WhatsApp** demand
+- Weak direct booking flow / conversion friction
+- Likely **OTA dependency** (platform-heavy channel mix)
+- Review volume indicates real operational throughput
+
+Avoid prioritizing **large chains / enterprise** too early. They usually require:
+
+- PMS integrations, procurement cycles, SLAs
+- Role permissions, legal/security review
+- Longer sales cycles and multi-stakeholder buying
+
+### ICP tiers & priority guidance
+
+| Tier | Description (practical) | Recommended priority |
+|------|--------------------------|----------------------|
+| **Micro** | Very small properties; low operational volume | **Low** unless pain signals are unusually strong |
+| **Small** | Independent operators with consistent demand | **Good target** |
+| **Medium** | 20–120 room businesses / meaningful throughput | **High priority** |
+| **Premium Independent** | High ADR / strong brand, still independent | **Very high priority** |
+| **Enterprise / Chain** | Multi-property groups, chain processes | **Future stage** |
 
 ## Differentiation
 

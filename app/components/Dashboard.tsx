@@ -1803,7 +1803,7 @@ function LeadWebsiteAction({ website }: { website?: string }) {
   if (!host) return null;
   const href = `https://${host.replace(/^https?:\/\//i, "")}`;
   const square =
-    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-sky-400/20 bg-sky-500/10 text-sky-300 transition hover:bg-sky-500/20";
+    "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-sky-400/20 bg-sky-500/10 text-sky-300 transition hover:bg-sky-500/20 sm:h-8 sm:w-8";
   return (
     <a
       href={href}
@@ -1946,7 +1946,7 @@ function AiMessageModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="ai-message-title"
@@ -1991,7 +1991,7 @@ function AiMessageModal({
           </button>
         </div>
 
-        <div className="max-h-[min(60vh,28rem)] overflow-y-auto px-4 py-3">
+        <div className="max-h-[70vh] overflow-y-auto px-4 py-3 sm:max-h-[min(60vh,28rem)]">
           {state.phase === "loading" && (
             <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
               <div
@@ -2027,7 +2027,7 @@ function AiMessageModal({
                     key={opt.id}
                     type="button"
                     onClick={() => setSelectedStyle(opt.id)}
-                    className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                    className={`rounded-md border px-3 py-1.5 text-[11px] font-medium transition ${
                       selectedStyle === opt.id
                         ? "border-violet-400/40 bg-violet-500/20 text-violet-100"
                         : "border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"
@@ -2037,7 +2037,7 @@ function AiMessageModal({
                   </button>
                 ))}
               </div>
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
+              <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-zinc-200 sm:text-sm">
                 {displayMessage}
               </p>
               <p className="text-[11px] text-zinc-500">
@@ -2048,11 +2048,11 @@ function AiMessageModal({
         </div>
 
         {state.phase === "ready" && (
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
+          <div className="sticky bottom-0 flex flex-col gap-2 border-t border-white/10 bg-zinc-950/95 px-4 py-3 backdrop-blur sm:flex-row sm:items-center sm:justify-end">
             <button
               type="button"
               onClick={() => void handleCopy()}
-              className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
+              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 sm:w-auto sm:py-1.5 sm:text-xs"
             >
               {copied ? "Copied" : "Copy"}
             </button>
@@ -2067,7 +2067,7 @@ function AiMessageModal({
                     onMarkContacted(lead.id);
                   }
                 }}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-2 text-sm font-medium text-[#25D366] hover:bg-[#25D366]/25 sm:w-auto sm:py-1.5 sm:text-xs"
               >
                 <IconWhatsapp className="h-4 w-4" />
                 Send via WhatsApp
@@ -2075,7 +2075,7 @@ function AiMessageModal({
             ) : (
               <span
                 title="WhatsApp bulunamadı"
-                className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-500"
+                className="inline-flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-500 sm:w-auto sm:py-1.5 sm:text-xs"
               >
                 <IconWhatsapp className="h-4 w-4" />
                 Send via WhatsApp
@@ -2101,7 +2101,7 @@ function LeadWhatsAppAction({
 }) {
   const wa = whatsappLink(phone);
   const square =
-    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition";
+    "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition sm:h-8 sm:w-8";
   if (outreachDisabled) {
     return (
       <span

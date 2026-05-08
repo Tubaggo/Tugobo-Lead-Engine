@@ -122,6 +122,12 @@ export type ScoredLead = Lead & {
   reviewAnalyzedAt?: number;
   /** Optional next-generation scoring fields; older records may not have them. */
   smartLeadScoreV2?: number;
+  /** Lead Scoring v3 breakdown fields (0–100 unless noted). */
+  businessTier?: "micro" | "small" | "medium" | "premium" | "enterprise";
+  opportunityScore?: number;
+  outreachFit?: number;
+  digitalMaturity?: number;
+  communicationRisk?: number;
   priorityScore?: number;
   priorityDelta?: number;
   websiteIntelligence?: WebsiteIntelligenceSummary;
@@ -842,49 +848,209 @@ export const LEADS: Lead[] = [
 const clamp = (n: number, min = 0, max = 100) =>
   Math.max(min, Math.min(max, n));
 
+type BusinessTier = NonNullable<ScoredLead["businessTier"]>;
+
+type LeadScoreV3Breakdown = {
+  leadScore: number;
+  businessTier: BusinessTier;
+  opportunityScore: number;
+  outreachFit: number;
+  digitalMaturity: number;
+  communicationRisk: number;
+  reasons: string[];
+};
+
+const SCORE_V3 = {
+  tier: {
+    micro: { weight: 0.55, base: 18 },
+    small: { weight: 0.8, base: 42 },
+    medium: { weight: 1.0, base: 62 },
+    premium: { weight: 1.1, base: 74 },
+    enterprise: { weight: 0.35, base: 40 }, // future stage penalty via weight
+  },
+  weights: {
+    opportunity: 0.42,
+    outreachFit: 0.2,
+    activity: 0.2,
+    digitalWeakness: 0.18,
+  },
+} as const;
+
+function calculateBusinessTier(l: Lead): BusinessTier {
+  const units = typeof l.units === "number" && Number.isFinite(l.units) ? l.units : 0;
+  // Enterprise / chain is explicitly de-prioritized for current stage.
+  if (units >= 140) return "enterprise";
+
+  // Premium independent often sits in the 60–120 range, or smaller but high-ADR boutique/resort-like.
+  const highAdr = typeof l.pricePerNight === "number" && l.pricePerNight >= 9000;
+  if (units >= 60) return "premium";
+  if (units >= 20 && units <= 120 && (highAdr || l.type === "Boutique Hotel")) return "medium";
+
+  if (units >= 20) return "medium";
+  if (units >= 6) return "small";
+  return "micro";
+}
+
+function scoreOutreachFit(l: Lead, contactQuality: ContactQuality): { score: number; notes: string[] } {
+  const notes: string[] = [];
+  let s = 0;
+  const hasWhatsapp = normalizePhoneForWhatsApp(l.phone) !== null;
+  const hasInstagram = Boolean(l.instagram?.trim()) || Boolean(l.hasInstagram);
+  const hasWebsite = Boolean(l.website?.trim()) || Boolean(l.hasOwnWebsite);
+
+  if (hasWhatsapp) {
+    s += 55;
+    notes.push("WhatsApp reachable");
+  } else if (contactQuality !== "low") {
+    s += 18;
+  }
+  if (hasInstagram) s += 20;
+  if (hasWebsite) s += 12;
+
+  if (contactQuality === "low") {
+    s -= 28;
+    notes.push("Low contact quality");
+  }
+  if (!hasWhatsapp && !hasInstagram) {
+    s = Math.min(s, 22);
+    notes.push("No instant channel");
+  }
+  return { score: Math.round(clamp(s)), notes };
+}
+
+function scoreDigitalMaturity(l: Lead): number {
+  // Higher = more mature owned funnel. For opportunity, we’ll use (100 - maturity) as “weakness”.
+  let s = 35;
+  if (l.hasOwnWebsite || Boolean(l.website?.trim())) s += 22;
+  if (l.hasInstagram || Boolean(l.instagram?.trim())) s += 16;
+  if (l.channels?.includes("Direct")) s += 18;
+  if ((l.channels?.length ?? 0) >= 3) s += 6;
+  if (!l.hasOwnWebsite && !Boolean(l.website?.trim())) s -= 10;
+  if (!l.hasInstagram && !Boolean(l.instagram?.trim())) s -= 8;
+  if ((l.channels?.length ?? 0) <= 1) s -= 8;
+  return Math.round(clamp(s));
+}
+
+function scoreBusinessActivity(l: Lead): number {
+  let s = 0;
+  const reviews = typeof l.reviewsCount === "number" && Number.isFinite(l.reviewsCount) ? l.reviewsCount : 0;
+  const occ = typeof l.occupancy30d === "number" && Number.isFinite(l.occupancy30d) ? l.occupancy30d : 0;
+  const recency = typeof l.daysSinceLastReview === "number" && Number.isFinite(l.daysSinceLastReview) ? l.daysSinceLastReview : 999;
+
+  // Review volume (capped) is a throughput proxy, not “quality”.
+  s += Math.min(500, reviews) * 0.08; // up to 40
+  // Recency: active business tends to have recent signals.
+  if (recency <= 1) s += 30;
+  else if (recency <= 3) s += 22;
+  else if (recency <= 7) s += 14;
+  else if (recency <= 14) s += 8;
+  // Demand proxy
+  s += clamp((occ - 0.45) * 70, 0, 30);
+
+  return Math.round(clamp(s));
+}
+
+function scoreCommunicationRisk(l: Lead, signals: BusinessSignal[]): number {
+  let s = 0;
+  if (signals.includes("reputation_risk")) s += 55;
+  if (signals.includes("review_recency_stale")) s += 12;
+  // Low ratings with meaningful volume is a “risk” input; not a blanket penalty.
+  if (l.rating > 0 && l.rating < 4.25 && l.reviewsCount >= 25) s += 18;
+  return Math.round(clamp(s));
+}
+
+function scoreOpportunityFromSignals(
+  tier: BusinessTier,
+  signals: BusinessSignal[],
+  outreachFit: number,
+  digitalMaturity: number,
+): { score: number; notes: string[] } {
+  const notes: string[] = [];
+  const set = new Set(signals);
+  let raw = SCORE_V3.tier[tier].base;
+
+  if (set.has("conversion_gap")) {
+    raw += 18;
+    notes.push("Conversion gap");
+  }
+  if (set.has("ota_dependency")) {
+    raw += 16;
+    notes.push("OTA dependency");
+  }
+  if (set.has("single_channel_risk")) raw += 8;
+  if (set.has("missing_own_website")) raw += 10;
+  if (set.has("premium_without_owned_funnel")) raw += 12;
+
+  // Digital weakness creates consultative upside, but only if the lead is reachable.
+  const weakness = clamp(100 - digitalMaturity, 0, 100);
+  raw += weakness * 0.12;
+  raw += outreachFit * 0.18;
+
+  // Enterprise too early: reduce by weight rather than zeroing out.
+  raw *= SCORE_V3.tier[tier].weight;
+
+  return { score: Math.round(clamp(raw)), notes };
+}
+
+export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
+  const contactQuality = getContactQuality(l.phone);
+  const tier = calculateBusinessTier(l);
+
+  const hasWhatsAppPath = normalizePhoneForWhatsApp(l.phone) !== null;
+  const intel = buildExtractedSignals({
+    hasOwnWebsite: l.hasOwnWebsite,
+    hasInstagram: l.hasInstagram,
+    channels: l.channels,
+    rating: l.rating,
+    reviewsCount: l.reviewsCount,
+    daysSinceLastReview: l.daysSinceLastReview,
+    units: l.units,
+    pricePerNight: l.pricePerNight,
+    occupancy30d: l.occupancy30d,
+    contactQuality,
+    hasWhatsAppPath,
+    phoneMissing: !l.phone?.trim(),
+  });
+
+  const outreach = scoreOutreachFit(l, contactQuality);
+  const digitalMaturity = scoreDigitalMaturity(l);
+  const activity = scoreBusinessActivity(l);
+  const communicationRisk = scoreCommunicationRisk(l, intel.signals);
+  const opp = scoreOpportunityFromSignals(tier, intel.signals, outreach.score, digitalMaturity);
+
+  const digitalWeakness = clamp(100 - digitalMaturity, 0, 100);
+
+  const leadScore =
+    opp.score * SCORE_V3.weights.opportunity +
+    outreach.score * SCORE_V3.weights.outreachFit +
+    activity * SCORE_V3.weights.activity +
+    digitalWeakness * SCORE_V3.weights.digitalWeakness;
+
+  const reasons = [
+    ...(opp.notes.length > 0 ? opp.notes : []),
+    ...(outreach.notes.length > 0 ? outreach.notes : []),
+    tier === "medium" ? "Medium tier (ROI fit)" : tier === "premium" ? "Premium independent tier" : null,
+    activity >= 70 ? "Operationally active" : null,
+  ].filter((x): x is string => Boolean(x));
+
+  return {
+    leadScore: Math.round(clamp(leadScore)),
+    businessTier: tier,
+    opportunityScore: opp.score,
+    outreachFit: outreach.score,
+    digitalMaturity,
+    communicationRisk,
+    reasons: reasons.slice(0, 5),
+  };
+}
+
 /**
  * leadScore = long-term fit / revenue potential.
  * Considers ADR, units, rating, occupancy, presence breadth.
  */
 export function scoreLead(l: Lead): { score: number; reasons: string[] } {
-  const reasons: string[] = [];
-  let s = 40;
-
-  const adrFactor = Math.log10(Math.max(800, l.pricePerNight)) - Math.log10(800);
-  s += adrFactor * 24;
-  if (l.pricePerNight >= 6000) reasons.push("High ADR");
-
-  const inventory = l.units * l.pricePerNight;
-  const inventoryFactor = Math.log10(Math.max(1, inventory)) - 4;
-  s += inventoryFactor * 8;
-  if (l.units >= 20) reasons.push("Large inventory");
-
-  s += (l.rating - 4) * 18;
-  if (l.rating >= 4.7) reasons.push("Top-rated");
-
-  s += (l.occupancy30d - 0.5) * 28;
-  if (l.occupancy30d >= 0.8) reasons.push("Strong occupancy");
-
-  s += Math.min(l.reviewsCount, 500) * 0.012;
-  if (l.reviewsCount >= 250) reasons.push("Proven demand");
-
-  if (l.hasOwnWebsite) {
-    s += 4;
-  } else {
-    reasons.push("No own website");
-  }
-  if (!l.hasInstagram) {
-    s -= 4;
-    reasons.push("No Instagram");
-  }
-  if (l.channels.length <= 1) {
-    s -= 4;
-    reasons.push("Single channel");
-  } else if (l.channels.length >= 3) {
-    s += 3;
-  }
-
-  return { score: Math.round(clamp(s)), reasons: reasons.slice(0, 4) };
+  const v3 = calculateLeadScoreV3(l);
+  return { score: v3.leadScore, reasons: v3.reasons.slice(0, 4) };
 }
 
 /**
@@ -1134,15 +1300,21 @@ export function enrichScoredLeadIntelligence(s: ScoredLead): ScoredLead {
 
 export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
   return leads.map((l) => {
-    const lead = scoreLead(l);
+    const v3 = calculateLeadScoreV3(l);
     const hot = scoreHot(l);
     const base: ScoredLead = {
       ...l,
-      leadScore: lead.score,
-      leadReasons: lead.reasons,
+      leadScore: v3.leadScore,
+      leadReasons: v3.reasons.slice(0, 4),
       hotScore: hot.score,
       hotReasons: hot.reasons,
       contactQuality: getContactQuality(l.phone),
+      smartLeadScoreV2: v3.leadScore,
+      businessTier: v3.businessTier,
+      opportunityScore: v3.opportunityScore,
+      outreachFit: v3.outreachFit,
+      digitalMaturity: v3.digitalMaturity,
+      communicationRisk: v3.communicationRisk,
     };
     return attachStructuredIntelligence(base);
   });

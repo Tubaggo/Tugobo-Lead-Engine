@@ -22,6 +22,18 @@ Roadmap phases are **sequential priorities**, not rigid dates. Each phase should
 
 **Exit criteria:** Every lead in the dashboard has a coherent **why** and **angle** without manual research.
 
+## ICP alignment (applies to all phases)
+
+Near-term product decisions (signals, scoring, queue ranking, and messaging) should align to a segmented ICP model:
+
+- **Micro**: low priority unless strong pain signals exist
+- **Small**: good target
+- **Medium**: high priority
+- **Premium Independent**: very high priority
+- **Enterprise / Chain**: future stage (requires integrations, procurement/SLA, role permissions)
+
+This keeps the engine focused on independent operators with enough operational volume to feel ROI, while avoiding premature enterprise complexity.
+
 ## Phase 2 — Review & reputation intelligence
 
 **Goal:** Turn Google reviews into **structured pain points** (not raw text dumps).

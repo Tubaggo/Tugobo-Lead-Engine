@@ -56,6 +56,15 @@
 - **Value:** Enterprise path.
 - **Risk:** False merges; manual **unlink** UX.
 
+## ICP segmentation-aware playbooks
+
+- **Idea:** Segment leads into **Micro / Small / Medium / Premium Independent / Enterprise** and tailor:
+  - queue ranking
+  - outreach copy constraints (length, tone, CTA)
+  - “why this lead” explanation style
+- **Value:** Keeps early product focused on independent mid-volume ROI while supporting long-term enterprise path.
+- **Risk:** Misclassification; require confidence levels and easy override.
+
 ## Integrations
 
 - PMS, channel managers, WhatsApp Business API (opt-in), HubSpot/Pipedrive sync.

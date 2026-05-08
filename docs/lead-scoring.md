@@ -90,6 +90,28 @@ Weights are **tunable constants** in `SIGNAL_WEIGHT`—treat them as product par
 2. Fit **weights** to correlate scores with outcomes, not vanity metrics.
 3. A/B **message** variants, not score noise.
 
+## Lead Scoring v3 (future implications)
+
+Scoring v3 should incorporate **ICP segmentation** so the engine prioritizes leads that can feel ROI *now* (independent, mid-volume), while de-prioritizing micro leads unless pain is extreme and de-prioritizing enterprise until product maturity allows it.
+
+### New variables to consider
+
+- **Business tier**: Micro / Small / Medium / Premium Independent / Enterprise
+- **Room count estimate** (or unit-based proxy): pushes “enough volume” into the model
+- **Review volume**: proxy for operational throughput and consistent demand
+- **Digital maturity**: owned website quality + booking CTA/engine presence + channel diversity
+- **OTA dependency likelihood**: platform-heavy channel mix vs direct path
+- **Direct booking potential**: “conversion gap” + owned funnel signals
+- **Outreach affordability / fit**: contact readiness + operational complexity + likely sales cycle
+
+### Priority guidance (v3)
+
+- **Micro**: low priority unless strong pain + easy reachability (WhatsApp) exists
+- **Small**: good default target; prioritize if WhatsApp/Instagram demand is active
+- **Medium**: high priority; higher probability of ROI + consultative relevance
+- **Premium Independent**: very high priority; strong ROI language and clearer ownership
+- **Enterprise / Chain**: future stage; requires integration/security capabilities beyond MVP
+
 ---
 
 *Document changes to weights in PR descriptions so tuning is auditable.*
