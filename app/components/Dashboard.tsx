@@ -31,6 +31,7 @@ import {
   RECOMMENDED_ACTION_LABEL,
   type OutreachPriorityBucket,
   type RecommendedAction,
+  type AcquisitionIntelligenceProfile,
   scoreHot,
   scoreLead,
   whatsappLink,
@@ -1608,7 +1609,7 @@ function OutreachBadgesRow({
       : typeof s.contactedAt === "number" && s.contactedAt > 0
         ? s.contactedAt
         : null;
-  const chips: { key: string; cls: string; label: string }[] = [];
+  const chips: { key: string; cls: string; label: string; href?: string; title?: string }[] = [];
   if (s.doNotContact) {
     chips.push({
       key: "dnc",
@@ -1709,6 +1710,89 @@ function OutreachBadgesRow({
       label: "OTA dependent",
     });
   }
+  const acq = row.acquisitionIntelligence;
+  const discovery = acq?.instagramDiscoveryStatus;
+  const firstSuggested = acq?.suggestedInstagramHandles?.[0];
+  const igVerifyHref = firstSuggested
+    ? `https://www.instagram.com/${encodeURIComponent(firstSuggested.replace(/^@/, ""))}/`
+    : undefined;
+
+  if (discovery === "verified" && acq?.instagramActivityLevel !== "inactive") {
+    chips.push({
+      key: "ig-act",
+      cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/35`,
+      label: "Active Instagram",
+    });
+  } else if (discovery === "verified") {
+    chips.push({
+      key: "ig-verified",
+      cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/35`,
+      label: "Instagram verified",
+    });
+  }
+  if (discovery === "broken") {
+    chips.push({
+      key: "ig-broken",
+      cls: `${badgeBase} bg-zinc-500/15 text-zinc-200 ring-zinc-400/30`,
+      label: "Broken IG link",
+      title: acq?.instagramInvalidReasons?.join(", "),
+    });
+  }
+  if (discovery === "possible") {
+    chips.push({
+      key: "ig-possible",
+      cls: `${badgeBase} bg-violet-500/15 text-violet-200 ring-violet-400/35 hover:opacity-90`,
+      label: "Possible Instagram",
+      href: igVerifyHref,
+      title: acq?.suggestedInstagramHandles?.length
+        ? `Try: ${acq.suggestedInstagramHandles.slice(0, 4).join(", ")}`
+        : undefined,
+    });
+  }
+  if (acq?.instagramNeedsManualCheck && discovery === "broken") {
+    chips.push({
+      key: "ig-manual",
+      cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/40 hover:opacity-90`,
+      label: "Manual IG check",
+      href: igVerifyHref,
+    });
+  }
+  if (acq?.socialDemandIntent === "high") {
+    chips.push({
+      key: "soc-dem",
+      cls: `${badgeBase} bg-violet-500/15 text-violet-200 ring-violet-400/35`,
+      label: "Social demand high",
+    });
+  }
+  if (
+    typeof acq?.paidTrafficLikelihood === "number" &&
+    Number.isFinite(acq.paidTrafficLikelihood) &&
+    acq.paidTrafficLikelihood >= 62
+  ) {
+    chips.push({
+      key: "paid-traf",
+      cls: `${badgeBase} bg-cyan-500/15 text-cyan-200 ring-cyan-400/35`,
+      label: "Possible paid traffic",
+    });
+  }
+  if (acq?.socialConversionGap === "high") {
+    chips.push({
+      key: "soc-gap",
+      cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/40`,
+      label: "Conversion gap",
+    });
+  }
+  if (
+    typeof acq?.acquisitionPressureScore === "number" &&
+    Number.isFinite(acq.acquisitionPressureScore) &&
+    acq.acquisitionPressureScore >= 72
+  ) {
+    chips.push({
+      key: "acq-press",
+      cls: `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`,
+      label: "Acquisition pressure",
+    });
+  }
   if (last) {
     if (isSameLocalCalendarDay(last, now)) {
       chips.push({
@@ -1760,9 +1844,23 @@ function OutreachBadgesRow({
   for (let i = 0; i < chips.length; i++) {
     const c = chips[i];
     chipNodes.push(
-      <span key={c.key} className={c.cls}>
-        {c.label}
-      </span>,
+      c.href ? (
+        <a
+          key={c.key}
+          className={c.cls}
+          href={c.href}
+          title={c.title}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {c.label}
+        </a>
+      ) : (
+        <span key={c.key} className={c.cls} title={c.title}>
+          {c.label}
+        </span>
+      ),
     );
   }
   return <div className="mt-1 flex flex-wrap gap-1">{chipNodes}</div>;
@@ -1864,6 +1962,163 @@ function IconGlobe({ className = "" }: { className?: string }) {
       <circle cx="12" cy="12" r="10" />
       <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </svg>
+  );
+}
+
+/**
+ * Single source of truth for the IG icon action — adapts to {@link AcquisitionIntelligenceProfile.instagramDiscoveryStatus}.
+ *
+ *  - verified : pink (existing behavior)
+ *  - possible : violet, opens the top suggested handle (Search IG)
+ *  - broken   : amber, opens the top suggestion as a manual-check fallback
+ *  - else     : disabled
+ */
+function LeadInstagramAction({
+  instagram,
+  acquisition,
+}: {
+  instagram?: string;
+  acquisition?: AcquisitionIntelligenceProfile;
+}) {
+  const square =
+    "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition sm:h-8 sm:w-8";
+  const igHref = instagram ? instagramLink(instagram) : null;
+  const discovery = acquisition?.instagramDiscoveryStatus;
+  const verified = discovery === "verified" && Boolean(igHref);
+  const broken = discovery === "broken";
+  const possible = discovery === "possible";
+  const firstSuggested = acquisition?.suggestedInstagramHandles?.[0];
+  const suggestedHref = firstSuggested
+    ? `https://www.instagram.com/${encodeURIComponent(firstSuggested.replace(/^@/, ""))}/`
+    : null;
+
+  if (verified) {
+    return (
+      <a
+        href={igHref!}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`Instagram verified · @${instagram}`}
+        onClick={(e) => e.stopPropagation()}
+        className={`${square} border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20`}
+      >
+        <IconInstagram className="h-4 w-4" />
+      </a>
+    );
+  }
+  if (broken && suggestedHref) {
+    return (
+      <a
+        href={suggestedHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`Broken Instagram link · search @${firstSuggested}`}
+        onClick={(e) => e.stopPropagation()}
+        className={`${square} border-amber-400/25 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20`}
+      >
+        <IconInstagram className="h-4 w-4" />
+      </a>
+    );
+  }
+  if (possible && suggestedHref) {
+    return (
+      <a
+        href={suggestedHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`Search Instagram · @${firstSuggested} (suggested)`}
+        onClick={(e) => e.stopPropagation()}
+        className={`${square} border-violet-400/25 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20`}
+      >
+        <IconInstagram className="h-4 w-4" />
+      </a>
+    );
+  }
+  return (
+    <a
+      href="#"
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.preventDefault()}
+      aria-disabled
+      title={broken ? "Broken Instagram link" : "No Instagram on file"}
+      className={`${square} border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed`}
+    >
+      <IconInstagram className="h-4 w-4" />
+    </a>
+  );
+}
+
+/**
+ * Subtle, premium-looking strip in the lead detail view that surfaces the
+ * Instagram discovery confidence level + a Search IG action when applicable.
+ *
+ * Hides itself for `verified` (already represented by the IG link/chip) and
+ * for `unknown` (no aggressive claim).
+ */
+function InstagramDiscoveryPanel({
+  acquisition,
+}: {
+  acquisition?: AcquisitionIntelligenceProfile;
+}) {
+  if (!acquisition) return null;
+  const status = acquisition.instagramDiscoveryStatus;
+  if (status === "verified" || status === "unknown" || status === "not_found") {
+    return null;
+  }
+  const firstSuggested = acquisition.suggestedInstagramHandles?.[0];
+  const suggestedHref = firstSuggested
+    ? `https://www.instagram.com/${encodeURIComponent(firstSuggested.replace(/^@/, ""))}/`
+    : null;
+
+  let title: string;
+  let toneRing: string;
+  let toneText: string;
+  if (status === "broken") {
+    title = "Broken Instagram link";
+    toneRing = "ring-amber-400/30 bg-amber-500/[0.06]";
+    toneText = "text-amber-200";
+  } else {
+    title = "Possible Instagram";
+    toneRing = "ring-violet-400/25 bg-violet-500/[0.06]";
+    toneText = "text-violet-200";
+  }
+
+  return (
+    <div
+      className={`flex flex-wrap items-center gap-2 rounded-md px-3 py-2 text-[11px] ring-1 ring-inset ${toneRing}`}
+    >
+      <span className={`font-medium uppercase tracking-wider ${toneText}`}>
+        {title}
+      </span>
+      {firstSuggested && (
+        <span className="text-zinc-300">
+          Suggested:{" "}
+          <span className="font-medium text-zinc-100">@{firstSuggested}</span>
+        </span>
+      )}
+      {acquisition.suggestedInstagramHandles &&
+        acquisition.suggestedInstagramHandles.length > 1 && (
+          <span className="text-zinc-500">
+            · also {acquisition.suggestedInstagramHandles
+              .slice(1, 4)
+              .map((h) => `@${h}`)
+              .join(", ")}
+          </span>
+        )}
+      {suggestedHref && (
+        <a
+          href={suggestedHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20"
+        >
+          <IconInstagram className="h-3.5 w-3.5" />
+          {status === "broken" ? "Manual IG check" : "Search IG"}
+        </a>
+      )}
+    </div>
   );
 }
 
@@ -3031,6 +3286,8 @@ function LeadDetailContactSection({
           </a>
         )}
       </div>
+
+      <InstagramDiscoveryPanel acquisition={lead.acquisitionIntelligence} />
 
       {lead.website && (
         <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
@@ -5854,7 +6111,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               </thead>
               <tbody className="divide-y divide-white/5">
                 {latestImportRows.map((row, index) => {
-                  const ig = row.instagram ? instagramLink(row.instagram) : null;
                   return (
                     <tr
                       key={renderLeadKey("latest-import", row, index)}
@@ -5965,27 +6221,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             outreachDisabled={row._s.doNotContact}
                           />
                           <LeadWebsiteAction website={row.website} />
-                          <a
-                            href={ig ?? "#"}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => {
-                              if (!ig) e.preventDefault();
-                            }}
-                            aria-disabled={!ig}
-                            title={
-                              ig
-                                ? `Instagram · @${row.instagram}`
-                                : "No Instagram on file"
-                            }
-                            className={`inline-flex h-10 w-10 items-center justify-center rounded-md border transition sm:h-8 sm:w-8 ${
-                              ig
-                                ? "border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20"
-                                : "border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed"
-                            }`}
-                          >
-                            <IconInstagram className="h-4 w-4" />
-                          </a>
+                          <LeadInstagramAction
+                            instagram={row.instagram}
+                            acquisition={row.acquisitionIntelligence}
+                          />
                           <button
                             type="button"
                             disabled={row._s.doNotContact}
@@ -6514,7 +6753,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 <tbody className="divide-y divide-white/5">
                   {visibleAllLeads.map((row, index) => {
                     const s = row._s;
-                    const ig = row.instagram ? instagramLink(row.instagram) : null;
                     const isRecentlyImported = recentlyImportedLeadIds.includes(row.id);
                     const hotStyle =
                       row.hotScore > 80
@@ -6643,27 +6881,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               outreachDisabled={s.doNotContact}
                             />
                             <LeadWebsiteAction website={row.website} />
-                            <a
-                              href={ig ?? "#"}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => {
-                                if (!ig) e.preventDefault();
-                              }}
-                              aria-disabled={!ig}
-                              title={
-                                ig
-                                  ? `Instagram · @${row.instagram}`
-                                  : "No Instagram on file"
-                              }
-                              className={`inline-flex h-10 w-10 items-center justify-center rounded-md border transition sm:h-8 sm:w-8 ${
-                                ig
-                                  ? "border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20"
-                                  : "border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed"
-                              }`}
-                            >
-                              <IconInstagram className="h-4 w-4" />
-                            </a>
+                            <LeadInstagramAction
+                              instagram={row.instagram}
+                              acquisition={row.acquisitionIntelligence}
+                            />
                             <button
                               type="button"
                               disabled={s.doNotContact}

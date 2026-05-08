@@ -1,4 +1,9 @@
 import type { WebsiteIntelligenceSummary } from "../leads";
+import {
+  buildAcquisitionIntelligence,
+  type AcquisitionIntelligenceProfile,
+  type BusinessTierLike,
+} from "./acquisition-intelligence";
 
 type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
 type ContactQuality = "high" | "medium" | "low";
@@ -7,6 +12,9 @@ export type EnrichmentV2Input = {
   hasOwnWebsite: boolean;
   hasInstagram: boolean;
   website?: string;
+  instagramHandle?: string;
+  /** Lowercased concatenated listing copy + future cached homepage/bio text. */
+  socialSignalText?: string;
   channels: readonly Channel[];
   rating: number;
   reviewsCount: number;
@@ -16,6 +24,11 @@ export type EnrichmentV2Input = {
   hasWhatsAppPath: boolean;
   phoneMissing: boolean;
   websiteIntelligence?: WebsiteIntelligenceSummary;
+  businessTier?: BusinessTierLike;
+  /** Optional listing fields used to discover plausible Instagram handles when none is on file. */
+  businessName?: string;
+  city?: string;
+  type?: string;
 };
 
 export type EnrichmentV2Profile = {
@@ -29,6 +42,7 @@ export type EnrichmentV2Profile = {
   hasNoBookingFlow: boolean;
   hasExternalOnlyBooking: boolean;
   hasWeakContactVisibility: boolean;
+  acquisitionIntelligence: AcquisitionIntelligenceProfile;
 };
 
 const OTA_HOST_PATTERNS = [
@@ -166,6 +180,28 @@ export function buildEnrichmentV2Profile(input: EnrichmentV2Input): EnrichmentV2
   const hasWeakContactVisibility =
     input.phoneMissing && !input.hasWhatsAppPath && !input.hasInstagram;
 
+  const acquisitionIntelligence = buildAcquisitionIntelligence({
+    hasInstagram: input.hasInstagram,
+    instagramHandle: input.instagramHandle,
+    socialSignalText: input.socialSignalText,
+    website: input.website,
+    channels: input.channels,
+    hasWhatsAppPath: input.hasWhatsAppPath,
+    contactQuality: input.contactQuality,
+    bookingFlowStrength,
+    socialDemandStrength,
+    digitalMaturity,
+    otaDependencyLikelihood,
+    daysSinceLastReview: input.daysSinceLastReview,
+    reviewsCount: input.reviewsCount,
+    hasOwnWebsite: input.hasOwnWebsite,
+    businessTier: input.businessTier,
+    websiteIntelligence: input.websiteIntelligence,
+    businessName: input.businessName,
+    city: input.city,
+    type: input.type,
+  });
+
   return {
     digitalMaturity,
     bookingFlowStrength,
@@ -177,5 +213,6 @@ export function buildEnrichmentV2Profile(input: EnrichmentV2Input): EnrichmentV2
     hasNoBookingFlow,
     hasExternalOnlyBooking,
     hasWeakContactVisibility,
+    acquisitionIntelligence,
   };
 }

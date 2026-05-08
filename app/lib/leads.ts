@@ -10,8 +10,10 @@ import {
   type OutreachIntelligenceProfile,
 } from "./intelligence/outreach-intelligence";
 import { buildEnrichmentV2Profile } from "./intelligence/enrichment-v2";
+import type { AcquisitionIntelligenceProfile } from "./intelligence/acquisition-intelligence";
 
 export type { BusinessSignal };
+export type { AcquisitionIntelligenceProfile };
 export type { OpportunityLevel, AiInsightSource };
 export type { OutreachIntelligenceProfile };
 
@@ -116,6 +118,8 @@ export type WebsiteIntelligenceSummary = {
   mobileViewportPresent?: boolean;
   confidence?: number;
   errors?: string[];
+  /** Present when homepage enrichment estimates outbound social link depth (0–100). */
+  socialLinksQuality?: number;
 };
 
 export type ScoredLead = Lead & {
@@ -158,6 +162,8 @@ export type ScoredLead = Lead & {
   aiInsightSource?: AiInsightSource;
   /** Rule-based outreach intelligence profile — how the lead should be approached. */
   outreachIntelligence?: OutreachIntelligenceProfile;
+  /** Acquisition intent / Meta-ready proxies from deterministic enrichment. */
+  acquisitionIntelligence?: AcquisitionIntelligenceProfile;
   /** Outreach prioritization layer; independent from leadScore. */
   outreachPriority?: number;
   priorityBucket?: OutreachPriorityBucket;
@@ -968,6 +974,11 @@ function scoreCommunicationRisk(l: Lead, signals: BusinessSignal[]): number {
   return Math.round(clamp(s));
 }
 
+function buildSocialSignalText(l: Pick<Lead, "instagram" | "website">): string {
+  const raw = [l.instagram, l.website].filter(Boolean).join("\n");
+  return raw.toLowerCase();
+}
+
 function scoreOpportunityFromSignals(
   tier: BusinessTier,
   signals: BusinessSignal[],
@@ -990,6 +1001,15 @@ function scoreOpportunityFromSignals(
   if (set.has("missing_own_website")) raw += 10;
   if (set.has("premium_without_owned_funnel")) raw += 12;
 
+  if (set.has("social_acquisition_intent")) {
+    raw += 14;
+    notes.push("Social acquisition intent");
+  }
+  if (set.has("paid_traffic_candidate")) {
+    raw += 10;
+    notes.push("Paid traffic candidate");
+  }
+
   // Digital weakness creates consultative upside, but only if the lead is reachable.
   const weakness = clamp(100 - digitalMaturity, 0, 100);
   raw += weakness * 0.12;
@@ -1010,6 +1030,8 @@ export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
     hasOwnWebsite: l.hasOwnWebsite || Boolean(l.website?.trim()),
     hasInstagram: l.hasInstagram || Boolean(l.instagram?.trim()),
     website: l.website,
+    instagramHandle: l.instagram,
+    socialSignalText: buildSocialSignalText(l),
     channels: l.channels,
     rating: l.rating,
     reviewsCount: l.reviewsCount,
@@ -1018,6 +1040,10 @@ export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
     contactQuality,
     hasWhatsAppPath,
     phoneMissing: !l.phone?.trim(),
+    businessTier: tier,
+    businessName: l.name,
+    city: l.city,
+    type: l.type,
   });
   const intel = buildExtractedSignals({
     hasOwnWebsite: l.hasOwnWebsite,
@@ -1285,10 +1311,13 @@ export function toLeadForAiInsight(s: ScoredLead): LeadForAiInsight {
 
 function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
   const hasWhatsAppPath = normalizePhoneForWhatsApp(s.phone) !== null;
+  const tier = s.businessTier ?? calculateBusinessTier(s);
   const enrichment = buildEnrichmentV2Profile({
     hasOwnWebsite: s.hasOwnWebsite || Boolean(s.website?.trim()),
     hasInstagram: s.hasInstagram || Boolean(s.instagram?.trim()),
     website: s.website,
+    instagramHandle: s.instagram,
+    socialSignalText: buildSocialSignalText(s),
     channels: s.channels,
     rating: s.rating,
     reviewsCount: s.reviewsCount,
@@ -1298,6 +1327,10 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     hasWhatsAppPath,
     phoneMissing: !s.phone?.trim(),
     websiteIntelligence: s.websiteIntelligence,
+    businessTier: tier,
+    businessName: s.name,
+    city: s.city,
+    type: s.type,
   });
   const intel = buildExtractedSignals({
     hasOwnWebsite: s.hasOwnWebsite,
@@ -1326,6 +1359,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     whyThisLead: intel.whyThisLead,
     heuristicOutreachAngle: intel.heuristicOutreachAngle,
     intelligenceScore: intel.intelligenceScore,
+    acquisitionIntelligence: enrichment.acquisitionIntelligence,
   };
   const ai = generateLeadInsight(toLeadForAiInsight(base), "rules");
   const withAi: ScoredLead = {
@@ -1357,6 +1391,8 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     websiteIntelligence: withAi.websiteIntelligence,
     units: withAi.units,
     pricePerNight: withAi.pricePerNight,
+    bookingFlowStrength: enrichment.bookingFlowStrength,
+    acquisitionIntelligence: enrichment.acquisitionIntelligence,
   });
   const outreachPriority = calculateOutreachPriority(
     {
@@ -1450,6 +1486,19 @@ export function calculateOutreachPriority(lead: ScoredLead, now = Date.now()): n
   if (tier === "premium" || tier === "medium") score += 8;
   if (operationalActivity >= 60) score += 8;
   if (businessSignals.has("conversion_gap")) score += 10;
+  const acq = lead.acquisitionIntelligence;
+  const bookingWeak =
+    typeof lead.bookingFlowStrength === "number" && lead.bookingFlowStrength < 42;
+  if (acq && acq.acquisitionPressureScore >= 74 && bookingWeak) {
+    score += 14;
+  }
+  if (
+    acq &&
+    acq.socialDemandIntent === "high" &&
+    businessSignals.has("conversion_gap")
+  ) {
+    score += 10;
+  }
   if (opportunity >= 70) score += 12;
   if (ageDays <= 2) score += 9;
   else if (ageDays <= 7) score += 5;
@@ -1534,6 +1583,8 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
       hasOwnWebsite: l.hasOwnWebsite || Boolean(l.website?.trim()),
       hasInstagram: l.hasInstagram || Boolean(l.instagram?.trim()),
       website: l.website,
+      instagramHandle: l.instagram,
+      socialSignalText: buildSocialSignalText(l),
       channels: l.channels,
       rating: l.rating,
       reviewsCount: l.reviewsCount,
@@ -1542,6 +1593,10 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
       contactQuality,
       hasWhatsAppPath: normalizePhoneForWhatsApp(l.phone) !== null,
       phoneMissing: !l.phone?.trim(),
+      businessTier: v3.businessTier,
+      businessName: l.name,
+      city: l.city,
+      type: l.type,
     });
     const base: ScoredLead = {
       ...l,

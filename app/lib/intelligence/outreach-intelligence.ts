@@ -1,4 +1,5 @@
 import type { BusinessSignal } from "./signals";
+import type { AcquisitionIntelligenceProfile } from "./acquisition-intelligence";
 
 /** Mirrors {@link import("./ai-insight").OpportunityLevel} — duplicated here to avoid circular imports. */
 type OpportunityLevel = "low" | "medium" | "high";
@@ -80,6 +81,8 @@ export type OutreachIntelligenceInput = {
   /** Optional fallback inputs when v3 fields are missing. */
   units?: number;
   pricePerNight?: number;
+  bookingFlowStrength?: number;
+  acquisitionIntelligence?: AcquisitionIntelligenceProfile;
 };
 
 const COMMUNICATION_PAIN_CATEGORIES = new Set<string>([
@@ -167,6 +170,24 @@ function pickSalesApproach(input: OutreachIntelligenceInput): {
     return {
       approach: "direct-booking",
       reason: "OTA-leaning channel mix without strong direct path",
+    };
+  }
+  const acq = input.acquisitionIntelligence;
+  const bookingStrength =
+    typeof input.bookingFlowStrength === "number" && Number.isFinite(input.bookingFlowStrength)
+      ? input.bookingFlowStrength
+      : undefined;
+  const weakBookingNumeric =
+    typeof bookingStrength === "number" ? bookingStrength < 48 : weakBooking;
+  if (
+    input.hasInstagram &&
+    weakBookingNumeric &&
+    acq?.socialDemandIntent === "high" &&
+    acq.socialConversionGap !== "low"
+  ) {
+    return {
+      approach: "conversion-gap",
+      reason: "High social acquisition intent with weak booking capture",
     };
   }
   if (input.hasInstagram && weakBooking) {
@@ -258,6 +279,23 @@ function pickUrgencyLevel(input: OutreachIntelligenceInput): {
     (input.hasWhatsAppPath && input.contactQuality !== "low") ||
     input.hasInstagram;
   const commRisk = input.communicationRisk ?? 0;
+  const acq = input.acquisitionIntelligence;
+  const bookingStrength =
+    typeof input.bookingFlowStrength === "number" && Number.isFinite(input.bookingFlowStrength)
+      ? input.bookingFlowStrength
+      : null;
+
+  if (
+    acq &&
+    bookingStrength !== null &&
+    bookingStrength < 46 &&
+    acq.acquisitionPressureScore >= 78
+  ) {
+    return {
+      urgency: "high",
+      reason: "High acquisition pressure with weak booking capture path",
+    };
+  }
 
   if (opp >= 75 && reachable) {
     return { urgency: "high", reason: "High opportunity score and reachable" };

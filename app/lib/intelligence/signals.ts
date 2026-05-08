@@ -25,7 +25,9 @@ export type BusinessSignal =
   | "no_booking_flow"
   | "external_only_booking_dependency"
   | "weak_contact_visibility"
-  | "low_operational_activity";
+  | "low_operational_activity"
+  | "social_acquisition_intent"
+  | "paid_traffic_candidate";
 
 export type LeadSignalInput = {
   hasOwnWebsite: boolean;
@@ -77,6 +79,8 @@ const SIGNAL_WEIGHT: Partial<Record<BusinessSignal, number>> = {
   external_only_booking_dependency: 11,
   weak_contact_visibility: 8,
   low_operational_activity: 6,
+  social_acquisition_intent: 12,
+  paid_traffic_candidate: 9,
 };
 
 function hasOta(channels: Channel[]): boolean {
@@ -107,10 +111,18 @@ export function extractBusinessSignals(input: LeadSignalInput): BusinessSignal[]
   if (!input.hasOwnWebsite) {
     out.push("missing_own_website");
   }
-  if (!input.hasInstagram && input.units >= 6) {
+
+  /**
+   * Avoid penalizing leads where IG is *probably* present but we couldn't auto-discover it.
+   * `possible` ⇒ plausible handle candidates exist; defer to manual verification rather
+   * than fire an "Instagram presence gap" against the lead.
+   */
+  const igDiscoveryStatus = input.enrichment?.acquisitionIntelligence?.instagramDiscoveryStatus;
+  const igLikelyPresent = igDiscoveryStatus === "possible";
+  if (!input.hasInstagram && !igLikelyPresent && input.units >= 6) {
     out.push("instagram_presence_gap");
   }
-  if (!input.hasOwnWebsite && !input.hasInstagram) {
+  if (!input.hasOwnWebsite && !input.hasInstagram && !igLikelyPresent) {
     out.push("weak_digital_presence");
   }
   if (input.hasInstagram || input.hasOwnWebsite) {
@@ -159,6 +171,17 @@ export function extractBusinessSignals(input: LeadSignalInput): BusinessSignal[]
     if (e.hasExternalOnlyBooking) out.push("external_only_booking_dependency");
     if (e.hasWeakContactVisibility) out.push("weak_contact_visibility");
     if (e.operationalActivity < 40) out.push("low_operational_activity");
+
+    const acq = e.acquisitionIntelligence;
+    if (
+      acq.socialDemandIntent === "high" &&
+      (acq.socialConversionGap === "medium" || acq.socialConversionGap === "high")
+    ) {
+      out.push("social_acquisition_intent");
+    }
+    if (acq.paidTrafficLikelihood >= 58) {
+      out.push("paid_traffic_candidate");
+    }
   }
 
   return uniq(out);
@@ -184,6 +207,10 @@ const SIGNAL_COPY: Record<BusinessSignal, string> = {
   external_only_booking_dependency: "Booking path appears dependent on external OTA surfaces",
   weak_contact_visibility: "Contact visibility is weak (no clear fast contact path)",
   low_operational_activity: "Operational activity appears relatively low recently",
+  social_acquisition_intent:
+    "Social surfaces show demand signals while direct booking capture looks thin",
+  paid_traffic_candidate:
+    "Signals suggest paid / promoted traffic may already be part of the mix",
 };
 
 function whyBullets(signals: BusinessSignal[]): string[] {
@@ -204,6 +231,8 @@ function whyBullets(signals: BusinessSignal[]): string[] {
     "weak_booking_cta",
     "weak_contact_visibility",
     "low_operational_activity",
+    "social_acquisition_intent",
+    "paid_traffic_candidate",
     "landline_or_unclear_phone",
     "no_listed_phone",
     "active_marketing_surface",
@@ -216,6 +245,9 @@ function whyBullets(signals: BusinessSignal[]): string[] {
 function pickOutreachAngle(signals: BusinessSignal[]): string {
   if (signals.includes("reputation_risk")) {
     return "Guest feedback patterns may be costing conversions before you see them in the P&L — worth a quick look at how inquiries are handled end-to-end.";
+  }
+  if (signals.includes("social_acquisition_intent")) {
+    return "Guests may be discovering you on social and outbound surfaces faster than your booking capture path can absorb — tightening that path often unlocks immediate upside.";
   }
   if (signals.includes("conversion_gap")) {
     return "There may be a break between where guests discover you and where they actually book — especially for same-day or evening inquiries.";
