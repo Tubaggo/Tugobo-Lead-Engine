@@ -941,6 +941,13 @@ function mergeImportBatchMaster(
   const updatedIds: string[] = [];
   const lastSessionBatch: ScoredLead[] = [];
   const freshNewLeads: ScoredLead[] = [];
+  const sessionSeenLeadIds = new Set<string>();
+
+  const pushSessionLead = (lead: ScoredLead) => {
+    if (!lead.id || sessionSeenLeadIds.has(lead.id)) return;
+    sessionSeenLeadIds.add(lead.id);
+    lastSessionBatch.push(lead);
+  };
 
   const pushNew = (inc: ScoredLead) => {
     const first = inc.firstImportedAt ?? importTs;
@@ -954,7 +961,7 @@ function mergeImportBatchMaster(
     };
     imported = [novel, ...imported];
     newIds.push(novel.id);
-    lastSessionBatch.push(novel);
+    pushSessionLead(novel);
     freshNewLeads.push(novel);
   };
 
@@ -966,9 +973,9 @@ function mergeImportBatchMaster(
       copy[m.index] = merged;
       imported = copy;
       updatedIds.push(merged.id);
-      lastSessionBatch.push(merged);
+      pushSessionLead(merged);
     } else if (m?.kind === "seed") {
-      lastSessionBatch.push(upsertScoredFields(m.lead, inc, importTs, importSessionId));
+      pushSessionLead(upsertScoredFields(m.lead, inc, importTs, importSessionId));
     } else {
       const keySet = buildDedupeKeySet([...seedLeads, ...imported]);
       if (isDuplicateAgainstSet(inc, keySet)) continue;
@@ -1547,12 +1554,16 @@ const badgeBase =
 
 function OutreachBadgesRow({
   row,
+  newImport,
   reimported,
+  inQueue,
   syncedToAirtable = false,
   now,
 }: {
   row: LeadTableRow;
+  newImport?: boolean;
   reimported?: boolean;
+  inQueue?: boolean;
   syncedToAirtable?: boolean;
   now: number;
 }) {
@@ -1579,6 +1590,13 @@ function OutreachBadgesRow({
       label: "New",
     });
   }
+  if (newImport) {
+    chips.push({
+      key: "newimp",
+      cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`,
+      label: "New import",
+    });
+  }
   if (isFollowUpDue(s, now)) {
     chips.push({
       key: "fudue",
@@ -1586,11 +1604,11 @@ function OutreachBadgesRow({
       label: "Follow-Up Due",
     });
   }
-  if ((s.contactAttempts ?? 0) === 2) {
+  if ((s.contactAttempts ?? 0) >= 2) {
     chips.push({
       key: "fuonce",
       cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`,
-      label: "Followed up once",
+      label: "Followed up before",
     });
   }
   if (typeof row.hotScore === "number" && row.hotScore > 70 && s.status === "new") {
@@ -1652,6 +1670,13 @@ function OutreachBadgesRow({
       key: "reimp",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/35`,
       label: "Re-imported",
+    });
+  }
+  if (inQueue) {
+    chips.push({
+      key: "inq",
+      cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
+      label: "In queue",
     });
   }
   if (syncedToAirtable) {
@@ -2858,6 +2883,7 @@ function LeadDetailWorkflowSection({
   sendMessageBusy,
   now,
   outreachActivityLabel,
+  importIntelligenceLabels,
 }: {
   lead: LeadTableRow;
   setLeadStatus: (id: string, status: LeadStatus) => void;
@@ -2865,6 +2891,7 @@ function LeadDetailWorkflowSection({
   sendMessageBusy: boolean;
   now: number;
   outreachActivityLabel: string;
+  importIntelligenceLabels: string[];
 }) {
   const s = lead._s;
   const terminal = s.status === "won" || s.status === "lost";
@@ -2894,6 +2921,18 @@ function LeadDetailWorkflowSection({
           return <p className="mt-1 text-zinc-400">{timer}</p>;
         })()}
         <p className="mt-1 text-[11px] text-zinc-500">Outreach: {outreachActivityLabel}</p>
+        {importIntelligenceLabels.length > 0 ? (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {importIntelligenceLabels.map((label) => (
+              <span
+                key={label}
+                className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <button
           type="button"
           disabled={sendDisabled}
@@ -3110,6 +3149,7 @@ function LeadDetailPanel({
   onCopyReplyHelper,
   onApplyReplyHelperSuggestion,
   outreachActivityLabel,
+  importIntelligenceLabels,
   now,
 }: {
   selectedLead: LeadTableRow;
@@ -3133,6 +3173,7 @@ function LeadDetailPanel({
   onCopyReplyHelper: () => void;
   onApplyReplyHelperSuggestion: () => void;
   outreachActivityLabel: string;
+  importIntelligenceLabels: string[];
   now: number;
 }) {
   return (
@@ -3160,6 +3201,7 @@ function LeadDetailPanel({
           sendMessageBusy={sendMessageBusy}
           now={now}
           outreachActivityLabel={outreachActivityLabel}
+          importIntelligenceLabels={importIntelligenceLabels}
         />
         <LeadDetailReplyHelperSection
           lead={selectedLead}
@@ -5565,6 +5607,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           </div>
                           <OutreachBadgesRow
                             row={row}
+                            newImport={lastImportNewIds.includes(row.id)}
+                            reimported={lastImportUpdatedIds.includes(row.id)}
+                            inQueue={dailyOutreach.todayQueue.includes(row.id)}
                             syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
                             now={renderNow}
                           />
@@ -6242,7 +6287,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             </button>
                             <OutreachBadgesRow
                               row={row}
+                              newImport={lastImportNewIds.includes(row.id)}
                               reimported={lastImportUpdatedIds.includes(row.id)}
+                              inQueue={dailyOutreach.todayQueue.includes(row.id)}
                               syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
                               now={renderNow}
                             />
@@ -6755,6 +6802,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   openLead._s,
                   renderNow,
                 )}
+                importIntelligenceLabels={[
+                  ...(lastImportNewIds.includes(openLead.id) ? ["NEW IMPORT"] : []),
+                  ...(lastImportUpdatedIds.includes(openLead.id) ? ["RE-IMPORTED"] : []),
+                  ...((openLead._s.contactAttempts ?? 0) > 0 ? ["CONTACTED BEFORE"] : []),
+                  ...((openLead._s.contactAttempts ?? 0) >= 2 ? ["FOLLOWED UP BEFORE"] : []),
+                  ...(dailyOutreach.todayQueue.includes(openLead.id) ? ["IN QUEUE"] : []),
+                ]}
                 now={renderNow}
               />
             </aside>

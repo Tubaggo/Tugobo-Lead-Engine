@@ -3,6 +3,42 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
+const STORAGE_KEY = "tugobo-lead-engine:state-v1";
+const IMPORTED_LEADS_V2_KEY = "tugobo-lead-engine:imported-leads-v2";
+const OUTREACH_LOG_KEY = "tugobo-lead-engine:outreach-log-v1";
+
+type OutreachEventType =
+  | "message_prepared"
+  | "message_copied"
+  | "whatsapp_opened"
+  | "contacted"
+  | "follow_up_due";
+
+type OutreachEvent = {
+  id: string;
+  leadId: string;
+  type: OutreachEventType;
+  createdAt: string;
+  followUpAt?: string;
+};
+
+type LocalLead = {
+  id: string;
+  name: string;
+  phone: string;
+  leadScore: number;
+  hotScore: number;
+};
+
+type LocalLeadState = {
+  status?: string;
+  doNotContact?: boolean;
+  contactAttempts?: number;
+  contactedAt?: number | null;
+  lastContactedAt?: number | null;
+  nextFollowUpAt?: number | null;
+};
+
 type FollowUpLead = {
   recordId: string;
   business_name: string;
@@ -14,7 +50,84 @@ type FollowUpLead = {
   next_follow_up_at: string | null;
   do_not_contact: boolean;
   pipeline_stage: string;
+  last_outreach_action?: string;
+  source?: "airtable" | "local";
 };
+
+function eventLabel(t: OutreachEventType): string {
+  if (t === "message_prepared") return "Message prepared";
+  if (t === "message_copied") return "Message copied";
+  if (t === "whatsapp_opened") return "WhatsApp opened";
+  if (t === "contacted") return "Contacted";
+  return "Follow-up due";
+}
+
+function followUpStatus(lead: FollowUpLead): string {
+  if (lead.do_not_contact) return "Do not contact";
+  if (lead.next_follow_up_at) {
+    const ts = Date.parse(lead.next_follow_up_at);
+    if (Number.isFinite(ts) && ts <= Date.now()) return "Follow-up due";
+  }
+  return lead.last_outreach_action || "Not contacted";
+}
+
+function loadLocalFollowUps(): FollowUpLead[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const rawLeads = window.localStorage.getItem(IMPORTED_LEADS_V2_KEY);
+    const rawState = window.localStorage.getItem(STORAGE_KEY);
+    const rawEvents = window.localStorage.getItem(OUTREACH_LOG_KEY);
+    const leads = rawLeads ? (JSON.parse(rawLeads) as LocalLead[]) : [];
+    const state = rawState ? (JSON.parse(rawState) as Record<string, LocalLeadState>) : {};
+    const eventsByLead = rawEvents
+      ? (JSON.parse(rawEvents) as Record<string, OutreachEvent[]>)
+      : {};
+
+    const out: FollowUpLead[] = [];
+    for (const lead of leads) {
+      const events = Array.isArray(eventsByLead[lead.id]) ? eventsByLead[lead.id] : [];
+      if (events.length === 0) continue;
+      const latest = events[events.length - 1];
+      const s = state[lead.id] ?? {};
+      const lastContactedMs =
+        typeof s.lastContactedAt === "number"
+          ? s.lastContactedAt
+          : typeof s.contactedAt === "number"
+            ? s.contactedAt
+            : null;
+      const followUpIso =
+        typeof s.nextFollowUpAt === "number" && Number.isFinite(s.nextFollowUpAt)
+          ? new Date(s.nextFollowUpAt).toISOString()
+          : typeof latest.followUpAt === "string"
+            ? latest.followUpAt
+            : null;
+      out.push({
+        recordId: `local-${lead.id}`,
+        business_name: lead.name,
+        whatsapp: lead.phone,
+        lead_score: Number.isFinite(lead.leadScore) ? lead.leadScore : 0,
+        hot_score: Number.isFinite(lead.hotScore) ? lead.hotScore : 0,
+        contact_attempts:
+          typeof s.contactAttempts === "number" && Number.isFinite(s.contactAttempts)
+            ? s.contactAttempts
+            : 0,
+        last_contacted_at: lastContactedMs ? new Date(lastContactedMs).toISOString() : null,
+        next_follow_up_at: followUpIso,
+        do_not_contact: Boolean(s.doNotContact),
+        pipeline_stage: typeof s.status === "string" ? s.status : "new",
+        last_outreach_action: eventLabel(latest.type),
+        source: "local",
+      });
+    }
+    return out.sort((a, b) => {
+      const at = Date.parse(a.next_follow_up_at ?? "") || 0;
+      const bt = Date.parse(b.next_follow_up_at ?? "") || 0;
+      return bt - at;
+    });
+  } catch {
+    return [];
+  }
+}
 
 function relDate(iso: string | null): string {
   if (!iso) return "-";
@@ -44,6 +157,7 @@ export default function FollowUpsPage() {
 
   const load = async () => {
     setLoading(true);
+    const localLeads = loadLocalFollowUps();
     try {
       const res = await fetch("/api/airtable/follow-ups", { cache: "no-store" });
       const data = (await res.json()) as {
@@ -53,13 +167,29 @@ export default function FollowUpsPage() {
       };
       if (!data.configured) {
         setNotice("Airtable not connected");
-        setLeads([]);
+        setLeads(localLeads);
         return;
       }
       if (!res.ok) throw new Error(data.error || "Failed to load follow-ups");
-      setLeads(Array.isArray(data.leads) ? data.leads : []);
+      const airtableLeads = (Array.isArray(data.leads) ? data.leads : []).map((l) => ({
+        ...l,
+        source: "airtable" as const,
+      }));
+      const existingKeys = new Set(
+        airtableLeads.map(
+          (l) => `${(l.business_name || "").trim().toLowerCase()}|${waDigits(l.whatsapp) || ""}`,
+        ),
+      );
+      const merged: FollowUpLead[] = [...airtableLeads];
+      for (const local of localLeads) {
+        const key = `${(local.business_name || "").trim().toLowerCase()}|${waDigits(local.whatsapp) || ""}`;
+        if (existingKeys.has(key)) continue;
+        merged.push(local);
+      }
+      setLeads(merged);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Failed to load follow-ups");
+      setLeads(localLeads);
     } finally {
       setLoading(false);
     }
@@ -124,7 +254,7 @@ export default function FollowUpsPage() {
           {loading ? (
             <p className="mt-4 text-sm text-zinc-400">Loading...</p>
           ) : leads.length === 0 ? (
-            <p className="mt-4 text-sm text-emerald-200">Bugün follow-up yok 🎉</p>
+            <p className="mt-4 text-sm text-zinc-400">No outreach activity yet.</p>
           ) : (
             <div className="mt-4 space-y-2">
               {leads.map((lead) => {
@@ -163,6 +293,10 @@ export default function FollowUpsPage() {
                       <div>Last: {relDate(lead.last_contacted_at)}</div>
                       <div>Next: {relDate(lead.next_follow_up_at)}</div>
                       <div>Stage: {lead.pipeline_stage || "-"}</div>
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-400">
+                      Last action: {lead.last_outreach_action || "-"} · Status:{" "}
+                      {followUpStatus(lead)}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
