@@ -185,6 +185,42 @@ export function getWhyThisLeadReasons(
     });
   }
 
+  if (hasSignal(lead, "growth_oriented")) {
+    addReason(reasons, seen, {
+      id: "growth-oriented",
+      label: "Growth-Oriented",
+      tone: "opportunity",
+      priority: 56,
+    });
+  }
+
+  if (hasSignal(lead, "commercially_active")) {
+    addReason(reasons, seen, {
+      id: "commercially-active",
+      label: "Commercially Active",
+      tone: "opportunity",
+      priority: 55,
+    });
+  }
+
+  if (hasSignal(lead, "operationally_mature")) {
+    addReason(reasons, seen, {
+      id: "operationally-mature",
+      label: "Operationally Mature",
+      tone: "opportunity",
+      priority: 54,
+    });
+  }
+
+  if (hasSignal(lead, "high_roi_potential")) {
+    addReason(reasons, seen, {
+      id: "high-roi-potential",
+      label: "High ROI Potential",
+      tone: "opportunity",
+      priority: 57,
+    });
+  }
+
   if ((lead.hotScore >= 70 && (lead.intelligenceScore ?? 0) >= 55) || lead.leadScore >= 75) {
     addReason(reasons, seen, {
       id: "outreach-potential",

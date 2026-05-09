@@ -1,3 +1,4 @@
+import { applyAcquisitionToIntelligenceScore } from "./acquisition-intelligence";
 import type { EnrichmentV2Profile } from "./enrichment-v2";
 /** Mirrors {@link import("@/app/lib/leads").Channel} — kept local to avoid circular imports. */
 type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
@@ -27,7 +28,11 @@ export type BusinessSignal =
   | "weak_contact_visibility"
   | "low_operational_activity"
   | "social_acquisition_intent"
-  | "paid_traffic_candidate";
+  | "paid_traffic_candidate"
+  | "commercially_active"
+  | "operationally_mature"
+  | "growth_oriented"
+  | "high_roi_potential";
 
 export type LeadSignalInput = {
   hasOwnWebsite: boolean;
@@ -81,6 +86,10 @@ const SIGNAL_WEIGHT: Partial<Record<BusinessSignal, number>> = {
   low_operational_activity: 6,
   social_acquisition_intent: 12,
   paid_traffic_candidate: 9,
+  commercially_active: 8,
+  operationally_mature: 6,
+  growth_oriented: 7,
+  high_roi_potential: 10,
 };
 
 function hasOta(channels: Channel[]): boolean {
@@ -182,6 +191,24 @@ export function extractBusinessSignals(input: LeadSignalInput): BusinessSignal[]
     if (acq.paidTrafficLikelihood >= 58) {
       out.push("paid_traffic_candidate");
     }
+    const commercial = e.commercialReadiness;
+    if (
+      commercial.commercialReadinessLevel === "high" ||
+      commercial.commercialReadinessLevel === "very_high"
+    ) {
+      out.push("commercially_active");
+      out.push("growth_oriented");
+    }
+    if (e.operationalActivity >= 60 && commercial.commercialReadinessScore >= 62) {
+      out.push("operationally_mature");
+    }
+    if (
+      acq.acquisition.isAcquisitionActive &&
+      (acq.socialConversionGap === "medium" || acq.socialConversionGap === "high") &&
+      commercial.commercialReadinessScore >= 64
+    ) {
+      out.push("high_roi_potential");
+    }
   }
 
   return uniq(out);
@@ -211,6 +238,10 @@ const SIGNAL_COPY: Record<BusinessSignal, string> = {
     "Social surfaces show demand signals while direct booking capture looks thin",
   paid_traffic_candidate:
     "Signals suggest paid / promoted traffic may already be part of the mix",
+  commercially_active: "Commercial readiness signals suggest active growth posture",
+  operationally_mature: "Operational and communication signals look commercially mature",
+  growth_oriented: "Profile indicates growth-oriented decision posture",
+  high_roi_potential: "Acquisition plus conversion gap suggests high ROI potential",
 };
 
 function whyBullets(signals: BusinessSignal[]): string[] {
@@ -233,6 +264,10 @@ function whyBullets(signals: BusinessSignal[]): string[] {
     "low_operational_activity",
     "social_acquisition_intent",
     "paid_traffic_candidate",
+    "high_roi_potential",
+    "growth_oriented",
+    "commercially_active",
+    "operationally_mature",
     "landline_or_unclear_phone",
     "no_listed_phone",
     "active_marketing_surface",
@@ -274,10 +309,17 @@ function scoreIntelligence(signals: BusinessSignal[]): number {
 
 export function buildExtractedSignals(input: LeadSignalInput): ExtractedSignals {
   const signals = extractBusinessSignals(input);
+  const baseIntel = scoreIntelligence(signals);
+  const enrichment = input.enrichment;
+  const intelligenceScore = applyAcquisitionToIntelligenceScore(
+    baseIntel,
+    enrichment?.acquisitionIntelligence,
+    enrichment?.operationalActivity ?? 0,
+  );
   return {
     signals,
     whyThisLead: whyBullets(signals).slice(0, 8),
     heuristicOutreachAngle: pickOutreachAngle(signals),
-    intelligenceScore: scoreIntelligence(signals),
+    intelligenceScore,
   };
 }

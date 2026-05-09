@@ -1,7 +1,7 @@
 import type { BusinessSignal } from "./signals";
 import type { OutreachIntelligenceProfile } from "./outreach-intelligence";
 
-export type OpportunityLevel = "low" | "medium" | "high";
+export type OpportunityLevel = "low" | "medium" | "high" | "very_high";
 
 export type AiInsightSource = "rules" | "llm";
 
@@ -219,6 +219,7 @@ export function getOpportunityLevel(lead: LeadForAiInsight): OpportunityLevel {
     (lead.reviewPainPoints?.length ?? 0) > 0 ||
     reviewIntel >= 55;
 
+  if (reachable && strongProblem && blend >= 78) return "very_high";
   if (reachable && strongProblem && blend >= 62) return "high";
   if (reachable && (strongProblem || blend >= 55)) return "medium";
   if (blend >= 48 || pains.length >= 1) return "medium";
@@ -564,7 +565,9 @@ function buildAiInsightParagraph(lead: LeadForAiInsight): string {
     parts.push("Instagram offers a workable surface for a light-touch conversation.");
   }
 
-  if (opp === "high") {
+  if (opp === "very_high") {
+    parts.push("Overall opportunity is very high for immediate outreach.");
+  } else if (opp === "high") {
     parts.push("Overall opportunity looks strong for a focused reservation-ops conversation.");
   } else if (opp === "medium") {
     parts.push("Worth a short discovery touch if the channel fit looks right.");

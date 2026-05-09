@@ -10,12 +10,54 @@ import {
   type OutreachIntelligenceProfile,
 } from "./intelligence/outreach-intelligence";
 import { buildEnrichmentV2Profile } from "./intelligence/enrichment-v2";
-import type { AcquisitionIntelligenceProfile } from "./intelligence/acquisition-intelligence";
+import {
+  calculateAcquisitionOpportunityAdjustment,
+  calculateAcquisitionPriorityBoost,
+  type AcquisitionIntelligence,
+  type AcquisitionIntelligenceProfile,
+  type AcquisitionChannel,
+  type AcquisitionIntentLevel,
+} from "./intelligence/acquisition-intelligence";
+import type {
+  CommercialReadiness,
+  CommercialReadinessLevel,
+} from "./intelligence/commercial-readiness";
+import {
+  calculateConversionLeak,
+  conversionLeakOpportunityDelta,
+  type ConversionLeak,
+} from "./intelligence/conversion-leak";
+import {
+  calculateOpportunityProfile,
+  type OpportunityProfile,
+} from "./intelligence/opportunity-engine";
 
 export type { BusinessSignal };
-export type { AcquisitionIntelligenceProfile };
+export type {
+  AcquisitionIntelligence,
+  AcquisitionIntelligenceProfile,
+  AcquisitionChannel,
+  AcquisitionIntentLevel,
+};
+export type { CommercialReadiness, CommercialReadinessLevel };
+export { calculateAcquisitionPriorityBoost, getAcquisitionPriorityReason } from "./intelligence/acquisition-intelligence";
+export type {
+  ConversionLeak,
+  ConversionLeakLevel,
+  ConversionLeakSignalId,
+} from "./intelligence/conversion-leak";
+export {
+  calculateConversionLeak,
+  conversionLeakOpportunityDelta,
+  conversionLeakUiChipHints,
+  detectConversionLeakSignals,
+  getConversionLeakLevel,
+  getLikelyLeakSources,
+  hasAcquisitionTrafficProxy,
+} from "./intelligence/conversion-leak";
 export type { OpportunityLevel, AiInsightSource };
 export type { OutreachIntelligenceProfile };
+export type { OpportunityProfile };
 
 export type OutreachPriorityBucket = "today" | "high" | "medium" | "low" | "archive";
 export type RecommendedAction =
@@ -164,6 +206,12 @@ export type ScoredLead = Lead & {
   outreachIntelligence?: OutreachIntelligenceProfile;
   /** Acquisition intent / Meta-ready proxies from deterministic enrichment. */
   acquisitionIntelligence?: AcquisitionIntelligenceProfile;
+  /** Heuristic conversion friction vs. acquisition/demand proxies (v1). */
+  conversionLeak?: ConversionLeak;
+  /** Deterministic likelihood of investing in growth / conversion systems. */
+  commercialReadiness?: CommercialReadiness;
+  /** Unified opportunity engine output (v2). */
+  opportunityProfile?: OpportunityProfile;
   /** Outreach prioritization layer; independent from leadScore. */
   outreachPriority?: number;
   priorityBucket?: OutreachPriorityBucket;
@@ -984,6 +1032,8 @@ function scoreOpportunityFromSignals(
   signals: BusinessSignal[],
   outreachFit: number,
   digitalMaturity: number,
+  acquisitionProfile?: AcquisitionIntelligenceProfile,
+  commercialReadiness?: CommercialReadiness,
 ): { score: number; notes: string[] } {
   const notes: string[] = [];
   const set = new Set(signals);
@@ -1018,7 +1068,33 @@ function scoreOpportunityFromSignals(
   // Enterprise too early: reduce by weight rather than zeroing out.
   raw *= SCORE_V3.tier[tier].weight;
 
-  return { score: Math.round(clamp(raw)), notes };
+  const baseOpp = Math.round(clamp(raw));
+  const acqAdj = acquisitionProfile
+    ? calculateAcquisitionOpportunityAdjustment(acquisitionProfile, set)
+    : 0;
+  let commercialAdj = 0;
+  if (commercialReadiness) {
+    if (
+      commercialReadiness.commercialReadinessLevel === "very_high" &&
+      set.has("conversion_gap")
+    ) {
+      commercialAdj += 3;
+    } else if (
+      commercialReadiness.commercialReadinessLevel === "high" &&
+      (set.has("conversion_gap") || set.has("social_acquisition_intent"))
+    ) {
+      commercialAdj += 2;
+    } else if (commercialReadiness.commercialReadinessLevel === "low") {
+      commercialAdj -= 2;
+    }
+  }
+  const score = Math.round(clamp(baseOpp + acqAdj + commercialAdj));
+  if (acqAdj >= 4) notes.push("Acquisition intent vs. conversion path");
+  if (acqAdj <= -2) notes.push("Limited acquisition activity");
+  if (commercialAdj >= 2) notes.push("Commercial readiness supports ROI adoption");
+  if (commercialAdj <= -1) notes.push("Commercial readiness is early-stage");
+
+  return { score, notes };
 }
 
 export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
@@ -1065,7 +1141,14 @@ export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
   const digitalMaturity = enrichment.digitalMaturity;
   const activity = enrichment.operationalActivity;
   const communicationRisk = scoreCommunicationRisk(l, intel.signals);
-  const opp = scoreOpportunityFromSignals(tier, intel.signals, outreach.score, digitalMaturity);
+  const opp = scoreOpportunityFromSignals(
+    tier,
+    intel.signals,
+    outreach.score,
+    digitalMaturity,
+    enrichment.acquisitionIntelligence,
+    enrichment.commercialReadiness,
+  );
 
   const digitalWeakness = clamp(100 - digitalMaturity, 0, 100);
 
@@ -1360,6 +1443,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     heuristicOutreachAngle: intel.heuristicOutreachAngle,
     intelligenceScore: intel.intelligenceScore,
     acquisitionIntelligence: enrichment.acquisitionIntelligence,
+    commercialReadiness: enrichment.commercialReadiness,
   };
   const ai = generateLeadInsight(toLeadForAiInsight(base), "rules");
   const withAi: ScoredLead = {
@@ -1370,40 +1454,131 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     opportunityLevel: ai.opportunityLevel,
     aiInsightSource: ai.source,
   };
-  const outreachIntelligence = deriveOutreachIntelligence({
-    businessTier: withAi.businessTier,
-    hasWhatsAppPath,
-    hasInstagram: Boolean(withAi.hasInstagram),
-    hasOwnWebsite: Boolean(withAi.hasOwnWebsite),
-    contactQuality: withAi.contactQuality,
+
+  const conversionLeak = calculateConversionLeak({
     channels: withAi.channels ?? [],
+    hasOwnWebsite: Boolean(withAi.hasOwnWebsite),
+    hasInstagram: Boolean(withAi.hasInstagram),
+    hasWhatsAppPath,
+    bookingFlowStrength: enrichment.bookingFlowStrength,
+    otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
+    socialDemandStrength: enrichment.socialDemandStrength,
+    operationalActivity: enrichment.operationalActivity,
+    digitalMaturity: enrichment.digitalMaturity,
+    reviewsCount: withAi.reviewsCount,
+    daysSinceLastReview: withAi.daysSinceLastReview,
+    communicationRisk: withAi.communicationRisk,
+    websiteIntelligence: withAi.websiteIntelligence,
+    businessSignals: new Set(withAi.businessSignals ?? []),
+    reviewPainPoints: withAi.reviewPainPoints,
+    acquisitionIntelligence: enrichment.acquisitionIntelligence,
+  });
+
+  const oppDelta = conversionLeakOpportunityDelta(
+    conversionLeak,
+    enrichment.acquisitionIntelligence,
+  );
+  const readiness = computeContactReadinessScore(
+    {
+      phone: withAi.phone,
+      website: withAi.website,
+      instagram: withAi.instagram,
+      daysSinceLastReview: withAi.daysSinceLastReview,
+      whatsappInvalid: withAi.whatsappInvalid,
+      hotScore: withAi.hotScore,
+    },
+    withAi.contactQuality,
+  );
+  const opportunityProfile = calculateOpportunityProfile({
+    acquisitionIntentScore: enrichment.acquisitionIntelligence.acquisition.acquisitionIntentScore,
+    conversionLeakScore: conversionLeak.conversionLeakScore,
+    commercialReadinessScore: enrichment.commercialReadiness.commercialReadinessScore,
+    reachabilityScore: readiness.score,
+    contactQuality: withAi.contactQuality,
+    otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
+    hasWhatsAppPath,
+    socialDemandStrength: enrichment.socialDemandStrength,
+    bookingFlowStrength: enrichment.bookingFlowStrength,
+    operationalActivity: enrichment.operationalActivity,
+    intelligenceScore: withAi.intelligenceScore,
     businessSignals: withAi.businessSignals,
-    reviewPainPoints: withAi.reviewPainPoints?.map((p) => ({
+    acquisitionIntelligence: enrichment.acquisitionIntelligence,
+    conversionLeak,
+    commercialReadiness: enrichment.commercialReadiness,
+    hasInstagram: withAi.hasInstagram,
+    hasOwnWebsite: withAi.hasOwnWebsite,
+  });
+  const newOpp = Math.round(clamp(opportunityProfile.opportunityScore + oppDelta, 0, 100));
+  const opportunityLevel: OpportunityLevel =
+    newOpp >= 80 ? "very_high" : newOpp >= 64 ? "high" : newOpp >= 42 ? "medium" : "low";
+  const outreachFit = typeof withAi.outreachFit === "number" ? withAi.outreachFit : 0;
+  const activity =
+    typeof withAi.operationalActivity === "number"
+      ? withAi.operationalActivity
+      : enrichment.operationalActivity;
+  const digitalMaturityNum =
+    typeof withAi.digitalMaturity === "number" ? withAi.digitalMaturity : enrichment.digitalMaturity;
+  const digitalWeakness = clamp(100 - digitalMaturityNum, 0, 100);
+  const newLeadScore = Math.round(
+    clamp(
+      newOpp * SCORE_V3.weights.opportunity +
+        outreachFit * SCORE_V3.weights.outreachFit +
+        activity * SCORE_V3.weights.activity +
+        digitalWeakness * SCORE_V3.weights.digitalWeakness,
+    ),
+  );
+
+  const scored: ScoredLead = {
+    ...withAi,
+    opportunityScore: newOpp,
+    opportunityLevel,
+    leadScore: newLeadScore,
+    smartLeadScoreV2: newLeadScore,
+    conversionLeak,
+    commercialReadiness: enrichment.commercialReadiness,
+    opportunityProfile: {
+      ...opportunityProfile,
+      opportunityScore: newOpp,
+      opportunityLevel,
+    },
+  };
+
+  const outreachIntelligence = deriveOutreachIntelligence({
+    businessTier: scored.businessTier,
+    hasWhatsAppPath,
+    hasInstagram: Boolean(scored.hasInstagram),
+    hasOwnWebsite: Boolean(scored.hasOwnWebsite),
+    contactQuality: scored.contactQuality,
+    channels: scored.channels ?? [],
+    businessSignals: scored.businessSignals,
+    reviewPainPoints: scored.reviewPainPoints?.map((p) => ({
       category: p.category,
       severity: p.severity,
     })),
-    hotScore: withAi.hotScore,
-    leadScore: withAi.leadScore,
-    opportunityScore: withAi.opportunityScore,
-    opportunityLevel: withAi.opportunityLevel,
-    communicationRisk: withAi.communicationRisk,
-    intelligenceScore: withAi.intelligenceScore,
-    websiteIntelligence: withAi.websiteIntelligence,
-    units: withAi.units,
-    pricePerNight: withAi.pricePerNight,
+    hotScore: scored.hotScore,
+    leadScore: scored.leadScore,
+    opportunityScore: scored.opportunityScore,
+    opportunityLevel: scored.opportunityLevel,
+    communicationRisk: scored.communicationRisk,
+    intelligenceScore: scored.intelligenceScore,
+    websiteIntelligence: scored.websiteIntelligence,
+    units: scored.units,
+    pricePerNight: scored.pricePerNight,
     bookingFlowStrength: enrichment.bookingFlowStrength,
     acquisitionIntelligence: enrichment.acquisitionIntelligence,
+    commercialReadiness: enrichment.commercialReadiness,
+    conversionLeak,
   });
   const outreachPriority = calculateOutreachPriority(
     {
-      ...withAi,
+      ...scored,
       outreachIntelligence,
     },
     Date.now(),
   );
   const priorityBucket = getPriorityBucket(
     {
-      ...withAi,
+      ...scored,
       outreachIntelligence,
     },
     outreachPriority,
@@ -1411,7 +1586,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
   );
   const recommendedAction = getRecommendedAction(
     {
-      ...withAi,
+      ...scored,
       outreachIntelligence,
     },
     priorityBucket,
@@ -1419,7 +1594,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     Date.now(),
   );
   return {
-    ...withAi,
+    ...scored,
     outreachIntelligence,
     outreachPriority,
     priorityBucket,
@@ -1464,6 +1639,7 @@ export function calculateOutreachPriority(lead: ScoredLead, now = Date.now()): n
   const readiness = typeof lead.contactReadinessScore === "number" ? lead.contactReadinessScore : 0;
   const opportunity = typeof lead.opportunityScore === "number" ? lead.opportunityScore : 0;
   const operationalActivity = typeof lead.operationalActivity === "number" ? lead.operationalActivity : 0;
+  const commercialReadiness = lead.commercialReadiness;
   const temperature = lead.outreachIntelligence?.leadTemperature ?? "cold";
   const ageDays = importAgeDays(lead, now);
   const followUpDue = hasFollowUpDue(lead, now);
@@ -1485,19 +1661,27 @@ export function calculateOutreachPriority(lead: ScoredLead, now = Date.now()): n
   if (followUpDue) score += 16;
   if (tier === "premium" || tier === "medium") score += 8;
   if (operationalActivity >= 60) score += 8;
+  if (commercialReadiness?.commercialReadinessLevel === "very_high") score += 9;
+  else if (commercialReadiness?.commercialReadinessLevel === "high") score += 6;
+  else if (commercialReadiness?.commercialReadinessLevel === "medium") score += 2;
   if (businessSignals.has("conversion_gap")) score += 10;
   const acq = lead.acquisitionIntelligence;
-  const bookingWeak =
-    typeof lead.bookingFlowStrength === "number" && lead.bookingFlowStrength < 42;
-  if (acq && acq.acquisitionPressureScore >= 74 && bookingWeak) {
-    score += 14;
+  if (acq) {
+    score += calculateAcquisitionPriorityBoost({
+      profile: acq,
+      operationalActivity,
+      bookingFlowStrength: lead.bookingFlowStrength,
+      otaDependencyLikelihood: lead.otaDependencyLikelihood,
+      hasWhatsAppPath: hasWhatsApp,
+      businessSignals,
+    });
   }
-  if (
-    acq &&
-    acq.socialDemandIntent === "high" &&
-    businessSignals.has("conversion_gap")
-  ) {
-    score += 10;
+  const leak = lead.conversionLeak;
+  if (leak?.acquisitionTrafficProxy && acq?.acquisition.isAcquisitionActive) {
+    score += Math.round(clamp(leak.conversionLeakScore * 0.065, 0, 9));
+    if (leak.conversionLeakLevel === "high" || leak.conversionLeakLevel === "critical") {
+      score += 3;
+    }
   }
   if (opportunity >= 70) score += 12;
   if (ageDays <= 2) score += 9;
@@ -1510,6 +1694,7 @@ export function calculateOutreachPriority(lead: ScoredLead, now = Date.now()): n
   if (attempts >= 3) score -= 18;
   if (operationalActivity > 0 && operationalActivity < 35) score -= 12;
   if (businessSignals.has("low_operational_activity")) score -= 10;
+  if (commercialReadiness?.commercialReadinessLevel === "low") score -= 8;
   if (recentlyContacted) score -= 14;
   if (unreachable) score -= 24;
   if (isDoNotContact) score -= 80;
@@ -1552,6 +1737,7 @@ export function getRecommendedAction(
   now = Date.now(),
 ): RecommendedAction {
   const attempts = lead.contactAttempts ?? 0;
+  const businessSignals = new Set(lead.businessSignals ?? []);
   const isDoNotContact =
     Boolean(lead.doNotContact) ||
     lead.pipelineStage === "lost" ||
@@ -1560,6 +1746,23 @@ export function getRecommendedAction(
   if (attempts >= 3) return "wait";
   if (hasFollowUpDue(lead, now)) return "follow_up";
   const hasWhatsApp = normalizePhoneForWhatsApp(lead.phone) !== null && !lead.whatsappInvalid;
+  const acqProfile = lead.acquisitionIntelligence;
+  const otaHeavy =
+    businessSignals.has("ota_dependency") ||
+    (typeof lead.otaDependencyLikelihood === "number" && lead.otaDependencyLikelihood >= 60);
+  if (
+    hasWhatsApp &&
+    acqProfile &&
+    acqProfile.acquisition.isAcquisitionActive &&
+    acqProfile.socialDemandIntent === "high" &&
+    otaHeavy &&
+    (priorityBucket === "today" ||
+      priorityBucket === "high" ||
+      priorityBucket === "medium" ||
+      outreachPriority >= 52)
+  ) {
+    return "send_whatsapp";
+  }
   if (hasWhatsApp && (priorityBucket === "today" || priorityBucket === "high")) {
     return "send_whatsapp";
   }
@@ -1616,6 +1819,7 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
       communicationHealth: enrichment.communicationHealth,
       operationalActivity: enrichment.operationalActivity,
       communicationRisk: v3.communicationRisk,
+      commercialReadiness: enrichment.commercialReadiness,
     };
     return attachStructuredIntelligence(base);
   });

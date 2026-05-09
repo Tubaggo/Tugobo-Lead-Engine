@@ -34,6 +34,7 @@ import {
   type AcquisitionIntelligenceProfile,
   scoreHot,
   scoreLead,
+  conversionLeakUiChipHints,
   whatsappLink,
   whatsappLinkWithText,
 } from "@/app/lib/leads";
@@ -1586,6 +1587,197 @@ function actionPillClass(action: RecommendedAction): string {
 const badgeBase =
   "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset";
 
+type AcquisitionUiChip = {
+  key: string;
+  cls: string;
+  label: string;
+  title?: string;
+};
+
+function isAcquisitionUiMinimal(acq: AcquisitionIntelligenceProfile | undefined): boolean {
+  if (!acq?.acquisition) return true;
+  const { acquisitionIntentLevel, isAcquisitionActive } = acq.acquisition;
+  return acquisitionIntentLevel === "low" && !isAcquisitionActive;
+}
+
+function buildAcquisitionIntelligenceChips(
+  acq: AcquisitionIntelligenceProfile | undefined,
+  bookingFlowStrength: number | undefined,
+  maxChips: number,
+): AcquisitionUiChip[] {
+  if (!acq?.acquisition) return [];
+  const minimal = isAcquisitionUiMinimal(acq);
+  const a = acq.acquisition;
+  const channels = a.acquisitionChannels ?? [];
+
+  if (minimal) {
+    if (
+      typeof acq.paidTrafficLikelihood === "number" &&
+      Number.isFinite(acq.paidTrafficLikelihood) &&
+      acq.paidTrafficLikelihood >= 78
+    ) {
+      return [
+        {
+          key: "acq-paid-strong",
+          cls: `${badgeBase} bg-cyan-500/15 text-cyan-200 ring-cyan-400/35`,
+          label: "Paid Traffic Possible",
+          title:
+            "Heuristic score only — not verified against Meta Ads, Google Ads, or ad libraries.",
+        },
+      ];
+    }
+    return [];
+  }
+
+  const out: AcquisitionUiChip[] = [];
+
+  if (a.acquisitionIntentLevel === "very_high" || a.acquisitionIntentLevel === "high") {
+    out.push({
+      key: "acq-intent-high",
+      cls: `${badgeBase} bg-teal-500/15 text-teal-200 ring-teal-400/40`,
+      label: "High Acquisition Intent",
+    });
+  } else if (a.isAcquisitionActive) {
+    out.push({
+      key: "acq-active",
+      cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
+      label: "Acquisition Active",
+    });
+  }
+
+  if (out.length < maxChips && channels.length >= 3) {
+    out.push({
+      key: "acq-multi",
+      cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`,
+      label: "Multi-Channel Demand",
+    });
+  }
+
+  if (out.length >= maxChips) return out.slice(0, maxChips);
+
+  const hasOta = channels.includes("ota");
+  const hasIgChannel = channels.includes("instagram");
+  const paidPossible =
+    channels.includes("meta_ads_possible") ||
+    channels.includes("google_ads_possible") ||
+    (typeof acq.paidTrafficLikelihood === "number" &&
+      Number.isFinite(acq.paidTrafficLikelihood) &&
+      acq.paidTrafficLikelihood >= 62);
+
+  const tertiary: AcquisitionUiChip[] = [];
+
+  if (hasOta && (hasIgChannel || acq.socialDemandIntent === "high")) {
+    tertiary.push({
+      key: "acq-conv-opp",
+      cls: `${badgeBase} bg-violet-500/15 text-violet-200 ring-violet-400/35`,
+      label: "Strong Conversion Opportunity",
+      title:
+        "OTA or listing distribution plus social demand — booking path may still be under-optimized.",
+    });
+  }
+
+  if (paidPossible) {
+    tertiary.push({
+      key: "acq-paid",
+      cls: `${badgeBase} bg-cyan-500/15 text-cyan-200 ring-cyan-400/35`,
+      label: "Paid Traffic Possible",
+      title:
+        "Possible paid acquisition signals from copy and surfaces — not verified ad detection.",
+    });
+  }
+
+  const gapLike =
+    acq.socialConversionGap === "high" ||
+    (a.acquisitionWeaknesses?.some((w) =>
+      /booking capture|outpace|conversion path|booking flow/i.test(w),
+    ) ??
+      false);
+  const bookingWeak =
+    typeof bookingFlowStrength === "number" &&
+    Number.isFinite(bookingFlowStrength) &&
+    bookingFlowStrength < 45;
+  if (
+    gapLike &&
+    bookingWeak &&
+    (a.isAcquisitionActive ||
+      a.acquisitionIntentLevel === "medium" ||
+      a.acquisitionIntentLevel === "high" ||
+      a.acquisitionIntentLevel === "very_high")
+  ) {
+    tertiary.push({
+      key: "acq-tb-gap",
+      cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/40`,
+      label: "Traffic → Booking Gap",
+      title: "Demand signals present with a weaker direct booking path.",
+    });
+  }
+
+  if (
+    typeof acq.acquisitionPressureScore === "number" &&
+    Number.isFinite(acq.acquisitionPressureScore) &&
+    acq.acquisitionPressureScore >= 72 &&
+    a.acquisitionIntentLevel !== "high" &&
+    a.acquisitionIntentLevel !== "very_high"
+  ) {
+    tertiary.push({
+      key: "acq-pressure",
+      cls: `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`,
+      label: "Acquisition pressure",
+      title: "Composite pressure score from social, paid proxies, and channel mix.",
+    });
+  }
+
+  for (const t of tertiary) {
+    if (out.length >= maxChips) break;
+    if (!out.some((c) => c.key === t.key)) out.push(t);
+  }
+
+  return out.slice(0, maxChips);
+}
+
+function acquisitionSummaryLine(acq: AcquisitionIntelligenceProfile | undefined): string | null {
+  if (!acq?.acquisition || isAcquisitionUiMinimal(acq)) return null;
+  const a = acq.acquisition;
+  const channels = a.acquisitionChannels ?? [];
+  const multi = channels.length >= 3;
+  const hasOta = channels.includes("ota");
+  const hasIg = channels.includes("instagram");
+  const socialStrong = acq.socialDemandIntent === "high";
+  const convGap = acq.socialConversionGap === "high";
+  const paidHint =
+    channels.includes("meta_ads_possible") ||
+    channels.includes("google_ads_possible") ||
+    (typeof acq.paidTrafficLikelihood === "number" &&
+      Number.isFinite(acq.paidTrafficLikelihood) &&
+      acq.paidTrafficLikelihood >= 62);
+
+  if (a.isAcquisitionActive && multi) {
+    return "Actively acquiring customers through multiple channels.";
+  }
+  if ((hasOta || hasIg || socialStrong) && convGap) {
+    return "Strong social demand but possible booking conversion weakness.";
+  }
+  if (paidHint || a.isAcquisitionActive) {
+    return "Likely investing in customer acquisition.";
+  }
+  if (a.acquisitionIntentLevel === "high" || a.acquisitionIntentLevel === "very_high") {
+    return "Elevated acquisition posture versus typical listings in this set.";
+  }
+  return null;
+}
+
+function leadRowAcquisitionHighlightClass(row: LeadTableRow): string {
+  const a = row.acquisitionIntelligence?.acquisition;
+  if (!a) return "";
+  if (
+    a.isAcquisitionActive &&
+    (a.acquisitionIntentLevel === "high" || a.acquisitionIntentLevel === "very_high")
+  ) {
+    return "shadow-[inset_3px_0_0_0_rgba(45,212,191,0.42)]";
+  }
+  return "";
+}
+
 function OutreachBadgesRow({
   row,
   newImport,
@@ -1673,6 +1865,19 @@ function OutreachBadgesRow({
       label: RECOMMENDED_ACTION_LABEL[row.recommendedAction],
     });
   }
+  if (row.opportunityLevel === "very_high") {
+    chips.push({
+      key: "opp-vhigh",
+      cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/40`,
+      label: "Very High Opportunity",
+    });
+  } else if (row.opportunityLevel === "high") {
+    chips.push({
+      key: "opp-high",
+      cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
+      label: "High Opportunity",
+    });
+  }
   chips.push({
     key: "readiness",
     cls:
@@ -1696,7 +1901,7 @@ function OutreachBadgesRow({
     chips.push({
       key: "booking-gap-v2",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/35`,
-      label: "Booking flow weak",
+      label: "Weak booking flow",
     });
   }
   if (
@@ -1757,40 +1962,30 @@ function OutreachBadgesRow({
       href: igVerifyHref,
     });
   }
-  if (acq?.socialDemandIntent === "high") {
+  for (const c of buildAcquisitionIntelligenceChips(acq, row.bookingFlowStrength, 3)) {
     chips.push({
-      key: "soc-dem",
-      cls: `${badgeBase} bg-violet-500/15 text-violet-200 ring-violet-400/35`,
-      label: "Social demand high",
+      key: c.key,
+      cls: c.cls,
+      label: c.label,
+      title: c.title,
     });
   }
-  if (
-    typeof acq?.paidTrafficLikelihood === "number" &&
-    Number.isFinite(acq.paidTrafficLikelihood) &&
-    acq.paidTrafficLikelihood >= 62
-  ) {
+  const hasWeakFlowChipEarly =
+    typeof row.bookingFlowStrength === "number" &&
+    Number.isFinite(row.bookingFlowStrength) &&
+    row.bookingFlowStrength < 45;
+  const hasOtaDependentChipEarly =
+    typeof row.otaDependencyLikelihood === "number" &&
+    Number.isFinite(row.otaDependencyLikelihood) &&
+    row.otaDependencyLikelihood >= 72;
+  for (const c of conversionLeakUiChipHints(row.conversionLeak)) {
+    if (c.key === "clk-book" && hasWeakFlowChipEarly) continue;
+    if (c.key === "clk-ota" && hasOtaDependentChipEarly) continue;
     chips.push({
-      key: "paid-traf",
-      cls: `${badgeBase} bg-cyan-500/15 text-cyan-200 ring-cyan-400/35`,
-      label: "Possible paid traffic",
-    });
-  }
-  if (acq?.socialConversionGap === "high") {
-    chips.push({
-      key: "soc-gap",
-      cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/40`,
-      label: "Conversion gap",
-    });
-  }
-  if (
-    typeof acq?.acquisitionPressureScore === "number" &&
-    Number.isFinite(acq.acquisitionPressureScore) &&
-    acq.acquisitionPressureScore >= 72
-  ) {
-    chips.push({
-      key: "acq-press",
-      cls: `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`,
-      label: "Acquisition pressure",
+      key: c.key,
+      cls: `${badgeBase} bg-white/[0.06] text-zinc-300 ring-zinc-500/25`,
+      label: c.label,
+      title: c.title,
     });
   }
   if (last) {
@@ -2118,6 +2313,86 @@ function InstagramDiscoveryPanel({
           {status === "broken" ? "Manual IG check" : "Search IG"}
         </a>
       )}
+    </div>
+  );
+}
+
+/**
+ * One-line acquisition summary plus optional expansion for structured signals
+ * (kept compact when {@link isAcquisitionUiMinimal}).
+ */
+function AcquisitionIntelligencePanel({
+  acquisition,
+}: {
+  acquisition?: AcquisitionIntelligenceProfile;
+}) {
+  const [detailOpen, setDetailOpen] = useState(false);
+  if (!acquisition?.acquisition) return null;
+  const a = acquisition.acquisition;
+  const summary = acquisitionSummaryLine(acquisition);
+  const signalLines = a.acquisitionSignals ?? [];
+  const weaknessLines = a.acquisitionWeaknesses ?? [];
+  const hasDetail = signalLines.length > 0 || weaknessLines.length > 0;
+  const minimal = isAcquisitionUiMinimal(acquisition);
+
+  if (minimal && !hasDetail) return null;
+  if (!summary && !hasDetail) return null;
+
+  return (
+    <div className="rounded-md border border-teal-400/20 bg-teal-950/40 px-3 py-2 text-[11px] ring-1 ring-inset ring-teal-500/15">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium uppercase tracking-wider text-teal-200/90">
+            Acquisition intelligence
+          </div>
+          {summary ? (
+            <p className="mt-1 leading-relaxed text-zinc-300">{summary}</p>
+          ) : minimal ? (
+            <p className="mt-1 text-zinc-500">Limited acquisition signals for this lead.</p>
+          ) : null}
+        </div>
+        {hasDetail ? (
+          <button
+            type="button"
+            onClick={() => setDetailOpen((v) => !v)}
+            className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-medium text-zinc-200 transition hover:bg-white/10"
+          >
+            {detailOpen ? "Less" : "Detail"}
+          </button>
+        ) : null}
+      </div>
+      {detailOpen && hasDetail ? (
+        <div className="mt-2 space-y-2 border-t border-white/10 pt-2 text-zinc-400">
+          {signalLines.length > 0 ? (
+            <div>
+              <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                Signals
+              </div>
+              <ul className="list-inside list-disc space-y-0.5">
+                {signalLines.map((line) => (
+                  <li key={line} className="text-zinc-300">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {weaknessLines.length > 0 ? (
+            <div>
+              <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
+                Gaps
+              </div>
+              <ul className="list-inside list-disc space-y-0.5">
+                {weaknessLines.map((line) => (
+                  <li key={line} className="text-zinc-300">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2575,6 +2850,23 @@ function HotCard({
           </span>
         ))}
       </div>
+      {(() => {
+        const acqChips = buildAcquisitionIntelligenceChips(
+          lead.acquisitionIntelligence,
+          lead.bookingFlowStrength,
+          2,
+        );
+        if (acqChips.length === 0) return null;
+        return (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {acqChips.map((c) => (
+              <span key={c.key} className={c.cls} title={c.title}>
+                {c.label}
+              </span>
+            ))}
+          </div>
+        );
+      })()}
       <WhyThisLeadChips lead={lead} limit={3} />
       <div className="mt-2 rounded-md border border-cyan-400/20 bg-cyan-500/[0.06] px-2.5 py-2">
         <div className="mb-1 flex items-center justify-between gap-2">
@@ -2740,6 +3032,9 @@ function aiSourceBadgeClass(source: LeadAiInsight["source"]): string {
 function opportunityPillClass(level: OpportunityLevel): string {
   const base =
     "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ring-1 ring-inset";
+  if (level === "very_high") {
+    return `${base} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/40`;
+  }
   if (level === "high") {
     return `${base} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`;
   }
@@ -2945,7 +3240,8 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
         opportunityLevel:
           data.opportunityLevel === "low" ||
           data.opportunityLevel === "medium" ||
-          data.opportunityLevel === "high"
+          data.opportunityLevel === "high" ||
+          data.opportunityLevel === "very_high"
             ? data.opportunityLevel
             : "medium",
         source: data.source === "llm" ? "llm" : "rules",
@@ -3288,6 +3584,7 @@ function LeadDetailContactSection({
       </div>
 
       <InstagramDiscoveryPanel acquisition={lead.acquisitionIntelligence} />
+      <AcquisitionIntelligencePanel acquisition={lead.acquisitionIntelligence} />
 
       {lead.website && (
         <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
@@ -6773,7 +7070,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           isRecentlyImported
                             ? "shadow-[inset_0_0_0_1px_rgba(129,140,248,0.35)]"
                             : ""
-                        } ${openId === row.id ? "bg-white/[0.03]" : ""}`}
+                        } ${leadRowAcquisitionHighlightClass(row)} ${
+                          openId === row.id ? "bg-white/[0.03]" : ""
+                        }`}
                       >
                         <td className="px-4 py-3 align-top">
                           <input

@@ -1,8 +1,9 @@
 import type { BusinessSignal } from "./signals";
 import type { AcquisitionIntelligenceProfile } from "./acquisition-intelligence";
+import type { ConversionLeak } from "./conversion-leak";
 
 /** Mirrors {@link import("./ai-insight").OpportunityLevel} — duplicated here to avoid circular imports. */
-type OpportunityLevel = "low" | "medium" | "high";
+type OpportunityLevel = "low" | "medium" | "high" | "very_high";
 
 /**
  * Lightweight, rule-based "how to approach this lead" layer.
@@ -83,6 +84,10 @@ export type OutreachIntelligenceInput = {
   pricePerNight?: number;
   bookingFlowStrength?: number;
   acquisitionIntelligence?: AcquisitionIntelligenceProfile;
+  commercialReadiness?: {
+    commercialReadinessLevel?: "low" | "medium" | "high" | "very_high";
+  };
+  conversionLeak?: ConversionLeak;
 };
 
 const COMMUNICATION_PAIN_CATEGORIES = new Set<string>([
@@ -180,6 +185,16 @@ function pickSalesApproach(input: OutreachIntelligenceInput): {
   const weakBookingNumeric =
     typeof bookingStrength === "number" ? bookingStrength < 48 : weakBooking;
   if (
+    acq?.acquisition.isAcquisitionActive &&
+    weakBookingNumeric &&
+    (typeof bookingStrength !== "number" || bookingStrength < 50)
+  ) {
+    return {
+      approach: "conversion-gap",
+      reason: "Acquisition-active business with underdeveloped booking flow",
+    };
+  }
+  if (
     input.hasInstagram &&
     weakBookingNumeric &&
     acq?.socialDemandIntent === "high" &&
@@ -234,11 +249,29 @@ function pickOutreachStyle(
   const reachable =
     (input.hasWhatsAppPath && input.contactQuality !== "low") ||
     input.hasInstagram;
+  const commercialLevel = input.commercialReadiness?.commercialReadinessLevel;
+
+  if (
+    (commercialLevel === "very_high" || commercialLevel === "high") &&
+    (approach === "conversion-gap" || approach === "direct-booking")
+  ) {
+    return {
+      style: "consultative",
+      reason: "Commercial readiness is high — consultative ROI framing preferred",
+    };
+  }
+
+  if (commercialLevel === "low" && tier !== "premium") {
+    return {
+      style: "relationship",
+      reason: "Low commercial readiness — softer relationship-first approach",
+    };
+  }
 
   if (
     (approach === "direct-booking" || approach === "conversion-gap") &&
     reachable &&
-    (opp >= 65 || input.opportunityLevel === "high")
+    (opp >= 65 || input.opportunityLevel === "high" || input.opportunityLevel === "very_high")
   ) {
     return {
       style: "conversion-focused",
@@ -297,10 +330,40 @@ function pickUrgencyLevel(input: OutreachIntelligenceInput): {
     };
   }
 
+  const leak = input.conversionLeak;
+  if (
+    leak &&
+    leak.acquisitionTrafficProxy &&
+    acq?.acquisition.isAcquisitionActive &&
+    leak.conversionLeakScore >= 54 &&
+    (leak.conversionLeakLevel === "high" || leak.conversionLeakLevel === "critical")
+  ) {
+    return {
+      urgency: "high",
+      reason: "Heuristic conversion leak on an acquisition-active business",
+    };
+  }
+
+  if (
+    acq &&
+    acq.acquisition.acquisitionIntentScore > 68 &&
+    (acq.socialConversionGap !== "low" ||
+      (bookingStrength !== null && bookingStrength < 50))
+  ) {
+    return {
+      urgency: "high",
+      reason: "Strong acquisition intent with booking or conversion friction",
+    };
+  }
+
   if (opp >= 75 && reachable) {
     return { urgency: "high", reason: "High opportunity score and reachable" };
   }
-  if (input.opportunityLevel === "high" && reachable && commRisk >= 50) {
+  if (
+    (input.opportunityLevel === "high" || input.opportunityLevel === "very_high") &&
+    reachable &&
+    commRisk >= 50
+  ) {
     return {
       urgency: "high",
       reason: "High opportunity + communication risk window",
@@ -323,6 +386,22 @@ function pickRecommendedChannel(input: OutreachIntelligenceInput): {
   channel: RecommendedChannel;
   reason: string;
 } {
+  const acq = input.acquisitionIntelligence;
+  const otaSurface =
+    input.channels.some((c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti") ||
+    Boolean(acq?.acquisition.acquisitionChannels.includes("ota"));
+  const socialHot = acq?.socialDemandIntent === "high";
+  if (
+    input.hasWhatsAppPath &&
+    socialHot &&
+    otaSurface &&
+    (acq?.acquisition.isAcquisitionActive ?? false)
+  ) {
+    return {
+      channel: "whatsapp",
+      reason: "Active social + OTA-heavy mix — WhatsApp for fast outreach",
+    };
+  }
   if (input.hasWhatsAppPath && input.contactQuality === "high") {
     return { channel: "whatsapp", reason: "WhatsApp-ready mobile" };
   }
@@ -360,9 +439,23 @@ function pickLeadTemperature(input: OutreachIntelligenceInput): {
   if (
     reachable &&
     input.hotScore >= 65 &&
-    (input.opportunityLevel === "high" || opp >= 70)
+    (input.opportunityLevel === "high" || input.opportunityLevel === "very_high" || opp >= 70)
   ) {
     return { temperature: "hot", reason: "Reachable + hot + high opportunity" };
+  }
+  const leak = input.conversionLeak;
+  if (
+    reachable &&
+    input.acquisitionIntelligence?.acquisition.isAcquisitionActive &&
+    leak?.acquisitionTrafficProxy &&
+    leak.conversionLeakScore >= 58 &&
+    (leak.conversionLeakLevel === "high" || leak.conversionLeakLevel === "critical") &&
+    opp >= 60
+  ) {
+    return {
+      temperature: "hot",
+      reason: "Acquisition-active with strong heuristic conversion-leak signal",
+    };
   }
   if (
     reachable &&

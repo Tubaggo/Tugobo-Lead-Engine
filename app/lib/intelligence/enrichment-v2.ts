@@ -4,6 +4,10 @@ import {
   type AcquisitionIntelligenceProfile,
   type BusinessTierLike,
 } from "./acquisition-intelligence";
+import {
+  calculateCommercialReadiness,
+  type CommercialReadiness,
+} from "./commercial-readiness";
 
 type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
 type ContactQuality = "high" | "medium" | "low";
@@ -43,6 +47,7 @@ export type EnrichmentV2Profile = {
   hasExternalOnlyBooking: boolean;
   hasWeakContactVisibility: boolean;
   acquisitionIntelligence: AcquisitionIntelligenceProfile;
+  commercialReadiness: CommercialReadiness;
 };
 
 const OTA_HOST_PATTERNS = [
@@ -201,6 +206,23 @@ export function buildEnrichmentV2Profile(input: EnrichmentV2Input): EnrichmentV2
     city: input.city,
     type: input.type,
   });
+  const commercialReadiness = calculateCommercialReadiness({
+    businessTier: input.businessTier,
+    hasOwnWebsite: input.hasOwnWebsite,
+    hasInstagram: input.hasInstagram,
+    hasWhatsAppPath: input.hasWhatsAppPath,
+    channels: input.channels,
+    websiteIntelligence: input.websiteIntelligence,
+    acquisition: acquisitionIntelligence.acquisition,
+    bookingFlowStrength,
+    digitalMaturity,
+    communicationHealth,
+    operationalActivity,
+    reviewsCount: input.reviewsCount,
+    daysSinceLastReview: input.daysSinceLastReview,
+    socialDemandStrength,
+    otaDependencyLikelihood,
+  });
 
   return {
     digitalMaturity,
@@ -214,5 +236,6 @@ export function buildEnrichmentV2Profile(input: EnrichmentV2Input): EnrichmentV2
     hasExternalOnlyBooking,
     hasWeakContactVisibility,
     acquisitionIntelligence,
+    commercialReadiness,
   };
 }

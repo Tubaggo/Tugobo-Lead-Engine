@@ -3,6 +3,28 @@ import {
   type InstagramDiscoveryStatus,
 } from "./instagram-discovery";
 
+export type AcquisitionIntentLevel = "low" | "medium" | "high" | "very_high";
+
+export type AcquisitionChannel =
+  | "instagram"
+  | "meta_ads_possible"
+  | "google_ads_possible"
+  | "ota"
+  | "website"
+  | "whatsapp"
+  | "influencer_possible"
+  | "content_marketing"
+  | "campaign_language";
+
+export type AcquisitionIntelligence = {
+  acquisitionIntentScore: number;
+  acquisitionIntentLevel: AcquisitionIntentLevel;
+  acquisitionChannels: AcquisitionChannel[];
+  acquisitionSignals: string[];
+  acquisitionWeaknesses: string[];
+  isAcquisitionActive: boolean;
+};
+
 /** Narrow mirror of {@link import("../leads").WebsiteIntelligenceSummary} — avoid importing `leads` (cycle). */
 export type WebsiteIntelForAcquisition = {
   hasWhatsAppLink?: boolean;
@@ -63,6 +85,8 @@ export type AcquisitionIntelligenceProfile = {
   acquisitionPressureScore: number;
   paidTrafficLikelihood: number;
   adDrivenLeadPotential: number;
+  /** Normalized acquisition intent, channels, and explainable signals. */
+  acquisition: AcquisitionIntelligence;
 };
 
 export type AcquisitionIntelligenceInput = {
@@ -349,6 +373,457 @@ function campaignLanguage(scanText: string): boolean {
   );
 }
 
+function paidMetaHints(url?: string): boolean {
+  if (!url?.trim()) return false;
+  return /(fbclid|utm_source=facebook|utm_source=fb|utm_medium=[^&]*(cpc|social|paid))/i.test(url);
+}
+
+function paidGoogleHints(url?: string): boolean {
+  if (!url?.trim()) return false;
+  return /(gclid|utm_source=google|utm_medium=[^&]*cpc)/i.test(url);
+}
+
+function influencerLanguage(scanText: string): boolean {
+  return /(influencer|işbirliği|isbirligi|collab(?:oration)?|brand\s*partner|ugc|sponsorlu|sponsored|paid\s*partnership|pr\s*gift)/i.test(
+    scanText,
+  );
+}
+
+function contentMarketingSurface(
+  scanText: string,
+  bioSignalCount: number,
+  bookingSignalCount: number,
+): boolean {
+  if (/(blog|e-?bülten|ebulten|newsletter|podcast|youtube\.com\/|tiktok\.com\/)/i.test(scanText)) {
+    return true;
+  }
+  return bioSignalCount >= 2 && bookingSignalCount >= 1;
+}
+
+/** Profile fields used before the nested {@link AcquisitionIntelligence} is attached. */
+export type AcquisitionIntelligenceProfileBase = Omit<AcquisitionIntelligenceProfile, "acquisition">;
+
+export function getAcquisitionIntentLevel(score: number): AcquisitionIntentLevel {
+  const s = clamp(score);
+  if (s >= 78) return "very_high";
+  if (s >= 62) return "high";
+  if (s >= 44) return "medium";
+  return "low";
+}
+
+/** Inputs for outreach prioritization — keeps deltas bounded so generic scores still matter. */
+export type AcquisitionPriorityFactors = {
+  profile: AcquisitionIntelligenceProfile;
+  /** 0–100 operational proxy; use 0 when unknown. */
+  operationalActivity: number;
+  bookingFlowStrength?: number;
+  otaDependencyLikelihood?: number;
+  hasWhatsAppPath: boolean;
+  /** Stable signal IDs from {@link import("./signals").BusinessSignal}. */
+  businessSignals: ReadonlySet<string>;
+};
+
+const ACQ_PRIORITY_POS_CAP = 22;
+const ACQ_PRIORITY_NEG_CAP = 14;
+
+/**
+ * Bounded adjustment for outreach priority (not leadScore).
+ * Positive when acquisition is active and well-signaled; negative when thin or operationally cold.
+ */
+export function calculateAcquisitionPriorityBoost(f: AcquisitionPriorityFactors): number {
+  const p = f.profile;
+  const a = p.acquisition;
+  let delta = 0;
+
+  switch (a.acquisitionIntentLevel) {
+    case "very_high":
+      delta += 7;
+      break;
+    case "high":
+      delta += 5;
+      break;
+    case "medium":
+      delta += 1;
+      break;
+    default:
+      delta -= 4;
+      break;
+  }
+
+  const ch = a.acquisitionChannels.length;
+  if (ch >= 4) delta += 5;
+  else if (ch === 3) delta += 4;
+  else if (ch === 2) delta += 2;
+
+  if (p.socialDemandIntent === "high") delta += 3;
+  else if (p.socialDemandIntent === "medium") delta += 1;
+
+  const ota = typeof f.otaDependencyLikelihood === "number" ? f.otaDependencyLikelihood : 0;
+  if (ota >= 72) delta += 3;
+  else if (ota >= 58) delta += 2;
+
+  if (
+    f.hasWhatsAppPath &&
+    (a.acquisitionIntentLevel === "high" ||
+      a.acquisitionIntentLevel === "very_high" ||
+      a.isAcquisitionActive)
+  ) {
+    delta += 2;
+  }
+
+  if (p.paidTrafficLikelihood >= 64) delta += 3;
+  else if (p.paidTrafficLikelihood >= 56) delta += 1;
+
+  const convGapSignal = f.businessSignals.has("conversion_gap");
+  const convWeak =
+    p.socialConversionGap !== "low" ||
+    a.acquisitionWeaknesses.some((w) =>
+      /booking|conversion|capture|funnel/i.test(w),
+    );
+  if (a.acquisitionIntentScore > 70 && convWeak) delta += 8;
+  else if (
+    (a.acquisitionIntentLevel === "high" || a.acquisitionIntentLevel === "very_high") &&
+    convGapSignal
+  ) {
+    delta += 4;
+  }
+
+  if (
+    p.instagramActivityLevel === "inactive" &&
+    a.acquisitionIntentLevel !== "high" &&
+    a.acquisitionIntentLevel !== "very_high"
+  ) {
+    delta -= 3;
+  }
+
+  const booking =
+    typeof f.bookingFlowStrength === "number" && Number.isFinite(f.bookingFlowStrength)
+      ? f.bookingFlowStrength
+      : null;
+  if (booking !== null && booking < 40 && a.isAcquisitionActive) delta += 3;
+
+  if (f.operationalActivity > 0 && f.operationalActivity < 32) delta -= 5;
+  if (f.businessSignals.has("low_operational_activity")) delta -= 4;
+
+  if (
+    a.acquisitionIntentLevel === "low" &&
+    !a.isAcquisitionActive &&
+    ch <= 1 &&
+    a.acquisitionSignals.length < 2
+  ) {
+    delta -= 6;
+  }
+
+  return Math.round(clamp(delta, -ACQ_PRIORITY_NEG_CAP, ACQ_PRIORITY_POS_CAP));
+}
+
+/** Short rationale lines aligned with {@link calculateAcquisitionPriorityBoost} (debug / future telemetry). */
+export function getAcquisitionPriorityReason(f: AcquisitionPriorityFactors): string[] {
+  const p = f.profile;
+  const a = p.acquisition;
+  const reasons: string[] = [];
+
+  if (a.acquisitionIntentLevel === "very_high" || a.acquisitionIntentLevel === "high") {
+    reasons.push("Elevated acquisition intent");
+  } else if (a.acquisitionIntentLevel === "low") {
+    reasons.push("Low acquisition intent");
+  }
+
+  if (a.acquisitionChannels.length >= 3) {
+    reasons.push("Multiple acquisition surfaces");
+  } else if (a.acquisitionChannels.length <= 1 && !a.isAcquisitionActive) {
+    reasons.push("Thin acquisition channel mix");
+  }
+
+  if (p.socialDemandIntent === "high") reasons.push("High social demand");
+  if (typeof f.otaDependencyLikelihood === "number" && f.otaDependencyLikelihood >= 58) {
+    reasons.push("Strong OTA-leaning distribution");
+  }
+  if (f.hasWhatsAppPath && a.isAcquisitionActive) reasons.push("WhatsApp path + active acquisition");
+  if (p.paidTrafficLikelihood >= 58) reasons.push("Paid-traffic likelihood");
+
+  const convWeak =
+    f.businessSignals.has("conversion_gap") ||
+    p.socialConversionGap !== "low" ||
+    a.acquisitionWeaknesses.some((w) => /booking|conversion|capture/i.test(w));
+  if (a.acquisitionIntentScore > 70 && convWeak) {
+    reasons.push("High intent with conversion/booking gap");
+  }
+
+  if (f.operationalActivity > 0 && f.operationalActivity < 35) {
+    reasons.push("Weak operational activity proxy");
+  }
+
+  return reasons.slice(0, 6);
+}
+
+/**
+ * Small nudge on consultative opportunity score (0–100), incremental vs. existing signal weights.
+ */
+export function calculateAcquisitionOpportunityAdjustment(
+  profile: AcquisitionIntelligenceProfile,
+  businessSignals: ReadonlySet<string>,
+): number {
+  const a = profile.acquisition;
+  let adj = 0;
+
+  const convWeak =
+    businessSignals.has("conversion_gap") ||
+    profile.socialConversionGap !== "low" ||
+    a.acquisitionWeaknesses.some((w) => /booking|conversion|capture|funnel/i.test(w));
+
+  if (a.acquisitionIntentScore > 70 && convWeak) adj += 6;
+  else if (
+    (a.acquisitionIntentLevel === "high" || a.acquisitionIntentLevel === "very_high") &&
+    a.isAcquisitionActive
+  ) {
+    adj += 3;
+  }
+
+  if (a.acquisitionChannels.length >= 3 && a.isAcquisitionActive) adj += 2;
+
+  if (a.acquisitionIntentLevel === "low" && !a.isAcquisitionActive && a.acquisitionChannels.length <= 1) {
+    adj -= 4;
+  }
+
+  return Math.round(clamp(adj, -5, 8));
+}
+
+/** Applies a light acquisition layer on top of signal-derived intelligence score. */
+export function applyAcquisitionToIntelligenceScore(
+  base: number,
+  profile: AcquisitionIntelligenceProfile | undefined,
+  operationalActivity: number,
+): number {
+  if (!profile) return Math.round(clamp(base));
+  const a = profile.acquisition;
+  let delta = 0;
+
+  if (a.acquisitionIntentLevel === "very_high") delta += 4;
+  else if (a.acquisitionIntentLevel === "high") delta += 3;
+  else if (a.acquisitionIntentLevel === "low" && !a.isAcquisitionActive) delta -= 3;
+
+  if (a.isAcquisitionActive && a.acquisitionChannels.length >= 2) delta += 2;
+
+  if (operationalActivity > 0 && operationalActivity < 35) delta -= 2;
+  if (a.acquisitionIntentLevel === "low" && a.acquisitionChannels.length <= 1 && !a.isAcquisitionActive) {
+    delta -= 2;
+  }
+
+  return Math.round(clamp(base + delta));
+}
+
+export function detectAcquisitionChannels(
+  input: AcquisitionIntelligenceInput,
+  profile: AcquisitionIntelligenceProfileBase,
+): AcquisitionChannel[] {
+  const scanText = normalizeScanText(input.socialSignalText, input.instagramHandle);
+  const out: AcquisitionChannel[] = [];
+  const add = (c: AcquisitionChannel) => {
+    if (!out.includes(c)) out.push(c);
+  };
+
+  const igPresent = profile.hasInstagram && profile.instagramStatus !== "invalid";
+  if (igPresent) add("instagram");
+
+  if (input.hasWhatsAppPath || input.websiteIntelligence?.hasWhatsAppLink) add("whatsapp");
+
+  if (input.hasOwnWebsite || Boolean(input.website?.trim())) add("website");
+
+  const listedOta = input.channels.some((c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti");
+  if (listedOta || input.otaDependencyLikelihood >= 52) add("ota");
+
+  if (campaignLanguage(scanText)) add("campaign_language");
+
+  const url = input.website ?? "";
+  const paidParams = paidParamsInUrl(url);
+  if (paidMetaHints(url) || (paidParams && /fbclid|facebook|fb_/i.test(url))) add("meta_ads_possible");
+  if (paidGoogleHints(url) || (paidParams && /gclid|google/i.test(url))) add("google_ads_possible");
+
+  if (!paidParams && profile.paidTrafficLikelihood >= 62) {
+    add("meta_ads_possible");
+    if (input.otaDependencyLikelihood >= 55 || input.digitalMaturity >= 60) add("google_ads_possible");
+  }
+
+  if (influencerLanguage(scanText)) add("influencer_possible");
+
+  if (
+    contentMarketingSurface(scanText, profile.instagramBioSignals.length, profile.instagramBookingSignals.length)
+  ) {
+    add("content_marketing");
+  }
+
+  return out;
+}
+
+export function getAcquisitionSignals(
+  input: AcquisitionIntelligenceInput,
+  profile: AcquisitionIntelligenceProfileBase,
+): string[] {
+  const scanText = normalizeScanText(input.socialSignalText, input.instagramHandle);
+  const signals: string[] = [];
+  const push = (s: string) => {
+    if (!signals.includes(s)) signals.push(s);
+  };
+
+  if (profile.instagramDiscoveryStatus === "verified") {
+    push("Instagram discovery: validated link/handle");
+  } else if (profile.hasInstagram && profile.instagramStatus === "valid") {
+    push("Instagram handle or URL present");
+  } else if (profile.instagramDiscoveryStatus === "possible") {
+    push("Instagram may exist (plausible handles; verify manually)");
+  }
+
+  if (input.hasWhatsAppPath || input.websiteIntelligence?.hasWhatsAppLink) {
+    push("WhatsApp available (phone or site link)");
+  }
+
+  if (input.hasOwnWebsite || input.website?.trim()) {
+    push("Website exists");
+  }
+
+  if (input.channels.some((c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti")) {
+    push("OTA / platform listing footprint");
+  }
+  if (input.otaDependencyLikelihood >= 60) {
+    push("Elevated OTA likelihood (distribution-led acquisition)");
+  }
+
+  if (profile.socialDemandIntent === "high") push("Strong social demand");
+  else if (profile.socialDemandIntent === "medium") push("Moderate social demand");
+
+  if (campaignLanguage(scanText)) push("Campaign / promo language in copy");
+
+  if (profile.paidTrafficLikelihood >= 55 || paidParamsInUrl(input.website)) {
+    push("Possible paid traffic (tracking params or modeled likelihood)");
+  }
+
+  if (profile.socialConversionGap !== "low") {
+    push("Booking or conversion pressure relative to social attention");
+  }
+  if (input.bookingFlowStrength >= 58) {
+    push("Stronger direct booking surface / CTAs");
+  }
+
+  return signals;
+}
+
+export function getAcquisitionWeaknesses(
+  input: AcquisitionIntelligenceInput,
+  profile: AcquisitionIntelligenceProfileBase,
+): string[] {
+  const weaknesses: string[] = [];
+  const push = (s: string) => {
+    if (!weaknesses.includes(s)) weaknesses.push(s);
+  };
+
+  if (profile.instagramStatus === "invalid") {
+    push("Instagram surface appears invalid or broken");
+  }
+  if (!input.hasWhatsAppPath && !input.websiteIntelligence?.hasWhatsAppLink) {
+    push("No clear WhatsApp path");
+  }
+  if (!input.hasOwnWebsite && !input.website?.trim()) {
+    push("No owned website");
+  }
+  if (input.bookingFlowStrength < 42) {
+    push("Weak direct booking flow");
+  }
+  if (profile.socialConversionGap === "high") {
+    push("Social attention may outpace booking capture");
+  }
+
+  const acqChannels = detectAcquisitionChannels(input, profile);
+  if (acqChannels.length <= 1) {
+    push("Limited acquisition channel mix (single-surface risk)");
+  }
+  if (input.otaDependencyLikelihood >= 72 && input.bookingFlowStrength < 50) {
+    push("Heavy OTA reliance with thin owned conversion path");
+  }
+
+  return weaknesses;
+}
+
+export function calculateAcquisitionIntent(
+  input: AcquisitionIntelligenceInput,
+  profile: AcquisitionIntelligenceProfileBase,
+): number {
+  const scanText = normalizeScanText(input.socialSignalText, input.instagramHandle);
+  const channels = detectAcquisitionChannels(input, profile);
+  const distinct = channels.length;
+
+  let s =
+    profile.acquisitionPressureScore * 0.34 +
+    profile.paidTrafficLikelihood * 0.22 +
+    profile.adDrivenLeadPotential * 0.16;
+
+  if (profile.socialDemandIntent === "high") s += 12;
+  else if (profile.socialDemandIntent === "medium") s += 6;
+
+  if (profile.socialConversionGap === "high") s += 8;
+  else if (profile.socialConversionGap === "medium") s += 4;
+
+  s += Math.min(10, input.otaDependencyLikelihood * 0.1);
+  s += Math.min(8, input.digitalMaturity * 0.06);
+
+  if (distinct >= 2) s += Math.min(18, (distinct - 1) * 6);
+
+  s = clamp(s);
+
+  const chSet = new Set(channels);
+  const onlyIg = distinct === 1 && chSet.has("instagram");
+  const onlyWeb = distinct === 1 && chSet.has("website");
+  if (onlyIg) s = Math.min(s, 46);
+  if (onlyWeb) s = Math.min(s, 46);
+
+  if (
+    distinct === 2 &&
+    chSet.has("instagram") &&
+    chSet.has("website") &&
+    !chSet.has("whatsapp") &&
+    !profile.metaAdsDetected &&
+    !campaignLanguage(scanText)
+  ) {
+    s = Math.min(s, 58);
+  }
+
+  return Math.round(clamp(s));
+}
+
+function computeIsAcquisitionActive(
+  score: number,
+  channels: AcquisitionChannel[],
+  profile: AcquisitionIntelligenceProfileBase,
+): boolean {
+  if (score < 50) return false;
+  const diverse = channels.length >= 2;
+  const paidLike =
+    profile.paidTrafficLikelihood >= 58 ||
+    profile.metaAdsDetected ||
+    channels.includes("campaign_language") ||
+    channels.includes("meta_ads_possible") ||
+    channels.includes("google_ads_possible");
+  const socialConvert =
+    profile.socialDemandIntent === "high" && profile.socialConversionGap !== "low";
+  return diverse || (paidLike && score >= 55) || (socialConvert && score >= 52);
+}
+
+export function buildAcquisitionIntelligenceStructured(
+  input: AcquisitionIntelligenceInput,
+  profile: AcquisitionIntelligenceProfileBase,
+): AcquisitionIntelligence {
+  const acquisitionChannels = detectAcquisitionChannels(input, profile);
+  const acquisitionIntentScore = calculateAcquisitionIntent(input, profile);
+  return {
+    acquisitionIntentScore,
+    acquisitionIntentLevel: getAcquisitionIntentLevel(acquisitionIntentScore),
+    acquisitionChannels,
+    acquisitionSignals: getAcquisitionSignals(input, profile),
+    acquisitionWeaknesses: getAcquisitionWeaknesses(input, profile),
+    isAcquisitionActive: computeIsAcquisitionActive(acquisitionIntentScore, acquisitionChannels, profile),
+  };
+}
+
 /** Deterministic proxy for Meta / paid acquisition surface (no Meta API calls). */
 export function calculateAcquisitionPressure(ctx: {
   hasInstagram: boolean;
@@ -480,7 +955,7 @@ export function buildAcquisitionIntelligence(
   if (socialDemandIntent === "high" && socialConversionGap !== "low") adDrivenLeadPotential += 12;
   adDrivenLeadPotential = Math.round(clamp(adDrivenLeadPotential));
 
-  return {
+  const base: AcquisitionIntelligenceProfileBase = {
     hasInstagram: input.hasInstagram,
     instagramHandleDetected: effectiveHandleDetected,
     instagramLinkQuality,
@@ -500,5 +975,10 @@ export function buildAcquisitionIntelligence(
     acquisitionPressureScore,
     paidTrafficLikelihood,
     adDrivenLeadPotential,
+  };
+
+  return {
+    ...base,
+    acquisition: buildAcquisitionIntelligenceStructured(input, base),
   };
 }
