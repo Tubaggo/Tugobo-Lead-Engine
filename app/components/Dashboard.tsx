@@ -21,14 +21,11 @@ import {
   dedupeLeads,
   enrichScoredLeadIntelligence,
   type ScoredLead,
-  STATUS_LABEL,
   STATUS_ORDER,
   getContactQuality,
   computeContactReadinessScore,
   getTurkishPhoneKind,
   instagramLink,
-  OUTREACH_PRIORITY_BUCKET_LABEL,
-  RECOMMENDED_ACTION_LABEL,
   type OutreachPriorityBucket,
   type RecommendedAction,
   type AcquisitionIntelligenceProfile,
@@ -68,6 +65,18 @@ import ImportPanel, {
   type ImportRequest,
   type ImportResult,
 } from "@/app/components/ImportPanel";
+import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
+import {
+  contactQualityUiLabel,
+  fillTemplate,
+  queueMessageStatusUiLabel,
+  queueSourceUiLabel,
+  outreachPriorityChipLabel,
+  recommendedActionUiLabel,
+  statusUiLabel,
+  t,
+  type Locale,
+} from "@/app/lib/i18n";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
@@ -133,11 +142,6 @@ const TYPES: LeadType[] = [
   "Pension",
 ];
 
-const CONTACT_QUALITY_LABEL: Record<ContactQuality, string> = {
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
 
 type ContactFinderType =
   | "VERIFIED_WHATSAPP"
@@ -1491,16 +1495,23 @@ function readinessCategory(
   return "no_contact";
 }
 
+function readinessCategoryUiLabel(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  locale: Locale,
+): string {
+  const rc = readinessCategory(row, finder);
+  if (rc === "ready_now") return t("readiness_ready_now", locale);
+  if (rc === "good_contact") return t("readiness_good_contact", locale);
+  if (rc === "needs_finder") return t("readiness_needs_finder", locale);
+  if (rc === "weak_contact") return t("readiness_weak_contact", locale);
+  return t("readiness_no_contact", locale);
+}
+
 function sourceBonus(source: QueueLeadSource): number {
   if (source === "latest_import") return 100;
   if (source === "airtable") return 80;
   return 60;
-}
-
-function queueSourceBadgeLabel(source?: QueueLeadSource): string {
-  if (source === "latest_import") return "Latest Import";
-  if (source === "airtable") return "Airtable";
-  return "Local Pool";
 }
 
 function queueSourceBadgeClass(source?: QueueLeadSource): string {
@@ -1540,25 +1551,40 @@ function queueSessionWhatsAppDigits(
   return normalizePhoneForWhatsApp(lead.phone);
 }
 
-function relativeCalendarLabel(ts?: number | null, now = Date.now()) {
+function relativeCalendarLabel(ts?: number | null, now = Date.now(), locale: Locale = "tr") {
   if (!ts || !Number.isFinite(ts) || ts <= 0) return "-";
-  if (isSameLocalCalendarDay(ts, now)) return "Today";
-  if (isSameLocalCalendarDay(ts, now - 24 * 60 * 60 * 1000)) return "Yesterday";
-  return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  if (isSameLocalCalendarDay(ts, now)) return t("cal_today", locale);
+  if (isSameLocalCalendarDay(ts, now - 24 * 60 * 60 * 1000)) return t("cal_yesterday", locale);
+  return new Date(ts).toLocaleDateString(locale === "tr" ? "tr-TR" : "en-US", {
+    month: "short",
+    day: "numeric",
+  });
 }
 
-function buildImportedLabel(createdAt?: number, firstImportedAt?: number, now = Date.now()) {
+function buildImportedLabel(
+  createdAt?: number,
+  firstImportedAt?: number,
+  now = Date.now(),
+  locale: Locale = "tr",
+) {
   const ts = firstImportedAt ?? createdAt;
-  if (!ts || !Number.isFinite(ts) || ts <= 0) return "Imported: -";
-  if (now - ts <= 24 * 60 * 60 * 1000) return "Imported: Today";
-  if (now - ts <= 48 * 60 * 60 * 1000) return "Imported: Yesterday";
+  if (!ts || !Number.isFinite(ts) || ts <= 0) return `${t("imported_prefix", locale)} -`;
+  if (now - ts <= 24 * 60 * 60 * 1000)
+    return `${t("imported_prefix", locale)} ${t("cal_today", locale)}`;
+  if (now - ts <= 48 * 60 * 60 * 1000)
+    return `${t("imported_prefix", locale)} ${t("cal_yesterday", locale)}`;
   const d = new Date(ts);
-  return `Imported: ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  return `${t("imported_prefix", locale)} ${d.toLocaleDateString(locale === "tr" ? "tr-TR" : "en-US", { month: "short", day: "numeric" })}`;
 }
 
-function getImportedBadgeText(createdAt?: number, firstImportedAt?: number, now = Date.now()) {
+function getImportedBadgeText(
+  createdAt?: number,
+  firstImportedAt?: number,
+  now = Date.now(),
+  locale: Locale = "tr",
+) {
   const ts = firstImportedAt ?? createdAt;
-  return relativeCalendarLabel(ts, now);
+  return relativeCalendarLabel(ts, now, locale);
 }
 
 function scoreColor(score: number) {
@@ -1604,6 +1630,7 @@ function buildAcquisitionIntelligenceChips(
   acq: AcquisitionIntelligenceProfile | undefined,
   bookingFlowStrength: number | undefined,
   maxChips: number,
+  locale: Locale,
 ): AcquisitionUiChip[] {
   if (!acq?.acquisition) return [];
   const minimal = isAcquisitionUiMinimal(acq);
@@ -1620,9 +1647,8 @@ function buildAcquisitionIntelligenceChips(
         {
           key: "acq-paid-strong",
           cls: `${badgeBase} bg-cyan-500/15 text-cyan-200 ring-cyan-400/35`,
-          label: "Paid Traffic Possible",
-          title:
-            "Heuristic score only — not verified against Meta Ads, Google Ads, or ad libraries.",
+          label: t("paid_traffic_possible", locale),
+          title: t("paid_traffic_possible_title", locale),
         },
       ];
     }
@@ -1635,13 +1661,13 @@ function buildAcquisitionIntelligenceChips(
     out.push({
       key: "acq-intent-high",
       cls: `${badgeBase} bg-teal-500/15 text-teal-200 ring-teal-400/40`,
-      label: "High Acquisition Intent",
+      label: t("high_acquisition_intent", locale),
     });
   } else if (a.isAcquisitionActive) {
     out.push({
       key: "acq-active",
       cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
-      label: "Acquisition Active",
+      label: t("acquisition_active", locale),
     });
   }
 
@@ -1649,7 +1675,7 @@ function buildAcquisitionIntelligenceChips(
     out.push({
       key: "acq-multi",
       cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`,
-      label: "Multi-Channel Demand",
+      label: t("multi_channel_demand", locale),
     });
   }
 
@@ -1670,9 +1696,8 @@ function buildAcquisitionIntelligenceChips(
     tertiary.push({
       key: "acq-conv-opp",
       cls: `${badgeBase} bg-violet-500/15 text-violet-200 ring-violet-400/35`,
-      label: "Strong Conversion Opportunity",
-      title:
-        "OTA or listing distribution plus social demand — booking path may still be under-optimized.",
+      label: t("strong_conversion_opportunity", locale),
+      title: t("strong_conversion_opportunity_title", locale),
     });
   }
 
@@ -1680,9 +1705,8 @@ function buildAcquisitionIntelligenceChips(
     tertiary.push({
       key: "acq-paid",
       cls: `${badgeBase} bg-cyan-500/15 text-cyan-200 ring-cyan-400/35`,
-      label: "Paid Traffic Possible",
-      title:
-        "Possible paid acquisition signals from copy and surfaces — not verified ad detection.",
+      label: t("paid_traffic_possible", locale),
+      title: t("acq_paid_signals_title", locale),
     });
   }
 
@@ -1707,8 +1731,8 @@ function buildAcquisitionIntelligenceChips(
     tertiary.push({
       key: "acq-tb-gap",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/40`,
-      label: "Traffic → Booking Gap",
-      title: "Demand signals present with a weaker direct booking path.",
+      label: t("traffic_booking_gap", locale),
+      title: t("traffic_booking_gap_title", locale),
     });
   }
 
@@ -1722,20 +1746,23 @@ function buildAcquisitionIntelligenceChips(
     tertiary.push({
       key: "acq-pressure",
       cls: `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`,
-      label: "Acquisition pressure",
-      title: "Composite pressure score from social, paid proxies, and channel mix.",
+      label: t("acquisition_pressure", locale),
+      title: t("acquisition_pressure_title", locale),
     });
   }
 
-  for (const t of tertiary) {
+  for (const chip of tertiary) {
     if (out.length >= maxChips) break;
-    if (!out.some((c) => c.key === t.key)) out.push(t);
+    if (!out.some((c) => c.key === chip.key)) out.push(chip);
   }
 
   return out.slice(0, maxChips);
 }
 
-function acquisitionSummaryLine(acq: AcquisitionIntelligenceProfile | undefined): string | null {
+function acquisitionSummaryLine(
+  acq: AcquisitionIntelligenceProfile | undefined,
+  locale: Locale,
+): string | null {
   if (!acq?.acquisition || isAcquisitionUiMinimal(acq)) return null;
   const a = acq.acquisition;
   const channels = a.acquisitionChannels ?? [];
@@ -1752,16 +1779,16 @@ function acquisitionSummaryLine(acq: AcquisitionIntelligenceProfile | undefined)
       acq.paidTrafficLikelihood >= 62);
 
   if (a.isAcquisitionActive && multi) {
-    return "Actively acquiring customers through multiple channels.";
+    return t("acq_summary_active_multi", locale);
   }
   if ((hasOta || hasIg || socialStrong) && convGap) {
-    return "Strong social demand but possible booking conversion weakness.";
+    return t("acq_summary_social_gap", locale);
   }
   if (paidHint || a.isAcquisitionActive) {
-    return "Likely investing in customer acquisition.";
+    return t("acq_summary_investing", locale);
   }
   if (a.acquisitionIntentLevel === "high" || a.acquisitionIntentLevel === "very_high") {
-    return "Elevated acquisition posture versus typical listings in this set.";
+    return t("acq_summary_elevated", locale);
   }
   return null;
 }
@@ -1793,6 +1820,7 @@ function OutreachBadgesRow({
   syncedToAirtable?: boolean;
   now: number;
 }) {
+  const { locale } = useLocale();
   const s = row._s;
   const readiness = rowReadiness(row);
   const last =
@@ -1806,76 +1834,76 @@ function OutreachBadgesRow({
     chips.push({
       key: "dnc",
       cls: `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`,
-      label: "Do Not Contact",
+      label: t("do_not_contact", locale),
     });
   }
   if (s.status === "new" && !s.doNotContact) {
     chips.push({
       key: "new",
       cls: `${badgeBase} bg-zinc-500/15 text-zinc-200 ring-zinc-400/30`,
-      label: "New",
+      label: t("chip_new", locale),
     });
   }
   if (newImport) {
     chips.push({
       key: "newimp",
       cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`,
-      label: "New import",
+      label: t("chip_new_import", locale),
     });
   }
   if (isFollowUpDue(s, now)) {
     chips.push({
       key: "fudue",
       cls: `${badgeBase} bg-orange-500/15 text-orange-200 ring-orange-400/40`,
-      label: "Follow-Up Due",
+      label: t("follow_up_due", locale),
     });
   }
   if ((s.contactAttempts ?? 0) >= 2) {
     chips.push({
       key: "fuonce",
       cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/35`,
-      label: "Followed up before",
+      label: t("followed_up_before", locale),
     });
   }
   if (typeof row.hotScore === "number" && row.hotScore > 70 && s.status === "new") {
     chips.push({
       key: "hipri",
       cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/35`,
-      label: "⭐ High Priority",
+      label: t("high_priority", locale),
     });
   }
   if (typeof row.hotScore === "number" && row.hotScore > 70 && readiness.score < 40) {
     chips.push({
       key: "risk",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/40`,
-      label: "\u26A0 Outreach Risk",
+      label: t("outreach_risk", locale),
     });
   }
   if (row.priorityBucket) {
     chips.push({
       key: "priority-bucket",
       cls: priorityBucketPillClass(row.priorityBucket),
-      label: `Priority ${OUTREACH_PRIORITY_BUCKET_LABEL[row.priorityBucket]}`,
+      label: outreachPriorityChipLabel(row.priorityBucket, locale),
     });
   }
   if (row.recommendedAction) {
     chips.push({
       key: "recommended-action",
       cls: actionPillClass(row.recommendedAction),
-      label: RECOMMENDED_ACTION_LABEL[row.recommendedAction],
+      label: recommendedActionUiLabel(row.recommendedAction, locale),
     });
   }
   if (row.opportunityLevel === "very_high") {
     chips.push({
       key: "opp-vhigh",
       cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/40`,
-      label: "Very High Opportunity",
+      label: t("very_high_opportunity", locale),
     });
   } else if (row.opportunityLevel === "high") {
     chips.push({
       key: "opp-high",
       cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
-      label: "High Opportunity",
+      label: t("high_opportunity", locale),
     });
   }
   chips.push({
@@ -1886,12 +1914,12 @@ function OutreachBadgesRow({
         : readiness.score >= 60
           ? `${badgeBase} bg-sky-500/15 text-sky-200 ring-sky-400/35`
           : `${badgeBase} bg-rose-500/15 text-rose-200 ring-rose-400/35`,
-    label: `Readiness ${readiness.score}`,
+    label: `${t("readiness_prefix", locale)} ${readiness.score}`,
   });
   chips.push({
     key: "quality",
     cls: `${badgeBase} bg-white/5 text-zinc-200 ring-white/15`,
-    label: `Contact ${CONTACT_QUALITY_LABEL[row.contactQuality]}`,
+    label: `${t("contact_quality_prefix", locale)} ${contactQualityUiLabel(row.contactQuality, locale)}`,
   });
   if (
     typeof row.bookingFlowStrength === "number" &&
@@ -1901,7 +1929,7 @@ function OutreachBadgesRow({
     chips.push({
       key: "booking-gap-v2",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/35`,
-      label: "Weak booking flow",
+      label: t("weak_booking_flow", locale),
     });
   }
   if (
@@ -1912,7 +1940,7 @@ function OutreachBadgesRow({
     chips.push({
       key: "ota-high-v2",
       cls: `${badgeBase} bg-sky-500/15 text-sky-200 ring-sky-400/35`,
-      label: "OTA dependent",
+      label: t("ota_dependent", locale),
     });
   }
   const acq = row.acquisitionIntelligence;
@@ -1926,20 +1954,20 @@ function OutreachBadgesRow({
     chips.push({
       key: "ig-act",
       cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/35`,
-      label: "Active Instagram",
+      label: t("active_instagram", locale),
     });
   } else if (discovery === "verified") {
     chips.push({
       key: "ig-verified",
       cls: `${badgeBase} bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/35`,
-      label: "Instagram verified",
+      label: t("instagram_verified", locale),
     });
   }
   if (discovery === "broken") {
     chips.push({
       key: "ig-broken",
       cls: `${badgeBase} bg-zinc-500/15 text-zinc-200 ring-zinc-400/30`,
-      label: "Broken IG link",
+      label: t("broken_ig_link", locale),
       title: acq?.instagramInvalidReasons?.join(", "),
     });
   }
@@ -1947,10 +1975,10 @@ function OutreachBadgesRow({
     chips.push({
       key: "ig-possible",
       cls: `${badgeBase} bg-violet-500/15 text-violet-200 ring-violet-400/35 hover:opacity-90`,
-      label: "Possible Instagram",
+      label: t("possible_instagram", locale),
       href: igVerifyHref,
       title: acq?.suggestedInstagramHandles?.length
-        ? `Try: ${acq.suggestedInstagramHandles.slice(0, 4).join(", ")}`
+        ? `${t("ig_try_handles", locale)}: ${acq.suggestedInstagramHandles.slice(0, 4).join(", ")}`
         : undefined,
     });
   }
@@ -1958,11 +1986,11 @@ function OutreachBadgesRow({
     chips.push({
       key: "ig-manual",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/40 hover:opacity-90`,
-      label: "Manual IG check",
+      label: t("manual_ig_check", locale),
       href: igVerifyHref,
     });
   }
-  for (const c of buildAcquisitionIntelligenceChips(acq, row.bookingFlowStrength, 3)) {
+  for (const c of buildAcquisitionIntelligenceChips(acq, row.bookingFlowStrength, 3, locale)) {
     chips.push({
       key: c.key,
       cls: c.cls,
@@ -1993,7 +2021,7 @@ function OutreachBadgesRow({
       chips.push({
         key: "ctoday",
         cls: `${badgeBase} bg-sky-500/15 text-sky-200 ring-sky-400/35`,
-        label: "Contacted today",
+        label: t("chip_contacted_today", locale),
       });
     } else if (
       !isFollowUpDue(s, now) &&
@@ -2002,7 +2030,7 @@ function OutreachBadgesRow({
       chips.push({
         key: "cbefore",
         cls: `${badgeBase} bg-indigo-500/15 text-indigo-200 ring-indigo-400/30`,
-        label: "Contacted before",
+        label: t("chip_contacted_before", locale),
       });
     }
   }
@@ -2010,28 +2038,28 @@ function OutreachBadgesRow({
     chips.push({
       key: "spam",
       cls: `${badgeBase} bg-yellow-500/15 text-yellow-200 ring-yellow-400/35`,
-      label: "Max attempts reached",
+      label: t("chip_max_attempts", locale),
     });
   }
   if (reimported) {
     chips.push({
       key: "reimp",
       cls: `${badgeBase} bg-amber-500/15 text-amber-200 ring-amber-400/35`,
-      label: "Re-imported",
+      label: t("chip_reimported", locale),
     });
   }
   if (inQueue) {
     chips.push({
       key: "inq",
       cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
-      label: "In queue",
+      label: t("chip_in_queue", locale),
     });
   }
   if (syncedToAirtable) {
     chips.push({
       key: "airtable",
       cls: `${badgeBase} bg-emerald-500/15 text-emerald-200 ring-emerald-400/35`,
-      label: "Synced to Airtable",
+      label: t("chip_synced_airtable", locale),
     });
   }
   if (chips.length === 0) return null;
@@ -2092,6 +2120,7 @@ function ScoreBar({ score, tone }: { score: number; tone: "lead" | "hot" }) {
 }
 
 function StatusPill({ status }: { status: LeadStatus }) {
+  const { locale } = useLocale();
   const styles: Record<LeadStatus, string> = {
     new: "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30",
     contacted: "bg-indigo-500/15 text-indigo-300 ring-indigo-500/30",
@@ -2105,7 +2134,7 @@ function StatusPill({ status }: { status: LeadStatus }) {
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${styles[status]}`}
     >
-      {STATUS_LABEL[status]}
+      {statusUiLabel(status, locale)}
     </span>
   );
 }
@@ -2175,6 +2204,7 @@ function LeadInstagramAction({
   instagram?: string;
   acquisition?: AcquisitionIntelligenceProfile;
 }) {
+  const { locale } = useLocale();
   const square =
     "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition sm:h-8 sm:w-8";
   const igHref = instagram ? instagramLink(instagram) : null;
@@ -2236,7 +2266,9 @@ function LeadInstagramAction({
       rel="noopener noreferrer"
       onClick={(e) => e.preventDefault()}
       aria-disabled
-      title={broken ? "Broken Instagram link" : "No Instagram on file"}
+      title={
+        broken ? t("instagram_link_broken_long", locale) : t("instagram_none_on_file", locale)
+      }
       className={`${square} border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed`}
     >
       <IconInstagram className="h-4 w-4" />
@@ -2256,6 +2288,7 @@ function InstagramDiscoveryPanel({
 }: {
   acquisition?: AcquisitionIntelligenceProfile;
 }) {
+  const { locale } = useLocale();
   if (!acquisition) return null;
   const status = acquisition.instagramDiscoveryStatus;
   if (status === "verified" || status === "unknown" || status === "not_found") {
@@ -2288,14 +2321,15 @@ function InstagramDiscoveryPanel({
       </span>
       {firstSuggested && (
         <span className="text-zinc-300">
-          Suggested:{" "}
+          {t("suggested_prefix", locale)}:{" "}
           <span className="font-medium text-zinc-100">@{firstSuggested}</span>
         </span>
       )}
       {acquisition.suggestedInstagramHandles &&
         acquisition.suggestedInstagramHandles.length > 1 && (
           <span className="text-zinc-500">
-            · also {acquisition.suggestedInstagramHandles
+            · {t("also_handles", locale)}{" "}
+            {acquisition.suggestedInstagramHandles
               .slice(1, 4)
               .map((h) => `@${h}`)
               .join(", ")}
@@ -2310,7 +2344,7 @@ function InstagramDiscoveryPanel({
           className="ml-auto inline-flex items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20"
         >
           <IconInstagram className="h-3.5 w-3.5" />
-          {status === "broken" ? "Manual IG check" : "Search IG"}
+          {status === "broken" ? t("manual_ig_check", locale) : t("search_ig", locale)}
         </a>
       )}
     </div>
@@ -2326,10 +2360,11 @@ function AcquisitionIntelligencePanel({
 }: {
   acquisition?: AcquisitionIntelligenceProfile;
 }) {
+  const { locale } = useLocale();
   const [detailOpen, setDetailOpen] = useState(false);
   if (!acquisition?.acquisition) return null;
   const a = acquisition.acquisition;
-  const summary = acquisitionSummaryLine(acquisition);
+  const summary = acquisitionSummaryLine(acquisition, locale);
   const signalLines = a.acquisitionSignals ?? [];
   const weaknessLines = a.acquisitionWeaknesses ?? [];
   const hasDetail = signalLines.length > 0 || weaknessLines.length > 0;
@@ -2343,12 +2378,12 @@ function AcquisitionIntelligencePanel({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="font-medium uppercase tracking-wider text-teal-200/90">
-            Acquisition intelligence
+            {t("acq_intel_title", locale)}
           </div>
           {summary ? (
             <p className="mt-1 leading-relaxed text-zinc-300">{summary}</p>
           ) : minimal ? (
-            <p className="mt-1 text-zinc-500">Limited acquisition signals for this lead.</p>
+            <p className="mt-1 text-zinc-500">{t("acq_intel_limited", locale)}</p>
           ) : null}
         </div>
         {hasDetail ? (
@@ -2357,7 +2392,7 @@ function AcquisitionIntelligencePanel({
             onClick={() => setDetailOpen((v) => !v)}
             className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-medium text-zinc-200 transition hover:bg-white/10"
           >
-            {detailOpen ? "Less" : "Detail"}
+            {detailOpen ? t("less", locale) : t("detail", locale)}
           </button>
         ) : null}
       </div>
@@ -2366,7 +2401,7 @@ function AcquisitionIntelligencePanel({
           {signalLines.length > 0 ? (
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-                Signals
+                {t("signals", locale)}
               </div>
               <ul className="list-inside list-disc space-y-0.5">
                 {signalLines.map((line) => (
@@ -2380,7 +2415,7 @@ function AcquisitionIntelligencePanel({
           {weaknessLines.length > 0 ? (
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-                Gaps
+                {t("gaps", locale)}
               </div>
               <ul className="list-inside list-disc space-y-0.5">
                 {weaknessLines.map((line) => (
@@ -2507,6 +2542,7 @@ function AiMessageModal({
     messagePreview: string,
   ) => void;
 }) {
+  const { locale } = useLocale();
   const [copied, setCopied] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<OutreachMessageStyle>("soft");
 
@@ -2552,7 +2588,7 @@ function AiMessageModal({
     >
       <button
         type="button"
-        aria-label="Kapat"
+        aria-label={t("close_aria", locale)}
         onClick={onClose}
         className="absolute inset-0 bg-black/70 backdrop-blur-sm"
       />
@@ -2563,12 +2599,13 @@ function AiMessageModal({
               id="ai-message-title"
               className="text-sm font-semibold text-zinc-100"
             >
-              AI Message
+              {t("ai_message_title", locale)}
             </h2>
             <p className="mt-0.5 break-words text-xs text-zinc-500">{lead.name}</p>
             {queuedForOutreach ? (
               <div className="mt-1 inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-200">
-                In outreach queue{queueStatus ? ` · ${queueStatus}` : ""}
+                {t("in_outreach_queue", locale)}
+                {queueStatus ? ` · ${queueMessageStatusUiLabel(String(queueStatus), locale)}` : ""}
               </div>
             ) : null}
           </div>
@@ -2576,7 +2613,7 @@ function AiMessageModal({
             type="button"
             onClick={onClose}
             className="rounded-md p-1 text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
-            aria-label="Kapat"
+            aria-label={t("close_aria", locale)}
           >
             <svg
               viewBox="0 0 24 24"
@@ -2597,7 +2634,7 @@ function AiMessageModal({
                 className="h-8 w-8 animate-spin rounded-full border-2 border-violet-400/30 border-t-violet-400"
                 aria-hidden
               />
-              <p className="text-sm text-zinc-400">Mesaj oluşturuluyor…</p>
+              <p className="text-sm text-zinc-400">{t("generating_message", locale)}</p>
             </div>
           )}
           {state.phase === "error" && (
@@ -2608,7 +2645,7 @@ function AiMessageModal({
                 onClick={() => onRetry(lead)}
                 className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
               >
-                Tekrar dene
+                {t("retry", locale)}
               </button>
             </div>
           )}
@@ -2617,9 +2654,9 @@ function AiMessageModal({
               <div className="flex flex-wrap gap-2">
                 {(
                   [
-                    { id: "soft", label: "Soft" },
-                    { id: "direct", label: "Direct" },
-                    { id: "premium", label: "Consultative" },
+                    { id: "soft", label: t("style_soft", locale) },
+                    { id: "direct", label: t("style_direct", locale) },
+                    { id: "premium", label: t("style_consultative", locale) },
                   ] as const
                 ).map((opt) => (
                   <button
@@ -2639,9 +2676,7 @@ function AiMessageModal({
               <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-zinc-200 sm:text-sm">
                 {displayMessage}
               </p>
-              <p className="text-[11px] text-zinc-500">
-                Manual outreach only — review before sending.
-              </p>
+              <p className="text-[11px] text-zinc-500">{t("manual_outreach_note", locale)}</p>
             </div>
           )}
         </div>
@@ -2653,7 +2688,7 @@ function AiMessageModal({
               onClick={() => void handleCopy()}
               className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 sm:w-auto sm:py-1.5 sm:text-xs"
             >
-              {copied ? "Copied" : "Copy"}
+              {copied ? t("copied", locale) : t("copy", locale)}
             </button>
             {waReady ? (
               <button
@@ -2669,7 +2704,7 @@ function AiMessageModal({
                 className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-2 text-sm font-medium text-[#25D366] hover:bg-[#25D366]/25 sm:w-auto sm:py-1.5 sm:text-xs"
               >
                 <IconWhatsapp className="h-4 w-4" />
-                Send via WhatsApp
+                {t("send_via_whatsapp", locale)}
               </button>
             ) : (
               <span
@@ -2677,7 +2712,7 @@ function AiMessageModal({
                 className="inline-flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-500 sm:w-auto sm:py-1.5 sm:text-xs"
               >
                 <IconWhatsapp className="h-4 w-4" />
-                Send via WhatsApp
+                {t("send_via_whatsapp", locale)}
               </span>
             )}
           </div>
@@ -2792,6 +2827,7 @@ function HotCard({
   fromLatestImport?: boolean;
   outreachActivityLabel?: string;
 }) {
+  const { locale } = useLocale();
   return (
     <div className="group relative flex h-full min-w-[260px] flex-col rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-4 transition hover:border-orange-400/30 hover:from-orange-500/[0.05]">
       <div className="flex items-start justify-between gap-3">
@@ -2805,7 +2841,7 @@ function HotCard({
         </div>
         <div className="flex items-center gap-1 text-orange-300">
           <span className="text-xs uppercase tracking-wider text-zinc-500">
-            HOT
+            {t("hot_badge", locale)}
           </span>
           <span className="tabular-nums text-base font-semibold">
             {lead.hotScore}
@@ -2818,17 +2854,19 @@ function HotCard({
       <div className="text-xs text-zinc-400">
         {lead.city} · {lead.region}
       </div>
-      <div className="mt-1 text-[11px] text-zinc-500">Outreach: {outreachActivityLabel}</div>
+      <div className="mt-1 text-[11px] text-zinc-500">
+        {t("outreach_prefix", locale)}: {outreachActivityLabel}
+      </div>
       {(lead.priorityBucket || lead.recommendedAction) && (
         <div className="mt-2 flex flex-wrap gap-1">
           {lead.priorityBucket ? (
             <span className={priorityBucketPillClass(lead.priorityBucket)}>
-              {OUTREACH_PRIORITY_BUCKET_LABEL[lead.priorityBucket]}
+              {outreachPriorityChipLabel(lead.priorityBucket, locale)}
             </span>
           ) : null}
           {lead.recommendedAction ? (
             <span className={actionPillClass(lead.recommendedAction)}>
-              {RECOMMENDED_ACTION_LABEL[lead.recommendedAction]}
+              {recommendedActionUiLabel(lead.recommendedAction, locale)}
             </span>
           ) : null}
         </div>
@@ -2836,7 +2874,7 @@ function HotCard({
       {fromLatestImport && (
         <div className="mt-2">
           <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
-            From Latest Import
+            {t("from_latest_import", locale)}
           </span>
         </div>
       )}
@@ -2855,6 +2893,7 @@ function HotCard({
           lead.acquisitionIntelligence,
           lead.bookingFlowStrength,
           2,
+          locale,
         );
         if (acqChips.length === 0) return null;
         return (
@@ -2871,10 +2910,10 @@ function HotCard({
       <div className="mt-2 rounded-md border border-cyan-400/20 bg-cyan-500/[0.06] px-2.5 py-2">
         <div className="mb-1 flex items-center justify-between gap-2">
           <span className="text-[10px] font-medium uppercase tracking-wider text-cyan-200/90">
-            Outreach angle
+            {t("outreach_angle", locale)}
           </span>
           <span className={aiSourceBadgeClass(lead.aiInsightSource ?? "rules")}>
-            {lead.aiInsightSource === "llm" ? "Model" : "Rules"}
+            {lead.aiInsightSource === "llm" ? t("model_rules", locale) : t("rules", locale)}
           </span>
         </div>
         <p className="line-clamp-2 text-[10px] leading-relaxed text-zinc-300">
@@ -2884,7 +2923,7 @@ function HotCard({
       {lead.opportunityLevel ? (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className={opportunityPillClass(lead.opportunityLevel)}>
-            Opp · {lead.opportunityLevel}
+            {t("opportunity", locale)} · {lead.opportunityLevel}
           </span>
           {lead.outreachIntelligence ? (
             <span
@@ -2892,7 +2931,7 @@ function HotCard({
               title={`Lead temperature: ${LEAD_TEMPERATURE_LABEL[lead.outreachIntelligence.leadTemperature]}`}
             >
               <span className="text-[9px] uppercase tracking-wider opacity-70">
-                Temp
+                {t("temp", locale)}
               </span>
               <span>{LEAD_TEMPERATURE_LABEL[lead.outreachIntelligence.leadTemperature]}</span>
             </span>
@@ -2903,7 +2942,7 @@ function HotCard({
               title={`Best approach: ${SALES_APPROACH_LABEL[lead.outreachIntelligence.salesApproach]}`}
             >
               <span className="text-[9px] uppercase tracking-wider opacity-70">
-                Approach
+                {t("approach", locale)}
               </span>
               <span>{SALES_APPROACH_LABEL[lead.outreachIntelligence.salesApproach]}</span>
             </span>
@@ -2919,13 +2958,13 @@ function HotCard({
             disabled={queueDisabled}
             className="inline-flex items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Queue
+            {t("queue_short", locale)}
           </button>
           <button
             onClick={() => onAction(lead.id)}
             className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-zinc-200 transition hover:bg-white/10"
           >
-            Open
+            {t("open", locale)}
             <span aria-hidden>→</span>
           </button>
         </div>
@@ -2941,6 +2980,7 @@ function LeadDetailHeader({
   lead: LeadTableRow;
   onClose: () => void;
 }) {
+  const { locale } = useLocale();
   return (
     <div className="flex items-start justify-between border-b border-white/10 px-5 py-4">
       <div>
@@ -2955,7 +2995,7 @@ function LeadDetailHeader({
       <button
         onClick={onClose}
         className="rounded-md p-1 text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
-        aria-label="Close panel"
+        aria-label={t("lead_detail_close", locale)}
       >
         <svg
           viewBox="0 0 24 24"
@@ -2972,16 +3012,17 @@ function LeadDetailHeader({
 }
 
 function LeadDetailScoreSummary({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
   return (
     <div className="grid grid-cols-2 gap-3">
       <DetailStat
-        label="Lead Score"
+        label={t("lead_score", locale)}
         value={lead.leadScore}
         reasons={lead.leadReasons}
         tone="lead"
       />
       <DetailStat
-        label="Hot Score"
+        label={t("hot_score", locale)}
         value={lead.hotScore}
         reasons={lead.hotReasons}
         tone="hot"
@@ -3514,24 +3555,29 @@ function LeadDetailContactSection({
   updateLead: (id: string, patch: Partial<LeadStatusUpdate>) => void;
   findBestContact: (leadId: string, website: string) => Promise<void>;
 }) {
+  const { locale } = useLocale();
   const s = lead._s;
   const loadingHere =
     finderRequest.status === "loading" && finderRequest.leadId === lead.id;
   const finderErrHere =
     finderRequest.status === "error" && finderRequest.leadId === lead.id;
+  const nowTs = Date.now();
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 text-xs">
         <KV
-          label="Contact quality"
-          value={CONTACT_QUALITY_LABEL[lead.contactQuality]}
+          label={t("contact_quality", locale)}
+          value={contactQualityUiLabel(lead.contactQuality, locale)}
         />
         <KV label="Source" value="Google Maps" />
         <KV
-          label="First imported"
-          value={relativeCalendarLabel(lead.firstImportedAt ?? lead.createdAt)}
+          label={t("first_imported_label", locale)}
+          value={relativeCalendarLabel(lead.firstImportedAt ?? lead.createdAt, nowTs, locale)}
         />
-        <KV label="Last imported" value={relativeCalendarLabel(lead.lastImportedAt)} />
+        <KV
+          label={t("last_imported_label", locale)}
+          value={relativeCalendarLabel(lead.lastImportedAt, nowTs, locale)}
+        />
       </div>
 
       <label className="flex cursor-pointer items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] px-3 py-2 text-xs text-zinc-200">
@@ -3709,6 +3755,7 @@ function LeadDetailWorkflowSection({
   outreachActivityLabel: string;
   importIntelligenceLabels: string[];
 }) {
+  const { locale } = useLocale();
   const s = lead._s;
   const terminal = s.status === "won" || s.status === "lost";
   const sendDisabled = s.doNotContact || sendMessageBusy || terminal;
@@ -3716,27 +3763,34 @@ function LeadDetailWorkflowSection({
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 text-xs">
         <KV
-          label="Last contacted"
-          value={relativeCalendarLabel(s.lastContactedAt ?? s.contactedAt, now)}
+          label={t("last_contact", locale)}
+          value={relativeCalendarLabel(s.lastContactedAt ?? s.contactedAt, now, locale)}
         />
-        <KV label="Contact attempts" value={String(s.contactAttempts ?? 0)} />
+        <KV label={t("attempts", locale)} value={String(s.contactAttempts ?? 0)} />
         <KV
-          label="Next follow-up"
-          value={relativeCalendarLabel(s.nextFollowUpAt, now)}
+          label={t("next_follow_up_label", locale)}
+          value={relativeCalendarLabel(s.nextFollowUpAt, now, locale)}
         />
-        <KV label="Do not contact" value={s.doNotContact ? "Yes" : "No"} />
-        <KV label="Pipeline stage" value={pipelineStageLabel(s)} />
+        <KV
+          label={t("do_not_contact", locale)}
+          value={s.doNotContact ? t("yes_word", locale) : t("no_word", locale)}
+        />
+        <KV label={t("pipeline_stage_label", locale)} value={pipelineStageLabel(s)} />
       </div>
 
       <div className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2.5 text-xs">
-        <div className="text-[10px] uppercase tracking-wider text-zinc-500">Next Action</div>
+        <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+          {t("next_action_header", locale)}
+        </div>
         <p className="mt-1 text-sm text-zinc-100">{nextActionCopy(s)}</p>
         {(() => {
           const timer = followUpTimerLine(s, now);
           if (!timer) return null;
           return <p className="mt-1 text-zinc-400">{timer}</p>;
         })()}
-        <p className="mt-1 text-[11px] text-zinc-500">Outreach: {outreachActivityLabel}</p>
+        <p className="mt-1 text-[11px] text-zinc-500">
+          {t("outreach_prefix", locale)}: {outreachActivityLabel}
+        </p>
         {importIntelligenceLabels.length > 0 ? (
           <div className="mt-1.5 flex flex-wrap gap-1">
             {importIntelligenceLabels.map((label) => (
@@ -3793,7 +3847,7 @@ function LeadDetailWorkflowSection({
                         : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
                     }`}
                   >
-                    {STATUS_LABEL[st]}
+                    {statusUiLabel(st, locale)}
                   </button>,
                 );
               }
@@ -3829,6 +3883,7 @@ function LeadDetailReplyHelperSection({
   onCopyReply: () => void;
   onApplySuggestion: () => void;
 }) {
+  const { locale } = useLocale();
   const waLink =
     suggestion && suggestion.message.trim()
       ? whatsappLinkWithText(lead.phone, suggestion.message)
@@ -3836,7 +3891,7 @@ function LeadDetailReplyHelperSection({
   const suggestedLabel = suggestion?.suggestDoNotContact
     ? "Lost + Do Not Contact"
     : suggestion?.suggestedStatus
-      ? STATUS_LABEL[suggestion.suggestedStatus]
+      ? statusUiLabel(suggestion.suggestedStatus, locale)
       : "No status suggestion";
 
   return (
@@ -4043,6 +4098,7 @@ function LeadDetailPanel({
 }
 
 export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
+  const { locale } = useLocale();
   const [mounted, setMounted] = useState(false);
   const [renderNow, setRenderNow] = useState(0);
   const [stateMap, setStateMap] = useState<StateMap>({});
@@ -4185,16 +4241,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         return null;
       })();
       const dueAt = stateDueAt ?? eventDueAt;
-      if (dueAt && dueAt <= now) return "Follow-up due";
-      if (!latest) return "Not contacted";
-      if (latest.type === "message_prepared") return "Message prepared";
-      if (latest.type === "message_copied") return "Message copied";
-      if (latest.type === "whatsapp_opened") return "WhatsApp opened";
-      if (latest.type === "contacted") return "Contacted";
-      if (latest.type === "follow_up_due") return "Follow-up due";
-      return "Not contacted";
+      if (dueAt && dueAt <= now) return t("follow_up_due", locale);
+      if (!latest) return t("not_contacted", locale);
+      if (latest.type === "message_prepared") return t("message_prepared", locale);
+      if (latest.type === "message_copied") return t("message_copied", locale);
+      if (latest.type === "whatsapp_opened") return t("whatsapp_opened", locale);
+      if (latest.type === "contacted") return t("contacted_activity", locale);
+      if (latest.type === "follow_up_due") return t("follow_up_due", locale);
+      return t("not_contacted", locale);
     },
-    [outreachEventsByLead],
+    [outreachEventsByLead, locale],
   );
 
   useEffect(() => {
@@ -6196,13 +6252,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               Tugobo <span className="text-zinc-400">Lead Engine</span>
             </h1>
           </div>
-          <p className="mt-1 text-xs text-zinc-500">
-            Find and contact high-probability tourism & accommodation leads
-            every morning.
-          </p>
+          <p className="mt-1 text-xs text-zinc-500">{t("app_tagline", locale)}</p>
         </div>
-        <div className="flex items-center gap-3 text-xs text-zinc-400">
-          <span className="hidden sm:inline">Today</span>
+        <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+          <LocaleToggle />
+          <span className="hidden sm:inline">{t("today", locale)}</span>
           <span
             className="rounded-md bg-white/5 px-2.5 py-1 font-medium text-zinc-200 ring-1 ring-inset ring-white/10 tabular-nums"
             suppressHydrationWarning
@@ -6210,18 +6264,20 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             {dateLabel || "\u00A0"}
           </span>
           <span className="hidden sm:inline">·</span>
-          <span className="tabular-nums">{stats.sessionLeads} session leads</span>
+          <span className="tabular-nums">
+            {stats.sessionLeads} {t("session_leads_suffix", locale)}
+          </span>
           <button
             onClick={() => setSessionLeadIds([])}
             className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-white/10"
           >
-            Start New Session
+            {t("start_new_session", locale)}
           </button>
           <a
             href="/dashboard/follow-ups"
             className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2 py-1 text-[11px] text-orange-200 transition hover:bg-orange-500/20"
           >
-            Follow-ups
+            {t("follow_ups", locale)}
           </a>
         </div>
       </header>
@@ -6229,33 +6285,35 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* Stats */}
       <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <StatCard
-          label="Session Leads"
+          label={t("stat_session_leads", locale)}
           value={stats.sessionLeads}
-          hint="Added this session"
+          hint={t("stat_session_leads_hint", locale)}
           accent="indigo"
         />
         <StatCard
-          label="Hot Leads"
+          label={t("stat_hot_leads", locale)}
           value={stats.hotToday}
-          hint="Hot score ≥ 70 in session"
+          hint={t("stat_hot_leads_hint", locale)}
           accent="orange"
         />
         <StatCard
-          label="Contacted"
+          label={t("stat_contacted", locale)}
           value={stats.contacted}
-          hint="Session"
+          hint={t("stat_session", locale)}
           accent="sky"
         />
         <StatCard
-          label="Replied"
+          label={t("stat_replied", locale)}
           value={stats.replied}
-          hint="Session"
+          hint={t("stat_session", locale)}
           accent="emerald"
         />
         <StatCard
-          label="Won"
+          label={t("stat_won", locale)}
           value={stats.won}
-          hint={`${formatTRY(stats.totalRevenuePotential)} session pipeline / mo`}
+          hint={fillTemplate(t("stat_won_hint", locale), {
+            amount: formatTRY(stats.totalRevenuePotential),
+          })}
           accent="emerald"
         />
       </section>
@@ -6269,12 +6327,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 <IconSpark className="h-3.5 w-3.5 text-emerald-200" />
               </div>
               <h2 className="text-xs font-semibold uppercase tracking-wider text-emerald-200">
-                Morning Outreach
+                {t("morning_outreach", locale)}
               </h2>
             </div>
             <p className="mt-1 text-[11px] text-zinc-400">
-              Queue {safeActiveQueueCount}/{DAILY_OUTREACH_LIMIT} · Follow-ups due {safeFollowUpDueCount} · Contacted today{" "}
-              {safeCompletedToday}
+              {t("queue_word", locale)} {safeActiveQueueCount}/{DAILY_OUTREACH_LIMIT} ·{" "}
+              {t("follow_ups_due_label", locale)} {safeFollowUpDueCount} ·{" "}
+              {t("contacted_today_label", locale)} {safeCompletedToday}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -6283,7 +6342,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               onClick={autoBuildTodayQueue}
               className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25"
             >
-              Auto Build Today&apos;s Queue
+              {t("auto_build_queue", locale)}
             </button>
             <button
               type="button"
@@ -6291,13 +6350,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               disabled={safeActiveQueueCount === 0}
               className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Start Outreach Session
+              {t("start_outreach_session", locale)}
             </button>
             <a
               href="/dashboard/follow-ups"
               className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2.5 py-1.5 text-xs font-medium text-orange-200 transition hover:bg-orange-500/20"
             >
-              Open Follow-ups Today
+              {t("open_follow_ups_today", locale)}
             </a>
             <button
               type="button"
@@ -6305,7 +6364,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               disabled={airtableBusy !== null}
               className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Sync Airtable
+              {t("sync_airtable_short", locale)}
             </button>
           </div>
         </div>
@@ -6322,7 +6381,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             disabled={airtableBusy !== null}
             className="inline-flex items-center justify-center rounded-md border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {airtableBusy === "sync" ? "Syncing..." : "Sync to Airtable"}
+            {airtableBusy === "sync" ? t("syncing", locale) : t("sync_to_airtable", locale)}
           </button>
           <button
             type="button"
@@ -6330,10 +6389,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             disabled={airtableBusy !== null}
             className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {airtableBusy === "load" ? "Loading..." : "Load from Airtable"}
+            {airtableBusy === "load" ? t("loading", locale) : t("load_from_airtable", locale)}
           </button>
           {airtableConnected === true && (
-            <span className="text-xs text-emerald-300">Airtable connected</span>
+            <span className="text-xs text-emerald-300">{t("airtable_connected", locale)}</span>
           )}
         </div>
         {airtableWarning && <p className="mt-2 text-xs text-amber-300">{airtableWarning}</p>}
@@ -6344,21 +6403,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       <section className="overflow-hidden rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] backdrop-blur ring-1 ring-inset ring-indigo-500/10">
         <div className="border-b border-white/5 px-4 py-3">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
-            Last Import Results
+            {t("last_import_results", locale)}
           </h2>
-          <p className="mt-1 text-xs text-zinc-400">
-            Only leads from your latest import
-          </p>
+          <p className="mt-1 text-xs text-zinc-400">{t("last_import_sub", locale)}</p>
         </div>
 
         {!hasImportRun ? (
-          <div className="px-4 py-6 text-xs text-zinc-500">
-            Run an import to see newly added leads here.
-          </div>
+          <div className="px-4 py-6 text-xs text-zinc-500">{t("run_import_prompt", locale)}</div>
         ) : latestImportRows.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-amber-300">
-            No new leads in this import — all results already existed.
-          </div>
+          <div className="px-4 py-6 text-sm text-amber-300">{t("no_new_leads_import", locale)}</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -6386,24 +6439,24 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       }}
                     />
                   </th>
-                  <th className="px-4 py-2.5 font-medium">Lead</th>
-                  <th className="px-4 py-2.5 font-medium">Type</th>
-                  <th className="px-4 py-2.5 font-medium">Location</th>
-                  <th className="px-4 py-2.5 font-medium">Imported</th>
+                  <th className="px-4 py-2.5 font-medium">{t("col_lead", locale)}</th>
+                  <th className="px-4 py-2.5 font-medium">{t("col_type", locale)}</th>
+                  <th className="px-4 py-2.5 font-medium">{t("col_location", locale)}</th>
+                  <th className="px-4 py-2.5 font-medium">{t("col_imported", locale)}</th>
                   <th
                     className="px-4 py-2.5 font-medium"
-                    title="Readiness = ability to contact immediately"
+                    title={t("contact_readiness_title", locale)}
                   >
-                    Contact Readiness
+                    {t("contact_readiness", locale)}
                   </th>
                   <th
                     className="px-4 py-2.5 font-medium"
-                    title="Hot Score = business opportunity"
+                    title={t("hot_score_title", locale)}
                   >
-                    Hot Score
+                    {t("hot_score", locale)}
                   </th>
-                  <th className="px-4 py-2.5 font-medium">Lead Score</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Actions</th>
+                  <th className="px-4 py-2.5 font-medium">{t("lead_score", locale)}</th>
+                  <th className="px-4 py-2.5 text-right font-medium">{t("actions", locale)}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
@@ -6434,12 +6487,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             </button>
                             {lastImportNewIds.includes(row.id) && (
                               <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
-                                New to database
+                                {t("new_to_database", locale)}
                               </span>
                             )}
                             {lastImportUpdatedIds.includes(row.id) && (
                               <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-200 ring-1 ring-inset ring-amber-400/40">
-                                Re-imported
+                                {t("reimported", locale)}
                               </span>
                             )}
                           </div>
@@ -6470,6 +6523,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           {relativeCalendarLabel(
                             row.firstImportedAt ?? row.createdAt,
                             renderNow,
+                            locale,
                           )}
                         </div>
                         {(() => {
@@ -6477,12 +6531,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             row._s.lastContactedAt ?? row._s.contactedAt ?? null;
                           return lc ? (
                             <div className="mt-0.5 text-[11px] text-zinc-500">
-                              Last contact: {relativeCalendarLabel(lc, renderNow)}
+                              {t("last_contact", locale)}:{" "}
+                              {relativeCalendarLabel(lc, renderNow, locale)}
                             </div>
                           ) : null;
                         })()}
                         <div className="mt-0.5 text-[11px] text-zinc-500">
-                          Outreach: {getLastOutreachActivityLabel(row.id, row._s, renderNow)}
+                          {t("outreach_prefix", locale)}:{" "}
+                          {getLastOutreachActivityLabel(row.id, row._s, renderNow)}
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top">
@@ -6492,14 +6548,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             tone="lead"
                           />
                           <span className="text-[10px] text-zinc-400">
-                            {(() => {
-                              const rc = readinessCategory(row, contactFinderMap[row.id]);
-                              if (rc === "ready_now") return "Ready Now";
-                              if (rc === "good_contact") return "Good Contact";
-                              if (rc === "needs_finder") return "Needs Finder";
-                              if (rc === "weak_contact") return "Weak Contact";
-                              return "No Contact";
-                            })()}
+                            {readinessCategoryUiLabel(row, contactFinderMap[row.id], locale)}
                           </span>
                         </div>
                       </td>
@@ -6530,7 +6579,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             className="inline-flex h-10 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:text-xs"
                           >
                             <IconSpark className="h-3.5 w-3.5 shrink-0" />
-                            AI Message
+                            {t("ai_message", locale)}
                           </button>
                           {!row._s.doNotContact &&
                             (isFollowUpDue(row._s, renderNow) ||
@@ -6541,7 +6590,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                 title="Kısa hatırlatma mesajı ve WhatsApp"
                                 className="inline-flex h-10 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:h-8 sm:text-xs"
                               >
-                                Follow Up
+                                {t("follow_up", locale)}
                               </button>
                             )}
                           <button
@@ -6566,14 +6615,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             onClick={() => addLeadIdsToDailyQueue([row.id])}
                             className="inline-flex h-10 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8"
                           >
-                            Add to Queue
+                            {t("add_to_queue", locale)}
                           </button>
                           <button
                             onClick={() => setOpenId(row.id)}
                             title="Open details"
                             className="inline-flex h-8 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-xs text-zinc-200 transition hover:bg-white/10"
                           >
-                            Open
+                            {t("open", locale)}
                           </button>
                         </div>
                       </td>
@@ -6586,7 +6635,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         )}
         {latestImportOnlyDuplicates && latestImportRows.length === 0 && (
           <div className="border-t border-white/5 px-4 py-2 text-[11px] text-zinc-500">
-            Latest import returned only duplicates.
+            {t("latest_import_dupes_only", locale)}
           </div>
         )}
       </section>
@@ -6601,12 +6650,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-xs font-semibold uppercase tracking-wider text-emerald-200">
-              Today&apos;s Outreach Queue
+              {t("todays_queue", locale)}
             </h2>
             <p className="mt-0.5 text-[11px] text-zinc-500">
-              {safeActiveQueueCount} / {DAILY_OUTREACH_LIMIT} active · Sent today{" "}
-              {safeCompletedToday} · Skipped {safeSkippedToday} · DNC{" "}
-              {safeDncToday}
+              {fillTemplate(t("queue_section_summary", locale), {
+                active: safeActiveQueueCount,
+                limit: DAILY_OUTREACH_LIMIT,
+                sent: safeCompletedToday,
+                skip: safeSkippedToday,
+                dnc: safeDncToday,
+              })}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -6616,7 +6669,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               disabled={safeActiveQueueCount === 0}
               className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Start Session
+              {t("start_session", locale)}
             </button>
             <button
               type="button"
@@ -6624,7 +6677,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               disabled={dailyOutreach.todayQueue.length === 0}
               className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Clear Queue
+              {t("clear_queue", locale)}
             </button>
           </div>
         </div>
@@ -6648,27 +6701,30 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         qitem?.source,
                       )}`}
                     >
-                      {queueSourceBadgeLabel(qitem?.source)}
+                      {queueSourceUiLabel(qitem?.source, locale)}
                     </span>
                     <span className="tabular-nums text-emerald-200">
-                      Ready {qitem?.readinessScore ?? rowReadiness(qrow).score}
+                      {t("ready_label", locale)}{" "}
+                      {qitem?.readinessScore ?? rowReadiness(qrow).score}
                     </span>
                     <span className="tabular-nums text-sky-200">
-                      Rank{" "}
+                      {t("rank_label", locale)}{" "}
                       {typeof qitem?.queueRankScore === "number"
                         ? qitem.queueRankScore.toFixed(2)
                         : "—"}
                     </span>
-                    <span className="tabular-nums text-orange-200">Hot {qrow.hotScore}</span>
+                    <span className="tabular-nums text-orange-200">
+                      {t("hot_score", locale)} {qrow.hotScore}
+                    </span>
                     <span className="rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-zinc-300">
-                      {qitem?.queueStatus ?? "queued"}
+                      {queueMessageStatusUiLabel(qitem?.queueStatus ?? "queued", locale)}
                     </span>
                     <span className="text-zinc-500">
                       {cat === "ready"
-                        ? "Contact ready"
+                        ? t("contact_ready", locale)
                         : cat === "needs_finder"
-                          ? "Needs finder"
-                          : "No channel"}
+                          ? t("needs_finder_lower", locale)
+                          : t("no_channel", locale)}
                     </span>
                   </li>
                 );
@@ -6676,9 +6732,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             </ul>
           </div>
         ) : (
-          <p className="mt-2 text-[11px] text-zinc-500">
-            Use &quot;Add to Queue&quot; on import or All Leads rows, or add selected leads in bulk.
-          </p>
+          <p className="mt-2 text-[11px] text-zinc-500">{t("queue_empty_hint", locale)}</p>
         )}
       </section>
 
@@ -6686,18 +6740,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         <div className="flex items-center justify-between gap-2">
           <div>
             <h2 className="text-xs font-semibold uppercase tracking-wider text-orange-200">
-              Follow-Up Due
+              {t("follow_up_due_section", locale)}
             </h2>
-            <p className="mt-0.5 text-[11px] text-zinc-500">
-              Contacted leads due now (max 3 attempts)
-            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">{t("follow_up_due_sub", locale)}</p>
           </div>
           <span className="rounded-md bg-black/20 px-2 py-1 text-[11px] text-orange-200">
-            {safeFollowUpDueCount} due
+            {safeFollowUpDueCount} {t("due_count", locale)}
           </span>
         </div>
         {safeFollowUpDueCount === 0 ? (
-          <p className="mt-2 text-[11px] text-zinc-500">No follow-up due right now.</p>
+          <p className="mt-2 text-[11px] text-zinc-500">{t("no_follow_up_due", locale)}</p>
         ) : (
           <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1">
             {followUpDueRows.map((row, index) => {
@@ -6711,7 +6763,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   <div>
                     <div className="text-xs font-medium text-zinc-100">{row.name}</div>
                     <div className="text-[11px] text-zinc-500">
-                      {row.city} · Attempts {attempts} · Due {relativeCalendarLabel(dueAt, renderNow)}
+                      {row.city} · {t("attempts_label", locale)} {attempts} · {t("due_label", locale)}{" "}
+                      {relativeCalendarLabel(dueAt, renderNow, locale)}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -6721,14 +6774,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       onClick={() => void startFollowUpOutreach(row)}
                       className="rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-2.5 py-1.5 text-[11px] font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {followUpBusyLeadId === row.id ? "Preparing..." : "Follow Up"}
+                      {followUpBusyLeadId === row.id
+                        ? t("preparing", locale)
+                        : t("follow_up", locale)}
                     </button>
                     <button
                       type="button"
                       onClick={() => markFollowUpSent(row.id)}
                       className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-medium text-sky-200 hover:bg-sky-500/20"
                     >
-                      Mark Follow-Up Sent
+                      {t("mark_follow_up_sent", locale)}
                     </button>
                   </div>
                 </div>
@@ -6740,33 +6795,36 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {selectedLeadIds.length > 0 && (
         <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-2">
-          <span className="text-xs text-zinc-400">✓ {selectedLeadIds.length} selected</span>
+          <span className="text-xs text-zinc-400">
+            ✓ {selectedLeadIds.length} {t("selected_count", locale)}
+          </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => addLeadIdsToDailyQueue(selectedLeadIds)}
               className="rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20"
             >
-              Add Selected to Queue
+              {t("add_selected_to_queue", locale)}
             </button>
             <button
               type="button"
               onClick={() => void sendBulkAiMessages()}
               className="rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
             >
-              Start Outreach Queue
+              {t("start_outreach_queue", locale)}
             </button>
             <button
               type="button"
               onClick={markSelectedAsContacted}
               className="rounded-md border border-sky-400/25 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
             >
-              Mark Contacted
+              {t("mark_contacted", locale)}
             </button>
           </div>
           {outreachQueue.open && (
             <span className="text-xs text-zinc-400">
-              Queue {Math.min(outreachQueue.index + 1, outreachQueue.leadIds.length)}/
+              {t("queue_word", locale)}{" "}
+              {Math.min(outreachQueue.index + 1, outreachQueue.leadIds.length)}/
               {outreachQueue.leadIds.length}
             </span>
           )}
@@ -6780,12 +6838,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-zinc-300">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
               {useLatestImportHotLeads
-                ? "Today&apos;s Best Outreach Targets (Last Import)"
-                : "Today&apos;s Best Outreach Targets"}
+                ? t("hot_targets_import", locale)
+                : t("hot_targets", locale)}
             </h2>
-            <p className="text-xs text-zinc-500">
-              Prioritized by real outreach opportunity
-            </p>
+            <p className="text-xs text-zinc-500">{t("hot_targets_sub", locale)}</p>
           </div>
         </div>
         <div className="-mx-1 grid grid-flow-col auto-cols-[260px] gap-3 overflow-x-auto px-1 pb-2 sm:auto-cols-[280px]">
@@ -6810,20 +6866,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
-              All Leads
+              {t("all_leads", locale)}
             </h2>
-            <p className="mt-0.5 text-xs text-zinc-500">
-              Full database for browsing and follow-up
-            </p>
-            <p className="mt-1 text-[11px] text-zinc-500">
-              Hot Score = business opportunity · Readiness = ability to contact immediately
-            </p>
+            <p className="mt-0.5 text-xs text-zinc-500">{t("all_leads_sub", locale)}</p>
+            <p className="mt-1 text-[11px] text-zinc-500">{t("all_leads_explainer", locale)}</p>
           </div>
           <button
             onClick={() => setAllLeadsOpen((v) => !v)}
             className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-200 transition hover:bg-white/10"
           >
-            {allLeadsOpen ? "Hide" : "Show"}
+            {allLeadsOpen ? t("hide", locale) : t("show", locale)}
           </button>
         </div>
 
@@ -6835,7 +6887,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Search lead, city, contact, or @instagram"
+                    placeholder={t("search_placeholder", locale)}
                     className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                   />
                 </div>
@@ -6846,11 +6898,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   }
                   className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 sm:w-auto"
                 >
-                  <option value="priority">Sort: Outreach Priority</option>
-                  <option value="readiness">Sort: Contact Readiness</option>
-                  <option value="hot">Sort: Hot Score</option>
-                  <option value="lead">Sort: Lead Score</option>
-                  <option value="name">Sort: Name</option>
+                  <option value="priority">{t("sort_outreach_priority", locale)}</option>
+                  <option value="readiness">{t("sort_contact_readiness", locale)}</option>
+                  <option value="hot">{t("sort_hot_score", locale)}</option>
+                  <option value="lead">{t("sort_lead_score", locale)}</option>
+                  <option value="name">{t("sort_name", locale)}</option>
                 </select>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
@@ -6865,53 +6917,53 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
                   }`}
                 >
-                  Focus Mode: {focusMode ? "On" : "Off"}
+                  {t("focus_mode", locale)}: {focusMode ? t("on", locale) : t("off", locale)}
                 </button>
                 <FilterChip
-                  label="All types"
+                  label={t("filter_all_types", locale)}
                   active={typeFilter === "all"}
                   onClick={() => setTypeFilter("all")}
                 />
-                {TYPES.map((t) => (
+                {TYPES.map((ty) => (
                   <FilterChip
-                    key={t}
-                    label={t}
-                    active={typeFilter === t}
-                    onClick={() => setTypeFilter(t)}
+                    key={ty}
+                    label={ty}
+                    active={typeFilter === ty}
+                    onClick={() => setTypeFilter(ty)}
                   />
                 ))}
                 <span className="mx-1 h-4 w-px bg-white/10" />
                 <FilterChip
-                  label="All status"
+                  label={t("filter_all_status", locale)}
                   active={statusFilter === "all"}
                   onClick={() => setStatusFilter("all")}
                 />
                 {STATUS_ORDER.map((s) => (
                   <FilterChip
                     key={s}
-                    label={STATUS_LABEL[s]}
+                    label={statusUiLabel(s, locale)}
                     active={statusFilter === s}
                     onClick={() => setStatusFilter(s)}
                   />
                 ))}
                 <span className="mx-1 h-4 w-px bg-white/10" />
                 <FilterChip
-                  label="Contact: all"
+                  label={t("filter_contact_all", locale)}
                   active={contactChannelFilter === "all"}
                   onClick={() => setContactChannelFilter("all")}
                 />
                 <FilterChip
-                  label="Contact Ready"
+                  label={t("filter_contact_ready", locale)}
                   active={contactChannelFilter === "ready"}
                   onClick={() => setContactChannelFilter("ready")}
                 />
                 <FilterChip
-                  label="Needs Finder"
+                  label={t("filter_needs_finder", locale)}
                   active={contactChannelFilter === "needs_finder"}
                   onClick={() => setContactChannelFilter("needs_finder")}
                 />
                 <FilterChip
-                  label="No Contact"
+                  label={t("filter_no_contact", locale)}
                   active={contactChannelFilter === "none"}
                   onClick={() => setContactChannelFilter("none")}
                 />
@@ -6920,7 +6972,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
             <div className="flex flex-wrap items-center gap-1.5 border-b border-white/5 px-4 py-2">
               <FilterChip
-                label="Last Import"
+                label={t("filter_last_import", locale)}
                 active={allLeadsTimeFilter === "last_import"}
                 onClick={() => {
                   setAllLeadsTimeFilter("last_import");
@@ -6928,7 +6980,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 }}
               />
               <FilterChip
-                label="Today"
+                label={t("today", locale)}
                 active={allLeadsTimeFilter === "today"}
                 onClick={() => {
                   setAllLeadsTimeFilter("today");
@@ -6936,7 +6988,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 }}
               />
               <FilterChip
-                label="All Time"
+                label={t("filter_all_time", locale)}
                 active={allLeadsTimeFilter === "all_time"}
                 onClick={() => {
                   setAllLeadsTimeFilter("all_time");
@@ -6944,7 +6996,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 }}
               />
               <FilterChip
-                label="Follow-Up"
+                label={t("filter_follow_up_time", locale)}
                 active={allLeadsTimeFilter === "follow_up"}
                 onClick={() => {
                   setAllLeadsTimeFilter("follow_up");
@@ -6952,7 +7004,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 }}
               />
               <FilterChip
-                label={"Today's Work"}
+                label={t("filter_todays_work", locale)}
                 active={allLeadsTimeFilter === "today_work"}
                 onClick={() => {
                   setAllLeadsTimeFilter("today_work");
@@ -6961,7 +7013,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               />
               <span className="mx-1 h-4 w-px bg-white/10" />
               <FilterChip
-                label="Focused"
+                label={t("filter_focused", locale)}
                 active={allLeadsTab === "focused"}
                 onClick={() => {
                   setAllLeadsTab("focused");
@@ -6969,7 +7021,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 }}
               />
               <FilterChip
-                label="New"
+                label={t("filter_new_tab", locale)}
                 active={allLeadsTab === "new"}
                 onClick={() => {
                   setAllLeadsTab("new");
@@ -6977,7 +7029,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 }}
               />
               <FilterChip
-                label="Hot"
+                label={t("filter_hot", locale)}
                 active={allLeadsTab === "hot"}
                 onClick={() => {
                   setAllLeadsTab("hot");
@@ -6985,7 +7037,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 }}
               />
               <FilterChip
-                label="All"
+                label={t("filter_all_tab", locale)}
                 active={allLeadsTab === "all"}
                 onClick={() => {
                   setAllLeadsTab("all");
@@ -6996,7 +7048,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
             <div className="flex items-center justify-between border-b border-white/5 px-4 py-2">
               <span className="text-xs text-zinc-500 tabular-nums">
-                Showing {visibleAllLeads.length} of {focusFiltered.length} leads
+                {t("showing_leads", locale)} {visibleAllLeads.length} {t("of", locale)}{" "}
+                {focusFiltered.length} {t("leads_word", locale)}
               </span>
               <div className="flex items-center gap-4">
                 <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
@@ -7006,12 +7059,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     onChange={(e) => toggleSelectVisible(e.target.checked)}
                     aria-label="Select all visible leads"
                   />
-                  Select All (visible)
+                  {t("select_all_visible", locale)}
                 </label>
                 {focusMode && (
-                  <span className="text-[11px] text-orange-300">
-                    Focused: status New + hot score ≥ 70
-                  </span>
+                  <span className="text-[11px] text-orange-300">{t("focus_hint", locale)}</span>
                 )}
               </div>
             </div>
@@ -7028,23 +7079,23 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         onChange={(e) => toggleSelectVisible(e.target.checked)}
                       />
                     </th>
-                    <th className="px-4 py-2.5 font-medium">Lead</th>
-                    <th className="px-4 py-2.5 font-medium">Location</th>
-                    <th className="px-4 py-2.5 font-medium">Imported</th>
+                    <th className="px-4 py-2.5 font-medium">{t("col_lead", locale)}</th>
+                    <th className="px-4 py-2.5 font-medium">{t("col_location", locale)}</th>
+                    <th className="px-4 py-2.5 font-medium">{t("col_imported", locale)}</th>
                     <th
                       className="px-4 py-2.5 font-medium"
-                      title="Readiness = ability to contact immediately"
+                      title={t("contact_readiness_title", locale)}
                     >
-                      Contact Readiness
+                      {t("contact_readiness", locale)}
                     </th>
                     <th
                       className="px-4 py-2.5 font-medium"
-                      title="Hot Score = business opportunity"
+                      title={t("hot_score_title", locale)}
                     >
-                      Hot Score
+                      {t("hot_score", locale)}
                     </th>
-                    <th className="px-4 py-2.5 font-medium">Lead Score</th>
-                    <th className="px-4 py-2.5 text-right font-medium">Actions</th>
+                    <th className="px-4 py-2.5 font-medium">{t("lead_score", locale)}</th>
+                    <th className="px-4 py-2.5 text-right font-medium">{t("actions", locale)}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -7096,14 +7147,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                   {row.name}
                                 </div>
                                 <span className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-400 ring-1 ring-inset ring-white/10">
-                                  {buildImportedLabel(row.createdAt, row.firstImportedAt, renderNow)}
+                                  {buildImportedLabel(row.createdAt, row.firstImportedAt, renderNow, locale)}
                                 </span>
                                 <span className="inline-flex items-center rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-zinc-400/20">
-                                  {getImportedBadgeText(row.createdAt, row.firstImportedAt, renderNow)}
+                                  {getImportedBadgeText(row.createdAt, row.firstImportedAt, renderNow, locale)}
                                 </span>
                                 {isRecentlyImported && (
                                   <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
-                                    Session import
+                                    {t("session_import_badge", locale)}
                                   </span>
                                 )}
                               </div>
@@ -7132,6 +7183,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             {relativeCalendarLabel(
                               row.firstImportedAt ?? row.createdAt,
                               renderNow,
+                              locale,
                             )}
                           </div>
                           {(() => {
@@ -7139,12 +7191,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               s.lastContactedAt ?? s.contactedAt ?? null;
                             return lc ? (
                               <div className="mt-0.5 text-[11px] text-zinc-500">
-                                Last contact: {relativeCalendarLabel(lc, renderNow)}
+                                {t("last_contact", locale)}:{" "}
+                                {relativeCalendarLabel(lc, renderNow, locale)}
                               </div>
                             ) : null;
                           })()}
                           <div className="mt-0.5 text-[11px] text-zinc-500">
-                            Outreach: {getLastOutreachActivityLabel(row.id, s, renderNow)}
+                            {t("outreach_prefix", locale)}:{" "}
+                            {getLastOutreachActivityLabel(row.id, s, renderNow)}
                           </div>
                         </td>
                         <td className="px-4 py-3 align-top">
@@ -7154,14 +7208,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               tone="lead"
                             />
                             <span className="text-[10px] text-zinc-400">
-                              {(() => {
-                                const rc = readinessCategory(row, contactFinderMap[row.id]);
-                                if (rc === "ready_now") return "Ready Now";
-                                if (rc === "good_contact") return "Good Contact";
-                                if (rc === "needs_finder") return "Needs Finder";
-                                if (rc === "weak_contact") return "Weak Contact";
-                                return "No Contact";
-                              })()}
+                              {readinessCategoryUiLabel(row, contactFinderMap[row.id], locale)}
                             </span>
                           </div>
                         </td>
@@ -7192,7 +7239,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               className="inline-flex h-10 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:text-xs"
                             >
                               <IconSpark className="h-3.5 w-3.5 shrink-0" />
-                              AI Message
+                              {t("ai_message", locale)}
                             </button>
                             {!s.doNotContact &&
                               (isFollowUpDue(s, renderNow) ||
@@ -7203,7 +7250,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                   title="Kısa hatırlatma mesajı ve WhatsApp"
                                   className="inline-flex h-10 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:h-8 sm:text-xs"
                                 >
-                                  Follow Up
+                                  {t("follow_up", locale)}
                                 </button>
                               )}
                             <button
@@ -7228,7 +7275,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               onClick={() => addLeadIdsToDailyQueue([row.id])}
                               className="inline-flex h-10 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8"
                             >
-                              Queue
+                              {t("queue_short", locale)}
                             </button>
                             <button
                               onClick={() => setOpenId(row.id)}
@@ -7252,7 +7299,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   {focusFiltered.length === 0 && (
                     <tr>
                       <td colSpan={7} className="px-4 py-10 text-center text-sm text-zinc-500">
-                        No leads match your filters.
+                        {t("no_leads_filters", locale)}
                       </td>
                     </tr>
                   )}
@@ -7265,7 +7312,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   onClick={() => setShowAllLeadsRows((v) => !v)}
                   className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-white/10"
                 >
-                  {showAllLeadsRows ? "Show less" : "Show more"}
+                  {showAllLeadsRows ? t("show_less", locale) : t("show_more", locale)}
                 </button>
               </div>
             )}
@@ -7274,7 +7321,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       </section>
 
       <footer className="pb-8 pt-2 text-center text-[11px] text-zinc-600">
-        Tugobo Lead Engine · founder MVP · data is local to this browser
+        {t("footer_mvp", locale)}
       </footer>
 
       <AiMessageModal
@@ -7302,7 +7349,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         >
           <button
             type="button"
-            aria-label="Kapat"
+            aria-label={t("close_aria", locale)}
             onClick={closeOutreachQueue}
             className="absolute inset-0 bg-black/70 backdrop-blur-sm"
           />
@@ -7310,11 +7357,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <div className="flex items-start justify-between border-b border-white/10 px-4 py-3">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-100">
-                  {outreachQueue.complete ? "Session complete" : "Today’s outreach session"}
+                  {outreachQueue.complete
+                    ? t("session_complete", locale)
+                    : t("todays_outreach_session", locale)}
                 </h2>
                 <p className="mt-0.5 text-xs text-zinc-500">
                   {outreachQueue.complete
-                    ? "Summary for this run"
+                    ? t("summary_for_run", locale)
                     : `${outreachQueue.index + 1} / ${outreachQueue.leadIds.length}`}
                 </p>
               </div>
@@ -7322,7 +7371,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 type="button"
                 onClick={closeOutreachQueue}
                 className="rounded-md p-1 text-zinc-400 hover:bg-white/5 hover:text-zinc-100"
-                aria-label="Kapat"
+                aria-label={t("close_aria", locale)}
               >
                 <svg
                   viewBox="0 0 24 24"
@@ -7338,18 +7387,24 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <div className="space-y-3 px-4 py-4 text-sm">
               {outreachQueue.complete ? (
                 <div className="rounded-md border border-white/10 bg-white/[0.02] p-4 text-zinc-200">
-                  <p className="text-sm font-medium text-zinc-100">Nice work.</p>
+                  <p className="text-sm font-medium text-zinc-100">{t("nice_work", locale)}</p>
                   <ul className="mt-3 space-y-1.5 text-xs text-zinc-400">
-                    <li>Sent: {outreachQueue.sessionStats.sent}</li>
-                    <li>Skipped: {outreachQueue.sessionStats.skipped}</li>
-                    <li>Do not contact: {outreachQueue.sessionStats.dnc}</li>
+                    <li>
+                      {t("sent_label", locale)}: {outreachQueue.sessionStats.sent}
+                    </li>
+                    <li>
+                      {t("skipped", locale)}: {outreachQueue.sessionStats.skipped}
+                    </li>
+                    <li>
+                      {t("dnc_label", locale)}: {outreachQueue.sessionStats.dnc}
+                    </li>
                   </ul>
                   <button
                     type="button"
                     onClick={closeOutreachQueue}
                     className="mt-4 rounded-md bg-indigo-500 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-400"
                   >
-                    Close
+                    {t("close", locale)}
                   </button>
                 </div>
               ) : queueCurrentLead ? (
@@ -7361,27 +7416,27 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
                       <div>
-                        <span className="text-zinc-500">Lead score</span>{" "}
+                        <span className="text-zinc-500">{t("lead_score_lower", locale)}</span>{" "}
                         <span className="font-medium text-zinc-200">{queueCurrentLead.leadScore}</span>
                       </div>
                       <div>
-                        <span className="text-zinc-500">Hot score</span>{" "}
+                        <span className="text-zinc-500">{t("hot_score_lower", locale)}</span>{" "}
                         <span className="font-medium text-zinc-200">{queueCurrentLead.hotScore}</span>
                       </div>
                       <div>
-                        <span className="text-zinc-500">Readiness</span>{" "}
+                        <span className="text-zinc-500">{t("readiness_lower", locale)}</span>{" "}
                         <span className="font-medium text-zinc-200">
                           {queueCurrentReadiness?.score ?? 0}
                         </span>
                       </div>
                       <div>
-                        <span className="text-zinc-500">Contact quality</span>{" "}
+                        <span className="text-zinc-500">{t("contact_quality", locale)}</span>{" "}
                         <span className="font-medium text-zinc-200">
-                          {CONTACT_QUALITY_LABEL[queueCurrentLead.contactQuality]}
+                          {contactQualityUiLabel(queueCurrentLead.contactQuality, locale)}
                         </span>
                       </div>
                       <div>
-                        <span className="text-zinc-500">Best contact</span>{" "}
+                        <span className="text-zinc-500">{t("best_contact", locale)}</span>{" "}
                         <span className="font-medium text-zinc-200">
                           {queueCurrentFinder
                             ? `${queueCurrentFinder.bestContactType} · ${queueCurrentFinder.bestContactValue}`
@@ -7392,13 +7447,17 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       </div>
                     </div>
                     <div className="mt-2 text-[11px] text-zinc-500">
-                      Pipeline: {STATUS_LABEL[queueCurrentLead._s.status]}
+                      {t("pipeline", locale)}: {statusUiLabel(queueCurrentLead._s.status, locale)}
                     </div>
                     <div className="mt-1 text-[11px] text-zinc-500">
-                      Queue status: {dailyOutreach.queueItems[queueCurrentId!]?.queueStatus ?? "queued"}
+                      {t("queue_status", locale)}:{" "}
+                      {queueMessageStatusUiLabel(
+                        dailyOutreach.queueItems[queueCurrentId!]?.queueStatus ?? "queued",
+                        locale,
+                      )}
                     </div>
                     <div className="mt-2 text-[11px] text-zinc-400">
-                      Selected because:
+                      {t("selected_because", locale)}
                       <ul className="mt-1 space-y-0.5 text-zinc-300">
                         {(queueCurrentReadiness?.reasons.slice(0, 3) ?? []).map((reason) => (
                           <li key={reason}>✓ {reason}</li>
@@ -7408,16 +7467,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   </div>
                   <div className="rounded-md border border-white/10 bg-white/[0.02] p-3">
                     <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-                      AI message preview
+                      {t("ai_message_preview", locale)}
                     </div>
                     {queueCurrentId &&
                       dailyOutreach.queueItems[queueCurrentId]?.preparedVariants && (
                         <div className="mb-2 flex flex-wrap gap-2">
                           {(
                             [
-                              { id: "direct", label: "Direct" },
-                              { id: "soft", label: "Soft" },
-                              { id: "premium", label: "Consultative" },
+                              { id: "direct", label: t("style_direct", locale) },
+                              { id: "soft", label: t("style_soft", locale) },
+                              { id: "premium", label: t("style_consultative", locale) },
                             ] as const
                           ).map((opt) => {
                             const item = dailyOutreach.queueItems[queueCurrentId];
@@ -7450,7 +7509,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         </div>
                       )}
                     {outreachQueue.loading ? (
-                      <p className="text-zinc-400">Mesaj oluşturuluyor…</p>
+                      <p className="text-zinc-400">{t("generating_message", locale)}</p>
                     ) : outreachQueue.error ? (
                       <p className="text-rose-300">{outreachQueue.error}</p>
                     ) : (
@@ -7464,15 +7523,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             queueStatus: nextMessage.trim() ? "prepared" : "queued",
                           });
                         }}
-                        placeholder="Prepare Message to generate AI outreach copy"
+                        placeholder={t("prepare_placeholder", locale)}
                         className="min-h-28 w-full rounded-md border border-white/10 bg-black/20 p-2 text-xs text-zinc-200 placeholder:text-zinc-500 focus:border-indigo-400/40 focus:outline-none focus:ring-1 focus:ring-indigo-500/30"
                       />
                     )}
                   </div>
                   {(queueCurrentLead._s.contactAttempts ?? 0) >= 3 && (
-                    <p className="text-[11px] text-amber-300">
-                      Already contacted multiple times — proceed carefully.
-                    </p>
+                    <p className="text-[11px] text-amber-300">{t("max_contact_warning", locale)}</p>
                   )}
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <button
@@ -7481,7 +7538,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       disabled={outreachQueue.loading}
                       className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {outreachQueue.loading ? "Preparing..." : "Prepare Message"}
+                      {outreachQueue.loading ? t("preparing", locale) : t("prepare_message", locale)}
                     </button>
                     <button
                       type="button"
@@ -7498,7 +7555,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       }}
                       className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-1.5 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {queueCurrentPhone ? "Open WhatsApp" : "No WhatsApp contact"}
+                      {queueCurrentPhone
+                        ? t("open_whatsapp", locale)
+                        : t("no_whatsapp_contact", locale)}
                     </button>
                     <button
                       type="button"
@@ -7509,21 +7568,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       }}
                       className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Copy Message
+                      {t("copy_message", locale)}
                     </button>
                     <button
                       type="button"
                       onClick={() => markQueueLeadSent()}
                       className="rounded-md border border-sky-400/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20"
                     >
-                      Mark Sent
+                      {t("mark_sent", locale)}
                     </button>
                     <button
                       type="button"
                       onClick={() => skipQueueLead()}
                       className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
                     >
-                      Skip
+                      {t("action_skip", locale)}
                     </button>
                     <button
                       type="button"
@@ -7534,28 +7593,28 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       }}
                       className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
                     >
-                      Remove from Queue
+                      {t("remove_from_queue", locale)}
                     </button>
                     <button
                       type="button"
                       onClick={() => markQueueLeadDnc()}
                       className="rounded-md border border-rose-400/25 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:bg-rose-500/20"
                     >
-                      Mark Do Not Contact
+                      {t("mark_dnc_long", locale)}
                     </button>
                     <button
                       type="button"
                       onClick={() => markQueueLeadInvalidWhatsapp()}
                       className="rounded-md border border-rose-400/25 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:bg-rose-500/20"
                     >
-                      Invalid WhatsApp
+                      {t("invalid_whatsapp", locale)}
                     </button>
                     <button
                       type="button"
                       onClick={() => goNextInQueue(false)}
                       className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 transition hover:bg-violet-500/20"
                     >
-                      Next Lead
+                      {t("next_lead", locale)}
                     </button>
                   </div>
                 </>

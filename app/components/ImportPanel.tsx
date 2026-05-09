@@ -1,6 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
+import { fillTemplate, t, type Locale } from "@/app/lib/i18n";
 import { type LeadType } from "@/app/lib/leads";
 import { TURKEY_CITIES } from "@/app/lib/generate";
 
@@ -40,28 +42,36 @@ const SOURCES: { value: ImportSource; label: string; hint: string }[] = [
 
 const DATALIST_ID = "tugobo-city-list";
 
-function formatImportSummary(r: ImportResult): { text: string; tone: "ok" | "warn" } {
+function formatImportSummary(r: ImportResult, locale: Locale): { text: string; tone: "ok" | "warn" } {
   const { added, hot, skipped, updated, source } = r;
-  const leadWord = added === 1 ? "lead" : "leads";
-  const hotWord = hot === 1 ? "hot lead" : "hot leads";
-  const sourceLabel = source === "cached" ? "Cached" : "Google";
+  const leadWord = added === 1 ? t("import_word_lead", locale) : t("import_word_leads", locale);
+  const hotWord = hot === 1 ? t("import_word_hot_lead", locale) : t("import_word_hot_leads", locale);
+  const sourceLabel = source === "cached" ? t("source_cached", locale) : t("source_google_label", locale);
 
   if (added === 0 && skipped === 0) {
     return {
-      text: "No businesses found for this search. Try another city or niche.",
+      text: t("import_no_businesses", locale),
       tone: "warn",
     };
   }
 
   if (added === 0 && skipped > 0) {
     return {
-      text: `No new leads — ${updated} existing updated | ${skipped} duplicates skipped | Source: ${sourceLabel}`,
+      text: fillTemplate(t("import_no_new_line", locale), { updated, skipped, source: sourceLabel }),
       tone: "warn",
     };
   }
 
   return {
-    text: `${added} new ${leadWord} added | ${updated} existing updated | ${hot} ${hotWord} | ${skipped} duplicates skipped | Source: ${sourceLabel}`,
+    text: fillTemplate(t("import_summary_line", locale), {
+      added,
+      leadWord,
+      updated,
+      hot,
+      hotWord,
+      skipped,
+      source: sourceLabel,
+    }),
     tone: "ok",
   };
 }
@@ -73,6 +83,7 @@ export default function ImportPanel({
   onImport: (req: ImportRequest) => Promise<ImportResult>;
   hasCachedResults: (req: Omit<ImportRequest, "forceGoogleRefresh">) => boolean;
 }) {
+  const { locale } = useLocale();
   const [city, setCity] = useState("");
   const [type, setType] = useState<LeadType>("Boutique Hotel");
   const [source, setSource] = useState<ImportSource>("maps");
@@ -86,7 +97,7 @@ export default function ImportPanel({
   const runImport = async (forceGoogleRefresh: boolean) => {
     const trimmed = city.trim();
     if (!trimmed) {
-      setError("Enter a city first.");
+      setError(t("enter_city_first", locale));
       cityRef.current?.focus();
       return;
     }
@@ -99,7 +110,7 @@ export default function ImportPanel({
       setResult(r);
     } catch (err) {
       setResult(null);
-      setError(err instanceof Error ? err.message : "Import failed");
+      setError(err instanceof Error ? err.message : t("import_failed", locale));
     } finally {
       setLoading(false);
     }
@@ -109,7 +120,7 @@ export default function ImportPanel({
     e.preventDefault();
     const trimmed = city.trim();
     if (!trimmed) {
-      setError("Enter a city first.");
+      setError(t("enter_city_first", locale));
       cityRef.current?.focus();
       return;
     }
@@ -126,7 +137,7 @@ export default function ImportPanel({
   const handleUseCachedResults = () => void runImport(false);
 
   const summary =
-    result && !loading ? formatImportSummary(result) : null;
+    result && !loading ? formatImportSummary(result, locale) : null;
 
   return (
     <section className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] p-4 backdrop-blur ring-1 ring-inset ring-indigo-500/10">
@@ -146,11 +157,14 @@ export default function ImportPanel({
           </svg>
         </div>
         <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
-          Import Leads
+          {t("import_leads", locale)}
         </h2>
-        <span className="ml-auto inline-flex items-center rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-300 ring-1 ring-inset ring-indigo-400/30">
-          Phase 2A
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <LocaleToggle />
+          <span className="inline-flex items-center rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-300 ring-1 ring-inset ring-indigo-400/30">
+            Phase 2A
+          </span>
+        </div>
       </div>
 
       <form
@@ -164,7 +178,7 @@ export default function ImportPanel({
               htmlFor="import-city"
               className="text-[10px] uppercase tracking-wider text-zinc-400"
             >
-              City
+              {t("city", locale)}
             </label>
             <input
               ref={cityRef}
@@ -200,7 +214,7 @@ export default function ImportPanel({
               htmlFor="import-type"
               className="text-[10px] uppercase tracking-wider text-zinc-400"
             >
-              Niche / Type
+              {t("niche_type", locale)}
             </label>
             <select
               id="import-type"
@@ -226,7 +240,7 @@ export default function ImportPanel({
               htmlFor="import-source"
               className="text-[10px] uppercase tracking-wider text-zinc-400"
             >
-              Source
+              {t("source", locale)}
             </label>
             <select
               id="import-source"
@@ -262,7 +276,7 @@ export default function ImportPanel({
                       className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white"
                       aria-hidden="true"
                     />
-                    Importing…
+                    {t("importing", locale)}
                   </>
                 ) : (
                   <>
@@ -278,7 +292,7 @@ export default function ImportPanel({
                     >
                       <path d="M12 5v14M5 12l7-7 7 7" />
                     </svg>
-                    Import 10 Leads
+                    {t("import_10_leads", locale)}
                   </>
                 )}
               </button>
@@ -288,7 +302,7 @@ export default function ImportPanel({
                 onClick={handleRefreshGoogle}
                 className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/10 disabled:cursor-wait disabled:opacity-60"
               >
-                Refresh from Google
+                {t("refresh_from_google", locale)}
               </button>
               {showCacheChoice && (
                 <button
@@ -297,7 +311,7 @@ export default function ImportPanel({
                   onClick={handleUseCachedResults}
                   className="inline-flex items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-wait disabled:opacity-60"
                 >
-                  Use Cached Results
+                  {t("use_cached_results", locale)}
                 </button>
               )}
             </div>
@@ -324,16 +338,15 @@ export default function ImportPanel({
             </p>
           )}
           {showCacheChoice && !loading && (
-            <p className="text-xs text-indigo-300">
-              Cached results found for this search.
-            </p>
+            <p className="text-xs text-indigo-300">{t("cached_results_found", locale)}</p>
           )}
         </div>
       </form>
 
       <p className="mt-1 text-[10px] text-zinc-500">
         {SOURCES.find((s) => s.value === source)?.hint}
-        {" · "}Server needs GOOGLE_MAPS_API_KEY (Places API enabled).
+        {" · "}
+        {t("import_hint_footer", locale)}
       </p>
     </section>
   );

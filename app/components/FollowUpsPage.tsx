@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
+import { t } from "@/app/lib/i18n";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const IMPORTED_LEADS_V2_KEY = "tugobo-lead-engine:imported-leads-v2";
@@ -52,23 +54,26 @@ type FollowUpLead = {
   pipeline_stage: string;
   last_outreach_action?: string;
   source?: "airtable" | "local";
+  /** Present for locally derived rows — used for TR/EN UI labels. */
+  lastOutreachEventType?: OutreachEventType;
 };
 
-function eventLabel(t: OutreachEventType): string {
-  if (t === "message_prepared") return "Message prepared";
-  if (t === "message_copied") return "Message copied";
-  if (t === "whatsapp_opened") return "WhatsApp opened";
-  if (t === "contacted") return "Contacted";
-  return "Follow-up due";
+function eventLabel(type: OutreachEventType, locale: "tr" | "en"): string {
+  if (type === "message_prepared") return t("message_prepared", locale);
+  if (type === "message_copied") return t("message_copied", locale);
+  if (type === "whatsapp_opened") return t("whatsapp_opened", locale);
+  if (type === "contacted") return t("contacted_activity", locale);
+  return t("follow_up_due", locale);
 }
 
-function followUpStatus(lead: FollowUpLead): string {
-  if (lead.do_not_contact) return "Do not contact";
+function followUpStatus(lead: FollowUpLead, locale: "tr" | "en"): string {
+  if (lead.do_not_contact) return t("follow_up_status_dnc", locale);
   if (lead.next_follow_up_at) {
     const ts = Date.parse(lead.next_follow_up_at);
-    if (Number.isFinite(ts) && ts <= Date.now()) return "Follow-up due";
+    if (Number.isFinite(ts) && ts <= Date.now()) return t("follow_up_status_due", locale);
   }
-  return lead.last_outreach_action || "Not contacted";
+  if (lead.lastOutreachEventType) return eventLabel(lead.lastOutreachEventType, locale);
+  return lead.last_outreach_action || t("not_contacted", locale);
 }
 
 function loadLocalFollowUps(): FollowUpLead[] {
@@ -115,7 +120,8 @@ function loadLocalFollowUps(): FollowUpLead[] {
         next_follow_up_at: followUpIso,
         do_not_contact: Boolean(s.doNotContact),
         pipeline_stage: typeof s.status === "string" ? s.status : "new",
-        last_outreach_action: eventLabel(latest.type),
+        last_outreach_action: eventLabel(latest.type, "en"),
+        lastOutreachEventType: latest.type,
         source: "local",
       });
     }
@@ -150,6 +156,7 @@ function waDigits(phone: string): string | null {
 }
 
 export default function FollowUpsPage() {
+  const { locale } = useLocale();
   const [leads, setLeads] = useState<FollowUpLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -166,11 +173,11 @@ export default function FollowUpsPage() {
         error?: string;
       };
       if (!data.configured) {
-        setNotice("Airtable not connected");
+        setNotice(t("airtable_not_connected", locale));
         setLeads(localLeads);
         return;
       }
-      if (!res.ok) throw new Error(data.error || "Failed to load follow-ups");
+      if (!res.ok) throw new Error(data.error || t("failed_load_followups", locale));
       const airtableLeads = (Array.isArray(data.leads) ? data.leads : []).map((l) => ({
         ...l,
         source: "airtable" as const,
@@ -188,7 +195,9 @@ export default function FollowUpsPage() {
       }
       setLeads(merged);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Failed to load follow-ups");
+      setNotice(
+        error instanceof Error ? error.message : t("failed_load_followups", locale),
+      );
       setLeads(localLeads);
     } finally {
       setLoading(false);
@@ -210,10 +219,10 @@ export default function FollowUpsPage() {
         body: JSON.stringify({ recordId, action }),
       });
       const data = (await res.json()) as { updated?: boolean; error?: string };
-      if (!res.ok || !data.updated) throw new Error(data.error || "Update failed");
+      if (!res.ok || !data.updated) throw new Error(data.error || t("update_failed", locale));
       await load();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Update failed");
+      setNotice(error instanceof Error ? error.message : t("update_failed", locale));
     } finally {
       setBusyId(null);
     }
@@ -225,36 +234,47 @@ export default function FollowUpsPage() {
     <main className="min-h-screen bg-zinc-950 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 lg:grid-cols-[180px_1fr]">
         <aside className="rounded-xl border border-white/10 bg-white/[0.02] p-3 lg:sticky lg:top-4 lg:self-start">
-          <div className="text-[11px] uppercase tracking-wider text-zinc-500">Navigation</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] uppercase tracking-wider text-zinc-500">
+              {t("navigation", locale)}
+            </div>
+            <LocaleToggle />
+          </div>
           <nav className="mt-2 space-y-1.5 text-sm">
             <Link href="/" className="block rounded-md px-2 py-1.5 text-zinc-300 hover:bg-white/5">
-              Dashboard
+              {t("dashboard", locale)}
             </Link>
             <Link href="/dashboard/follow-ups" className="block rounded-md bg-orange-500/15 px-2 py-1.5 text-orange-200">
-              Follow-ups
+              {t("follow_ups", locale)}
             </Link>
           </nav>
         </aside>
         <section className="rounded-xl border border-orange-500/20 bg-orange-500/[0.04] p-4 ring-1 ring-inset ring-orange-500/10">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h1 className="text-lg font-semibold text-zinc-100">🔥 Follow-ups Today</h1>
-              <p className="mt-1 text-xs text-zinc-400">{count} leads need follow-up today</p>
-              <p className="text-[11px] text-zinc-500">Hot leads: {hotCount}</p>
+              <h1 className="text-lg font-semibold text-zinc-100">
+                {t("follow_ups_today_title", locale)}
+              </h1>
+              <p className="mt-1 text-xs text-zinc-400">
+                {count} {t("follow_ups_today_sub", locale)}
+              </p>
+              <p className="text-[11px] text-zinc-500">
+                {t("hot_leads_count", locale)}: {hotCount}
+              </p>
             </div>
             <button
               type="button"
               onClick={() => void load()}
               className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
             >
-              Refresh
+              {t("refresh", locale)}
             </button>
           </div>
           {notice && <p className="mt-3 text-xs text-amber-200">{notice}</p>}
           {loading ? (
-            <p className="mt-4 text-sm text-zinc-400">Loading...</p>
+            <p className="mt-4 text-sm text-zinc-400">{t("loading", locale)}</p>
           ) : leads.length === 0 ? (
-            <p className="mt-4 text-sm text-zinc-400">No outreach activity yet.</p>
+            <p className="mt-4 text-sm text-zinc-400">{t("no_outreach_yet", locale)}</p>
           ) : (
             <div className="mt-4 space-y-2">
               {leads.map((lead) => {
@@ -270,14 +290,16 @@ export default function FollowUpsPage() {
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
-                        <div className="text-sm font-medium text-zinc-100">{lead.business_name || "Unknown"}</div>
+                        <div className="text-sm font-medium text-zinc-100">
+                          {lead.business_name || t("unknown", locale)}
+                        </div>
                         <a
                           href={wa ? `https://wa.me/${wa}` : "#"}
                           target="_blank"
                           rel="noreferrer"
                           className={`text-xs ${wa ? "text-emerald-300 hover:underline" : "text-zinc-500"}`}
                         >
-                          {lead.whatsapp || "No WhatsApp"}
+                          {lead.whatsapp || t("no_whatsapp", locale)}
                         </a>
                       </div>
                       {lead.hot_score > 70 && (
@@ -287,16 +309,31 @@ export default function FollowUpsPage() {
                       )}
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-zinc-300 sm:grid-cols-3 lg:grid-cols-6">
-                      <div>Lead: {lead.lead_score}</div>
-                      <div>Hot: {lead.hot_score}</div>
-                      <div>Attempts: {lead.contact_attempts}</div>
-                      <div>Last: {relDate(lead.last_contacted_at)}</div>
-                      <div>Next: {relDate(lead.next_follow_up_at)}</div>
-                      <div>Stage: {lead.pipeline_stage || "-"}</div>
+                      <div>
+                        {t("lead_score", locale)}: {lead.lead_score}
+                      </div>
+                      <div>
+                        {t("hot_score", locale)}: {lead.hot_score}
+                      </div>
+                      <div>
+                        {t("attempts", locale)}: {lead.contact_attempts}
+                      </div>
+                      <div>
+                        {t("last_short", locale)}: {relDate(lead.last_contacted_at)}
+                      </div>
+                      <div>
+                        {t("next_short", locale)}: {relDate(lead.next_follow_up_at)}
+                      </div>
+                      <div>
+                        {t("stage", locale)}: {lead.pipeline_stage || "-"}
+                      </div>
                     </div>
                     <div className="mt-1 text-[11px] text-zinc-400">
-                      Last action: {lead.last_outreach_action || "-"} · Status:{" "}
-                      {followUpStatus(lead)}
+                      {t("last_action_status", locale)}:{" "}
+                      {lead.lastOutreachEventType
+                        ? eventLabel(lead.lastOutreachEventType, locale)
+                        : lead.last_outreach_action || "-"}{" "}
+                      · {t("status_word", locale)}: {followUpStatus(lead, locale)}
                     </div>
                     <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                       <button
@@ -308,7 +345,7 @@ export default function FollowUpsPage() {
                         }}
                         className="w-full rounded-md border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
-                        Send WhatsApp
+                        {t("send_whatsapp", locale)}
                       </button>
                       <button
                         type="button"
@@ -316,7 +353,7 @@ export default function FollowUpsPage() {
                         onClick={() => void runAction(lead.recordId, "mark_contacted")}
                         className="w-full rounded-md border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-200 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
-                        Mark Contacted
+                        {t("mark_contacted", locale)}
                       </button>
                       <button
                         type="button"
@@ -324,7 +361,7 @@ export default function FollowUpsPage() {
                         onClick={() => void runAction(lead.recordId, "no_response")}
                         className="w-full rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
-                        No Response
+                        {t("no_response", locale)}
                       </button>
                       <button
                         type="button"
@@ -332,7 +369,7 @@ export default function FollowUpsPage() {
                         onClick={() => void runAction(lead.recordId, "do_not_contact")}
                         className="w-full rounded-md border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-sm font-medium text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
                       >
-                        Do Not Contact
+                        {t("do_not_contact", locale)}
                       </button>
                     </div>
                   </div>
