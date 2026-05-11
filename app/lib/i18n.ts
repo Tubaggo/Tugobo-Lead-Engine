@@ -1,4 +1,11 @@
 import type { LeadStatus, OutreachPriorityBucket, RecommendedAction } from "@/app/lib/leads";
+import type {
+  LeadTemperature,
+  OutreachStyle,
+  OutreachUrgency,
+  RecommendedChannel,
+  SalesApproach,
+} from "@/app/lib/intelligence/outreach-intelligence";
 
 export type Locale = "tr" | "en";
 
@@ -84,10 +91,10 @@ const UI = {
   outreach_prefix: { en: "Outreach", tr: "İletişim" },
 
   readiness_ready_now: { en: "Ready Now", tr: "Hemen hazır" },
-  readiness_good_contact: { en: "Good Contact", tr: "İyi kanal" },
-  readiness_needs_finder: { en: "Needs Finder", tr: "Finder gerekli" },
+  readiness_good_contact: { en: "Good Contact", tr: "İyi iletişim" },
+  readiness_needs_finder: { en: "Needs Finder", tr: "Kanal gerekli" },
   readiness_weak_contact: { en: "Weak Contact", tr: "Zayıf kanal" },
-  readiness_no_contact: { en: "No Contact", tr: "Kanal yok" },
+  readiness_no_contact: { en: "No Contact", tr: "İletişim yok" },
 
   ai_message: { en: "AI Message", tr: "AI mesajı" },
   follow_up: { en: "Follow Up", tr: "Takip" },
@@ -111,7 +118,7 @@ const UI = {
   instagram_verified: { en: "Instagram verified", tr: "Instagram doğrulandı" },
   broken_ig_link: { en: "Broken IG link", tr: "Bozuk IG linki" },
   possible_instagram: { en: "Possible Instagram", tr: "Olası Instagram" },
-  manual_ig_check: { en: "Manual IG check", tr: "Manuel IG kontrolü" },
+  manual_ig_check: { en: "Manual IG Check", tr: "Manuel IG kontrolü" },
   very_high_opportunity: { en: "Very High Opportunity", tr: "Çok yüksek fırsat" },
   high_opportunity: { en: "High Opportunity", tr: "Yüksek fırsat" },
 
@@ -140,19 +147,19 @@ const UI = {
     tr: "Metin ve yüzeylerden ücretli edinim sinyali olabilir — reklam tespiti yok.",
   },
   high_acquisition_intent: { en: "High Acquisition Intent", tr: "Yüksek edinim niyeti" },
-  acquisition_active: { en: "Acquisition Active", tr: "Etkin müşteri edinimi" },
+  acquisition_active: { en: "Acquisition Active", tr: "Müşteri edinimi aktif" },
   multi_channel_demand: { en: "Multi-Channel Demand", tr: "Çok kanallı talep" },
   strong_conversion_opportunity: { en: "Strong Conversion Opportunity", tr: "Güçlü dönüşüm fırsatı" },
   strong_conversion_opportunity_title: {
     en: "OTA or listing distribution plus social demand — booking path may still be under-optimized.",
     tr: "OTA/sosyal talep var — doğrudan rezervasyon yolu zayıf olabilir.",
   },
-  traffic_booking_gap: { en: "Traffic → Booking Gap", tr: "Trafik → rezervasyon açığı" },
+  traffic_booking_gap: { en: "Traffic → Booking Gap", tr: "Trafik → rezervasyon boşluğu" },
   traffic_booking_gap_title: {
     en: "Demand signals present with a weaker direct booking path.",
     tr: "Talep sinyali var; doğrudan rezervasyon yolu zayıf.",
   },
-  acquisition_pressure: { en: "Acquisition pressure", tr: "Etkin edinim baskısı" },
+  acquisition_pressure: { en: "Acquisition pressure", tr: "Müşteri edinme baskısı" },
   acquisition_pressure_title: {
     en: "Composite pressure score from social, paid proxies, and channel mix.",
     tr: "Sosyal, ücretli proxy ve kanal karmasından bileşik baskı skoru.",
@@ -298,8 +305,8 @@ const UI = {
   filter_all_status: { en: "All status", tr: "Tüm durumlar" },
   filter_contact_all: { en: "Contact: all", tr: "Kanal: tümü" },
   filter_contact_ready: { en: "Contact Ready", tr: "Kanal hazır" },
-  filter_needs_finder: { en: "Needs Finder", tr: "Finder gerekli" },
-  filter_no_contact: { en: "No Contact", tr: "Kanal yok" },
+  filter_needs_finder: { en: "Needs Finder", tr: "Kanal gerekli" },
+  filter_no_contact: { en: "No Contact", tr: "İletişim yok" },
   filter_last_import: { en: "Last Import", tr: "Son içe aktarma" },
   filter_all_time: { en: "All Time", tr: "Tüm zamanlar" },
   filter_todays_work: { en: "Today's Work", tr: "Bugünün işi" },
@@ -330,8 +337,8 @@ const UI = {
   ready_label: { en: "Ready", tr: "Hazır" },
   rank_label: { en: "Rank", tr: "Sıra" },
   contact_ready: { en: "Contact ready", tr: "Kanal hazır" },
-  needs_finder_lower: { en: "Needs finder", tr: "Finder gerekli" },
-  no_channel: { en: "No channel", tr: "Kanal yok" },
+  needs_finder_lower: { en: "Needs finder", tr: "Kanal gerekli" },
+  no_channel: { en: "No channel", tr: "İletişim yok" },
 
   // AI modal
   ai_message_title: { en: "AI Message", tr: "AI mesajı" },
@@ -461,6 +468,369 @@ const UI = {
   no_word: { en: "No", tr: "Hayır" },
   pipeline_stage_label: { en: "Pipeline stage", tr: "Pipeline aşaması" },
   next_action_header: { en: "Next Action", tr: "Sonraki adım" },
+
+  // Why-this-lead chips (stable reason ids from why-this-lead.ts)
+  why_tl_review_response_delay: {
+    en: "Review signals indicate possible response delays",
+    tr: "Yorumlar gecikmeli yanıt riski gösteriyor",
+  },
+  why_tl_review_unreachable: {
+    en: "Review signals suggest guests may struggle to reach the property",
+    tr: "Yorumlar ulaşım zorluğu sinyali veriyor",
+  },
+  why_tl_review_reservation: {
+    en: "Review signals mention reservation friction",
+    tr: "Yorumlarda rezervasyon sürtünmesi var",
+  },
+  why_tl_review_communication: {
+    en: "Review signals indicate communication gaps",
+    tr: "Yorumlarda iletişim boşlukları belirtiliyor",
+  },
+  why_tl_review_generic: {
+    en: "Review signals show a relevant guest pain point",
+    tr: "Yorumlarda misafir tarafı sıkıntı sinyali var",
+  },
+  why_tl_communication_risk: {
+    en: "Communication or reputation risk is worth reviewing",
+    tr: "İletişim veya itibar riski incelenmeli",
+  },
+  why_tl_whatsapp_available: {
+    en: "WhatsApp is available for direct outreach",
+    tr: "WhatsApp ile doğrudan ulaşım mümkün",
+  },
+  why_tl_instagram_active: {
+    en: "Active Instagram presence supports sales context",
+    tr: "Aktif Instagram satış sinyali oluşturuyor",
+  },
+  why_tl_website_conversion_gap: {
+    en: "Website exists but conversion path may be weak",
+    tr: "Site var; dönüşüm yolu zayıf olabilir",
+  },
+  why_tl_booking_flow_gap: {
+    en: "Missing booking flow may create conversion gaps",
+    tr: "Rezervasyon akışı zayıf olabilir",
+  },
+  why_tl_weak_booking_cta: {
+    en: "Owned site may need a clearer booking path",
+    tr: "Sitede net rezervasyon yolu eksik olabilir",
+  },
+  why_tl_direct_booking_opportunity: {
+    en: "High direct booking opportunity",
+    tr: "Yüksek doğrudan rezervasyon fırsatı",
+  },
+  why_tl_growth_oriented: { en: "Growth-Oriented", tr: "Büyüme odaklı" },
+  why_tl_commercially_active: { en: "Commercially Active", tr: "Ticari olarak aktif" },
+  why_tl_operationally_mature: { en: "Operationally Mature", tr: "Operasyonel olarak olgun" },
+  why_tl_high_roi_potential: { en: "High ROI Potential", tr: "Yüksek ROI potansiyeli" },
+  why_tl_outreach_potential: { en: "Strong outreach potential", tr: "Güçlü iletişim potansiyeli" },
+  why_tl_high_priority_score: { en: "High priority score", tr: "Yüksek öncelik skoru" },
+
+  // Conversion leak row chips (keys clk-*)
+  chip_clk_gap: { en: "Traffic → Booking Gap", tr: "Trafik → rezervasyon boşluğu" },
+  chip_clk_resp: { en: "Response Delay Risk", tr: "Geç dönüş riski" },
+  chip_clk_book: { en: "Weak Booking Flow", tr: "Zayıf rezervasyon akışı" },
+  chip_clk_ota: { en: "OTA Dependency Risk", tr: "OTA bağımlılık riski" },
+  conversion_leak_chip_title: {
+    en: "Heuristic signal — not on-site analytics.",
+    tr: "Sezgisel sinyal — site analitiği değil.",
+  },
+
+  // Outreach intelligence panel (enums + chrome)
+  outreach_intel_section: { en: "Outreach intelligence", tr: "İletişim özeti" },
+  urgency_label_header: { en: "Urgency", tr: "Aciliyet" },
+  best_approach_header: { en: "Best approach", tr: "Önerilen yaklaşım" },
+  style_header: { en: "Style", tr: "Üslup" },
+  best_channel_header: { en: "Best channel", tr: "Önerilen kanal" },
+  lead_temperature_header: { en: "Lead temperature", tr: "Lead sıcaklığı" },
+  lead_intelligence_section: { en: "Lead intelligence", tr: "Lead özeti" },
+  why_this_lead_heading: { en: "Why this lead?", tr: "Neden bu lead?" },
+  why_this_lead_chip_title: { en: "Why this lead?", tr: "Neden bu lead?" },
+  why_this_lead_fallback: {
+    en: "No strong intelligence signals yet. Enrich this lead to generate better recommendations.",
+    tr: "Henüz güçlü sinyal yok. Daha iyi öneriler için leadi zenginleştirin.",
+  },
+
+  style_outreach_consultative: { en: "Consultative", tr: "Danışman" },
+  style_outreach_direct: { en: "Direct", tr: "Direkt" },
+  style_outreach_educational: { en: "Educational", tr: "Eğitici" },
+  style_outreach_relationship: { en: "Relationship", tr: "İlişki odaklı" },
+  style_outreach_conversion_focused: { en: "Conversion-focused", tr: "Dönüşüm odaklı" },
+
+  sales_whatsapp_speed: { en: "WhatsApp Speed", tr: "WhatsApp hızı" },
+  sales_direct_booking: { en: "Direct Booking", tr: "Doğrudan rezervasyon" },
+  sales_conversion_gap: { en: "Close Conversion Gap", tr: "Dönüşüm boşluğunu kapat" },
+  sales_operational_efficiency: { en: "Operational Efficiency", tr: "Operasyonel verim" },
+  sales_social_demand: { en: "Social Demand", tr: "Sosyal talep" },
+  sales_guest_experience: { en: "Guest Experience", tr: "Misafir deneyimi" },
+
+  channel_whatsapp: { en: "WhatsApp", tr: "WhatsApp" },
+  channel_instagram: { en: "Instagram", tr: "Instagram" },
+  channel_phone: { en: "Phone", tr: "Telefon" },
+  channel_website_form: { en: "Website Form", tr: "Web formu" },
+
+  urgency_low: { en: "Low", tr: "Düşük" },
+  urgency_medium: { en: "Medium", tr: "Orta" },
+  urgency_high: { en: "High", tr: "Yüksek" },
+
+  temp_cold: { en: "Cold", tr: "Soğuk" },
+  temp_warm: { en: "Warm", tr: "Ilık" },
+  temp_hot: { en: "Hot", tr: "Sıcak" },
+
+  opportunity_level_low: { en: "low", tr: "düşük" },
+  opportunity_level_medium: { en: "medium", tr: "orta" },
+  opportunity_level_high: { en: "high", tr: "yüksek" },
+  opportunity_level_very_high: { en: "very high", tr: "çok yüksek" },
+
+  ai_insight_section: { en: "AI insight", tr: "AI özeti" },
+  ai_insight_fallback: {
+    en: "Not enough intelligence signals yet. Enrich this lead to generate better insight.",
+    tr: "Henüz yeterli sinyal yok. Daha iyi özet için leadi zenginleştirin.",
+  },
+  insight_summary_header: { en: "Insight summary", tr: "Özet" },
+  pain_points_header: { en: "Pain points", tr: "Sıkıntı noktaları" },
+  channel_pill_header: { en: "Channel", tr: "Kanal" },
+  consultative_angle_prefix: { en: "Consultative angle ·", tr: "Danışman açısı ·" },
+
+  // Scoring / hot / readiness chip reasons (exact English keys from scoring code)
+  score_hot_new_review_today: { en: "New review today", tr: "Bugün yeni yorum" },
+  score_hot_recent_review: { en: "Recent review", tr: "Son dönem yorum" },
+  score_hot_selling_out: { en: "Selling out", tr: "Doluluk yüksek" },
+  score_hot_needs_website: { en: "Needs own website", tr: "Kendi sitesi gerekli" },
+  score_hot_channel_diversification: { en: "Channel diversification", tr: "Kanal çeşitlendirme" },
+  score_hot_premium_margin: { en: "Premium leaking margin", tr: "Premium marj kaçağı" },
+  score_hot_sweet_spot: { en: "Sweet-spot maturity", tr: "Olgunluk tatlı bölgesi" },
+  score_hot_missing_social: { en: "Missing social presence", tr: "Sosyal görünürlük zayıf" },
+  score_readiness_whatsapp: { en: "WhatsApp available", tr: "WhatsApp var" },
+  score_readiness_website: { en: "Website available", tr: "Web sitesi var" },
+  score_readiness_instagram: { en: "Instagram available", tr: "Instagram var" },
+  score_readiness_phone: { en: "Phone available", tr: "Telefon var" },
+  score_readiness_email: { en: "Email available", tr: "E-posta var" },
+  score_readiness_verified: { en: "Contact verified", tr: "İletişim doğrulandı" },
+  score_readiness_recent_reviews: { en: "Recent review activity", tr: "Son yorum hareketi" },
+  score_readiness_high_hot: { en: "High hot score", tr: "Yüksek sıcak skor" },
+  score_v3_whatsapp_reachable: { en: "WhatsApp reachable", tr: "WhatsApp erişilebilir" },
+  score_v3_low_contact_quality: { en: "Low contact quality", tr: "Düşük kanal kalitesi" },
+  score_v3_no_instant_channel: { en: "No instant channel", tr: "Anında kanal yok" },
+  score_v3_conversion_gap: { en: "Conversion gap", tr: "Dönüşüm boşluğu" },
+  score_v3_ota_dependency: { en: "OTA dependency", tr: "OTA bağımlılığı" },
+  score_v3_social_acquisition: { en: "Social acquisition intent", tr: "Sosyal edinim niyeti" },
+  score_v3_paid_traffic: { en: "Paid traffic candidate", tr: "Ücretli trafik adayı" },
+  score_v3_acq_vs_conversion: {
+    en: "Acquisition intent vs. conversion path",
+    tr: "Edinim niyeti / dönüşüm dengesiz",
+  },
+  score_v3_limited_acquisition: { en: "Limited acquisition activity", tr: "Sınırlı edinim aktivitesi" },
+  score_v3_commercial_roi: {
+    en: "Commercial readiness supports ROI adoption",
+    tr: "Ticari olgunluk ROI görüşmesine uygun",
+  },
+  score_v3_commercial_early: {
+    en: "Commercial readiness is early-stage",
+    tr: "Ticari olgunluk erken aşamada",
+  },
+  score_v3_medium_tier: { en: "Medium tier (ROI fit)", tr: "Orta segment (ROI uyumu)" },
+  score_v3_premium_tier: { en: "Premium independent tier", tr: "Premium bağımsız segment" },
+  score_v3_operationally_active: { en: "Operationally active", tr: "Operasyonel olarak aktif" },
+  score_opp_acquisition_active: { en: "Acquisition intent is active", tr: "Edinim niyeti aktif" },
+  score_opp_leak_signals: {
+    en: "Strong conversion opportunity from leak signals",
+    tr: "Sızıntı sinyalleri güçlü dönüşüm fırsatı",
+  },
+  score_opp_commercial_roi: {
+    en: "Commercial readiness supports ROI conversation",
+    tr: "Ticari olgunluk ROI görüşmesini destekler",
+  },
+  score_opp_whatsapp_path: {
+    en: "WhatsApp-reachable contact path",
+    tr: "WhatsApp ile ulaşılabilir kanal",
+  },
+  score_opp_ota_upside: {
+    en: "OTA dependency indicates direct-booking upside",
+    tr: "OTA bağımlılığı doğrudan rezervasyon fırsatı",
+  },
+  score_opp_social_demand: {
+    en: "Social activity indicates demand",
+    tr: "Sosyal aktivite talep gösteriyor",
+  },
+  score_opp_booking_weakness: {
+    en: "Booking flow weakness creates improvement potential",
+    tr: "Rezervasyon akışı zayıf — iyileştirme alanı",
+  },
+  score_opp_outreach_likely: {
+    en: "High outreach execution likelihood",
+    tr: "Yüksek iletişim başarı olasılığı",
+  },
+
+  // Outreach rationale lines (rule text from outreach-intelligence.ts)
+  rat_whatsapp_pain: {
+    en: "WhatsApp reachable + communication pain signals",
+    tr: "WhatsApp var + iletişim sıkıntısı sinyalleri",
+  },
+  rat_ota_direct: {
+    en: "OTA-leaning channel mix without strong direct path",
+    tr: "OTA ağırlıklı; doğrudan yol zayıf",
+  },
+  rat_acq_under_booking: {
+    en: "Acquisition-active business with underdeveloped booking flow",
+    tr: "Edinim aktif; rezervasyon akışı gelişmemiş",
+  },
+  rat_social_weak_capture: {
+    en: "High social acquisition intent with weak booking capture",
+    tr: "Sosyal talep yüksek; rezervasyon zayıf",
+  },
+  rat_ig_weak_booking: {
+    en: "Active Instagram with weak booking flow",
+    tr: "Aktif Instagram; rezervasyon akışı zayıf",
+  },
+  rat_conversion_gap_attention: {
+    en: "Conversion gap between attention and reservation",
+    tr: "İlgi ile rezervasyon arasında boşluk",
+  },
+  rat_review_guest: {
+    en: "Review-derived guest experience signals",
+    tr: "Yorumlardan misafir deneyimi sinyalleri",
+  },
+  rat_no_pain_ops: {
+    en: "No dominant pain — lead with operational efficiency",
+    tr: "Belirgin acı yok — operasyonel verim",
+  },
+  rat_commercial_high: {
+    en: "Commercial readiness is high — consultative ROI framing preferred",
+    tr: "Ticari olgunluk yüksek — ROI çerçevesi uygun",
+  },
+  rat_commercial_low: {
+    en: "Low commercial readiness — softer relationship-first approach",
+    tr: "Ticari olgunluk düşük — yumuşak ilişki tonu",
+  },
+  rat_high_direct_booking: {
+    en: "High direct-booking opportunity on a reachable lead",
+    tr: "Ulaşılabilir leadde yüksek doğrudan rezervasyon fırsatı",
+  },
+  rat_comm_risk_brief: {
+    en: "Communication risk high — keep tone brief and concrete",
+    tr: "İletişim riski yüksek — kısa ve somut ton",
+  },
+  rat_premium_guest_frame: {
+    en: "Premium tier — guest experience deserves a strategic frame",
+    tr: "Premium segment — stratejik çerçeve uygun",
+  },
+  rat_micro_warm: {
+    en: "Micro tier — keep tone warm, avoid sounding transactional",
+    tr: "Mikro işletme — sıcak ton, satış dili yumuşat",
+  },
+  rat_high_acq_pressure: {
+    en: "High acquisition pressure with weak booking capture path",
+    tr: "Yüksek edinim baskısı; zayıf rezervasyon yolu",
+  },
+  rat_heuristic_leak: {
+    en: "Heuristic conversion leak on an acquisition-active business",
+    tr: "Edinim aktif işletmede sezgisel dönüşüm sızıntısı",
+  },
+  rat_strong_acq_friction: {
+    en: "Strong acquisition intent with booking or conversion friction",
+    tr: "Güçlü edinim niyeti; rezervasyon sürtünmesi",
+  },
+  rat_high_opp_reachable: {
+    en: "High opportunity score and reachable",
+    tr: "Yüksek fırsat skoru ve ulaşılabilir",
+  },
+  rat_high_opp_comm: {
+    en: "High opportunity + communication risk window",
+    tr: "Yüksek fırsat + iletişim riski penceresi",
+  },
+  rat_hot_reachable: {
+    en: "Hot score above 75 with a reachable channel",
+    tr: "Sıcak skor 75+ ve erişilebilir kanal",
+  },
+  rat_medium_opp: {
+    en: "Medium opportunity / hot score",
+    tr: "Orta fırsat / sıcak skor",
+  },
+  rat_no_urgency: {
+    en: "No strong urgency signals",
+    tr: "Güçlü aciliyet sinyali yok",
+  },
+  rat_social_ota_whatsapp: {
+    en: "Active social + OTA-heavy mix — WhatsApp for fast outreach",
+    tr: "Sosyal + OTA ağırlıklı — hızlı iletişim için WhatsApp",
+  },
+  rat_whatsapp_ready_mobile: {
+    en: "WhatsApp-ready mobile",
+    tr: "WhatsApp uyumlu mobil",
+  },
+  rat_whatsapp_likely: {
+    en: "Mobile WhatsApp likely usable",
+    tr: "Mobilde WhatsApp kullanılabilir olabilir",
+  },
+  rat_ig_next_surface: {
+    en: "Active Instagram is the next-best surface",
+    tr: "Aktif Instagram ikinci en iyi yüzey",
+  },
+  rat_phone_unclear_form: {
+    en: "Phone unclear — owned site form is the safest path",
+    tr: "Telefon belirsiz — site formu daha güvenli",
+  },
+  rat_phone_outbound: {
+    en: "Phone available for outbound call",
+    tr: "Giden arama için telefon uygun",
+  },
+  rat_no_fast_channel: {
+    en: "No fast channel — fall back to website form",
+    tr: "Hızlı kanal yok — web formuna dön",
+  },
+  rat_reachable_hot_high_opp: {
+    en: "Reachable + hot + high opportunity",
+    tr: "Ulaşılabilir + sıcak + yüksek fırsat",
+  },
+  rat_acq_leak_signal: {
+    en: "Acquisition-active with strong heuristic conversion-leak signal",
+    tr: "Edinim aktif; güçlü dönüşüm sızıntısı sinyali",
+  },
+  rat_reachable_mid: {
+    en: "Reachable with mid-range signals",
+    tr: "Ulaşılabilir; orta seviye sinyaller",
+  },
+  rat_strong_channel_weak: {
+    en: "Strong potential but channel fit weak",
+    tr: "Potansiyel güçlü; kanal uyumu zayıf",
+  },
+  rat_limited_reach: {
+    en: "Limited urgency / reachability",
+    tr: "Sınırlı aciliyet / erişilebilirlik",
+  },
+
+  // Business signal badges (internal ids unchanged)
+  sig_weak_digital_presence: { en: "Weak digital presence", tr: "Dijital görünürlük zayıf" },
+  sig_active_marketing_surface: { en: "Active marketing surface", tr: "Aktif pazarlama yüzeyi" },
+  sig_conversion_gap: { en: "Conversion gap", tr: "Dönüşüm boşluğu" },
+  sig_reputation_risk: { en: "Reputation risk", tr: "İtibar riski" },
+  sig_direct_contact_possible: { en: "Direct contact possible", tr: "Doğrudan iletişim mümkün" },
+  sig_ota_dependency: { en: "OTA dependency", tr: "OTA bağımlılığı" },
+  sig_single_channel_risk: { en: "Single channel risk", tr: "Tek kanal riski" },
+  sig_missing_own_website: { en: "Missing own website", tr: "Kendi sitesi yok" },
+  sig_instagram_presence_gap: { en: "Instagram presence gap", tr: "Instagram boşluğu" },
+  sig_review_recency_stale: { en: "Review recency stale", tr: "Yorumlar güncel değil" },
+  sig_review_volume_scale: { en: "Review volume operational scale", tr: "Yorum hacmi / ölçek" },
+  sig_landline_or_unclear_phone: { en: "Landline or unclear phone", tr: "Sabit / belirsiz hat" },
+  sig_no_listed_phone: { en: "No listed phone", tr: "Telefon yok" },
+  sig_premium_without_owned_funnel: {
+    en: "Premium without owned funnel",
+    tr: "Premium; kendi hunisi yok",
+  },
+  sig_weak_booking_cta: { en: "Weak booking cta", tr: "Zayıf rezervasyon çağrısı" },
+  sig_no_booking_flow: { en: "No booking flow", tr: "Rezervasyon akışı yok" },
+  sig_external_only_booking_dependency: {
+    en: "External only booking dependency",
+    tr: "Yalnızca dış rezervasyon",
+  },
+  sig_weak_contact_visibility: { en: "Weak contact visibility", tr: "İletişim görünürlüğü zayıf" },
+  sig_low_operational_activity: { en: "Low operational activity", tr: "Düşük operasyonel aktivite" },
+  sig_social_acquisition_intent: { en: "Social acquisition intent", tr: "Sosyal edinim niyeti" },
+  sig_paid_traffic_candidate: { en: "Paid traffic candidate", tr: "Ücretli trafik adayı" },
+  sig_commercially_active: { en: "Commercially active", tr: "Ticari olarak aktif" },
+  sig_operationally_mature: { en: "Operationally mature", tr: "Operasyonel olarak olgun" },
+  sig_growth_oriented: { en: "Growth oriented", tr: "Büyüme odaklı" },
+  sig_high_roi_potential: { en: "High roi potential", tr: "Yüksek ROI potansiyeli" },
 } as const;
 
 export type UiKey = keyof typeof UI;
@@ -543,4 +913,257 @@ export function queueMessageStatusUiLabel(status: string, locale: Locale): strin
   };
   const key = map[status];
   return key ? t(key, locale) : status;
+}
+
+const WHY_THIS_LEAD_ID_TO_UI: Partial<Record<string, UiKey>> = {
+  "communication-risk": "why_tl_communication_risk",
+  "whatsapp-available": "why_tl_whatsapp_available",
+  "instagram-active": "why_tl_instagram_active",
+  "website-conversion-gap": "why_tl_website_conversion_gap",
+  "booking-flow-gap": "why_tl_booking_flow_gap",
+  "weak-booking-cta": "why_tl_weak_booking_cta",
+  "direct-booking-opportunity": "why_tl_direct_booking_opportunity",
+  "growth-oriented": "why_tl_growth_oriented",
+  "commercially-active": "why_tl_commercially_active",
+  "operationally-mature": "why_tl_operationally_mature",
+  "high-roi-potential": "why_tl_high_roi_potential",
+  "outreach-potential": "why_tl_outreach_potential",
+  "high-priority-score": "why_tl_high_priority_score",
+};
+
+const REVIEW_CATEGORY_TO_UI: Record<string, UiKey> = {
+  response_delay: "why_tl_review_response_delay",
+  unreachable: "why_tl_review_unreachable",
+  reservation: "why_tl_review_reservation",
+  communication: "why_tl_review_communication",
+};
+
+/** Localized “why this lead” chip text; keeps AI / free-text lines as fallback. */
+export function getWhyThisLeadReasonLabel(id: string, fallback: string, locale: Locale): string {
+  const mapped = WHY_THIS_LEAD_ID_TO_UI[id];
+  if (mapped) return t(mapped, locale);
+  if (id.startsWith("existing-")) return fallback;
+  if (id.startsWith("review-")) {
+    const cat = id.slice("review-".length);
+    const rk = REVIEW_CATEGORY_TO_UI[cat];
+    if (rk) return t(rk, locale);
+  }
+  return fallback;
+}
+
+const CONVERSION_LEAK_CHIP_KEYS: Record<string, UiKey> = {
+  "clk-gap": "chip_clk_gap",
+  "clk-resp": "chip_clk_resp",
+  "clk-book": "chip_clk_book",
+  "clk-ota": "chip_clk_ota",
+};
+
+export function conversionLeakChipDisplay(
+  chipKey: string,
+  locale: Locale,
+): { label: string; title: string } {
+  const title = t("conversion_leak_chip_title", locale);
+  const ui = CONVERSION_LEAK_CHIP_KEYS[chipKey];
+  return { label: ui ? t(ui, locale) : chipKey, title };
+}
+
+const OUTREACH_STYLE_UI: Record<OutreachStyle, UiKey> = {
+  consultative: "style_outreach_consultative",
+  direct: "style_outreach_direct",
+  educational: "style_outreach_educational",
+  relationship: "style_outreach_relationship",
+  "conversion-focused": "style_outreach_conversion_focused",
+};
+
+const SALES_APPROACH_UI: Record<SalesApproach, UiKey> = {
+  "whatsapp-speed": "sales_whatsapp_speed",
+  "direct-booking": "sales_direct_booking",
+  "conversion-gap": "sales_conversion_gap",
+  "operational-efficiency": "sales_operational_efficiency",
+  "social-demand": "sales_social_demand",
+  "guest-experience": "sales_guest_experience",
+};
+
+const RECOMMENDED_CHANNEL_UI: Record<RecommendedChannel, UiKey> = {
+  whatsapp: "channel_whatsapp",
+  instagram: "channel_instagram",
+  phone: "channel_phone",
+  "website-form": "channel_website_form",
+};
+
+const URGENCY_UI: Record<OutreachUrgency, UiKey> = {
+  low: "urgency_low",
+  medium: "urgency_medium",
+  high: "urgency_high",
+};
+
+const LEAD_TEMPERATURE_UI: Record<LeadTemperature, UiKey> = {
+  cold: "temp_cold",
+  warm: "temp_warm",
+  hot: "temp_hot",
+};
+
+export function outreachStyleUiLabel(style: OutreachStyle, locale: Locale): string {
+  return t(OUTREACH_STYLE_UI[style], locale);
+}
+
+export function salesApproachUiLabel(approach: SalesApproach, locale: Locale): string {
+  return t(SALES_APPROACH_UI[approach], locale);
+}
+
+export function recommendedChannelUiLabel(channel: RecommendedChannel, locale: Locale): string {
+  return t(RECOMMENDED_CHANNEL_UI[channel], locale);
+}
+
+export function urgencyUiLabel(urgency: OutreachUrgency, locale: Locale): string {
+  return t(URGENCY_UI[urgency], locale);
+}
+
+export function leadTemperatureUiLabel(temp: LeadTemperature, locale: Locale): string {
+  return t(LEAD_TEMPERATURE_UI[temp], locale);
+}
+
+const OPPORTUNITY_LEVEL_UI: Record<string, UiKey> = {
+  low: "opportunity_level_low",
+  medium: "opportunity_level_medium",
+  high: "opportunity_level_high",
+  very_high: "opportunity_level_very_high",
+};
+
+export function opportunityLevelUiLabel(level: string, locale: Locale): string {
+  const key = OPPORTUNITY_LEVEL_UI[level];
+  return key ? t(key, locale) : level;
+}
+
+const SCORING_REASON_UI: Record<string, UiKey> = {
+  "New review today": "score_hot_new_review_today",
+  "Recent review": "score_hot_recent_review",
+  "Selling out": "score_hot_selling_out",
+  "Needs own website": "score_hot_needs_website",
+  "Channel diversification": "score_hot_channel_diversification",
+  "Premium leaking margin": "score_hot_premium_margin",
+  "Sweet-spot maturity": "score_hot_sweet_spot",
+  "Missing social presence": "score_hot_missing_social",
+  "WhatsApp available": "score_readiness_whatsapp",
+  "Website available": "score_readiness_website",
+  "Instagram available": "score_readiness_instagram",
+  "Phone available": "score_readiness_phone",
+  "Email available": "score_readiness_email",
+  "Contact verified": "score_readiness_verified",
+  "Recent review activity": "score_readiness_recent_reviews",
+  "High hot score": "score_readiness_high_hot",
+  "WhatsApp reachable": "score_v3_whatsapp_reachable",
+  "Low contact quality": "score_v3_low_contact_quality",
+  "No instant channel": "score_v3_no_instant_channel",
+  "Conversion gap": "score_v3_conversion_gap",
+  "OTA dependency": "score_v3_ota_dependency",
+  "Social acquisition intent": "score_v3_social_acquisition",
+  "Paid traffic candidate": "score_v3_paid_traffic",
+  "Acquisition intent vs. conversion path": "score_v3_acq_vs_conversion",
+  "Limited acquisition activity": "score_v3_limited_acquisition",
+  "Commercial readiness supports ROI adoption": "score_v3_commercial_roi",
+  "Commercial readiness is early-stage": "score_v3_commercial_early",
+  "Medium tier (ROI fit)": "score_v3_medium_tier",
+  "Premium independent tier": "score_v3_premium_tier",
+  "Operationally active": "score_v3_operationally_active",
+  "Acquisition intent is active": "score_opp_acquisition_active",
+  "Strong conversion opportunity from leak signals": "score_opp_leak_signals",
+  "Commercial readiness supports ROI conversation": "score_opp_commercial_roi",
+  "WhatsApp-reachable contact path": "score_opp_whatsapp_path",
+  "OTA dependency indicates direct-booking upside": "score_opp_ota_upside",
+  "Social activity indicates demand": "score_opp_social_demand",
+  "Booking flow weakness creates improvement potential": "score_opp_booking_weakness",
+  "High outreach execution likelihood": "score_opp_outreach_likely",
+};
+
+/** Maps known scoring / hot / lead reason English strings to localized chips. */
+export function scoringChipReasonUiLabel(reason: string, locale: Locale): string {
+  if (locale !== "tr") return reason;
+  const key = SCORING_REASON_UI[reason];
+  return key ? t(key, locale) : reason;
+}
+
+const BUSINESS_SIGNAL_UI: Record<string, UiKey> = {
+  weak_digital_presence: "sig_weak_digital_presence",
+  active_marketing_surface: "sig_active_marketing_surface",
+  conversion_gap: "sig_conversion_gap",
+  reputation_risk: "sig_reputation_risk",
+  direct_contact_possible: "sig_direct_contact_possible",
+  ota_dependency: "sig_ota_dependency",
+  single_channel_risk: "sig_single_channel_risk",
+  missing_own_website: "sig_missing_own_website",
+  instagram_presence_gap: "sig_instagram_presence_gap",
+  review_recency_stale: "sig_review_recency_stale",
+  review_volume_operational_scale: "sig_review_volume_scale",
+  landline_or_unclear_phone: "sig_landline_or_unclear_phone",
+  no_listed_phone: "sig_no_listed_phone",
+  premium_without_owned_funnel: "sig_premium_without_owned_funnel",
+  weak_booking_cta: "sig_weak_booking_cta",
+  no_booking_flow: "sig_no_booking_flow",
+  external_only_booking_dependency: "sig_external_only_booking_dependency",
+  weak_contact_visibility: "sig_weak_contact_visibility",
+  low_operational_activity: "sig_low_operational_activity",
+  social_acquisition_intent: "sig_social_acquisition_intent",
+  paid_traffic_candidate: "sig_paid_traffic_candidate",
+  commercially_active: "sig_commercially_active",
+  operationally_mature: "sig_operationally_mature",
+  growth_oriented: "sig_growth_oriented",
+  high_roi_potential: "sig_high_roi_potential",
+};
+
+export function businessSignalUiLabel(signal: string, locale: Locale): string {
+  if (locale !== "tr") return signal.replace(/_/g, " ");
+  const key = BUSINESS_SIGNAL_UI[signal];
+  return key ? t(key, locale) : signal.replace(/_/g, " ");
+}
+
+const OUTREACH_RATIONALE_UI: Record<string, UiKey> = {
+  "WhatsApp reachable + communication pain signals": "rat_whatsapp_pain",
+  "OTA-leaning channel mix without strong direct path": "rat_ota_direct",
+  "Acquisition-active business with underdeveloped booking flow": "rat_acq_under_booking",
+  "High social acquisition intent with weak booking capture": "rat_social_weak_capture",
+  "Active Instagram with weak booking flow": "rat_ig_weak_booking",
+  "Conversion gap between attention and reservation": "rat_conversion_gap_attention",
+  "Review-derived guest experience signals": "rat_review_guest",
+  "No dominant pain — lead with operational efficiency": "rat_no_pain_ops",
+  "Commercial readiness is high — consultative ROI framing preferred": "rat_commercial_high",
+  "Low commercial readiness — softer relationship-first approach": "rat_commercial_low",
+  "High direct-booking opportunity on a reachable lead": "rat_high_direct_booking",
+  "Communication risk high — keep tone brief and concrete": "rat_comm_risk_brief",
+  "Premium tier — guest experience deserves a strategic frame": "rat_premium_guest_frame",
+  "Micro tier — keep tone warm, avoid sounding transactional": "rat_micro_warm",
+  "High acquisition pressure with weak booking capture path": "rat_high_acq_pressure",
+  "Heuristic conversion leak on an acquisition-active business": "rat_heuristic_leak",
+  "Strong acquisition intent with booking or conversion friction": "rat_strong_acq_friction",
+  "High opportunity score and reachable": "rat_high_opp_reachable",
+  "High opportunity + communication risk window": "rat_high_opp_comm",
+  "Hot score above 75 with a reachable channel": "rat_hot_reachable",
+  "Medium opportunity / hot score": "rat_medium_opp",
+  "No strong urgency signals": "rat_no_urgency",
+  "Active social + OTA-heavy mix — WhatsApp for fast outreach": "rat_social_ota_whatsapp",
+  "WhatsApp-ready mobile": "rat_whatsapp_ready_mobile",
+  "Mobile WhatsApp likely usable": "rat_whatsapp_likely",
+  "Active Instagram is the next-best surface": "rat_ig_next_surface",
+  "Phone unclear — owned site form is the safest path": "rat_phone_unclear_form",
+  "Phone available for outbound call": "rat_phone_outbound",
+  "No fast channel — fall back to website form": "rat_no_fast_channel",
+  "Reachable + hot + high opportunity": "rat_reachable_hot_high_opp",
+  "Acquisition-active with strong heuristic conversion-leak signal": "rat_acq_leak_signal",
+  "Reachable with mid-range signals": "rat_reachable_mid",
+  "Strong potential but channel fit weak": "rat_strong_channel_weak",
+  "Limited urgency / reachability": "rat_limited_reach",
+};
+
+const TIER_STYLE_REASON_RE = /^Tier '([^']+)' default style$/;
+
+/** Localizes fixed outreach rationale sentences; unknown lines pass through. */
+export function outreachRationaleUiLine(line: string, locale: Locale): string {
+  if (locale !== "tr") return line;
+  const key = OUTREACH_RATIONALE_UI[line];
+  if (key) return t(key, locale);
+  const m = TIER_STYLE_REASON_RE.exec(line);
+  if (m) {
+    return `‘${m[1]}’ için varsayılan üslup`;
+  }
+  return line;
 }

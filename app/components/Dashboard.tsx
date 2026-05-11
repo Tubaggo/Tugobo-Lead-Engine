@@ -44,11 +44,6 @@ import type {
   OutreachMessageStyle,
 } from "@/app/lib/intelligence/ai-insight";
 import {
-  LEAD_TEMPERATURE_LABEL,
-  OUTREACH_STYLE_LABEL,
-  RECOMMENDED_CHANNEL_LABEL,
-  SALES_APPROACH_LABEL,
-  URGENCY_LABEL,
   type LeadTemperature,
   type OutreachIntelligenceProfile,
   type OutreachStyle,
@@ -67,13 +62,24 @@ import ImportPanel, {
 } from "@/app/components/ImportPanel";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 import {
+  businessSignalUiLabel,
   contactQualityUiLabel,
+  conversionLeakChipDisplay,
   fillTemplate,
+  getWhyThisLeadReasonLabel,
+  leadTemperatureUiLabel,
+  opportunityLevelUiLabel,
+  outreachPriorityChipLabel,
+  outreachRationaleUiLine,
+  outreachStyleUiLabel,
   queueMessageStatusUiLabel,
   queueSourceUiLabel,
-  outreachPriorityChipLabel,
   recommendedActionUiLabel,
+  recommendedChannelUiLabel,
+  salesApproachUiLabel,
+  scoringChipReasonUiLabel,
   statusUiLabel,
+  urgencyUiLabel,
   t,
   type Locale,
 } from "@/app/lib/i18n";
@@ -2009,11 +2015,12 @@ function OutreachBadgesRow({
   for (const c of conversionLeakUiChipHints(row.conversionLeak)) {
     if (c.key === "clk-book" && hasWeakFlowChipEarly) continue;
     if (c.key === "clk-ota" && hasOtaDependentChipEarly) continue;
+    const clk = conversionLeakChipDisplay(c.key, locale);
     chips.push({
       key: c.key,
       cls: `${badgeBase} bg-white/[0.06] text-zinc-300 ring-zinc-500/25`,
-      label: c.label,
-      title: c.title,
+      label: clk.label,
+      title: clk.title,
     });
   }
   if (last) {
@@ -2884,7 +2891,7 @@ function HotCard({
             key={r}
             className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300 ring-1 ring-inset ring-white/10"
           >
-            {r}
+            {scoringChipReasonUiLabel(r, locale)}
           </span>
         ))}
       </div>
@@ -2923,28 +2930,28 @@ function HotCard({
       {lead.opportunityLevel ? (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className={opportunityPillClass(lead.opportunityLevel)}>
-            {t("opportunity", locale)} · {lead.opportunityLevel}
+            {t("opportunity", locale)} · {opportunityLevelUiLabel(lead.opportunityLevel, locale)}
           </span>
           {lead.outreachIntelligence ? (
             <span
               className={temperaturePillClass(lead.outreachIntelligence.leadTemperature)}
-              title={`Lead temperature: ${LEAD_TEMPERATURE_LABEL[lead.outreachIntelligence.leadTemperature]}`}
+              title={`${t("lead_temperature_header", locale)}: ${leadTemperatureUiLabel(lead.outreachIntelligence.leadTemperature, locale)}`}
             >
               <span className="text-[9px] uppercase tracking-wider opacity-70">
                 {t("temp", locale)}
               </span>
-              <span>{LEAD_TEMPERATURE_LABEL[lead.outreachIntelligence.leadTemperature]}</span>
+              <span>{leadTemperatureUiLabel(lead.outreachIntelligence.leadTemperature, locale)}</span>
             </span>
           ) : null}
           {lead.outreachIntelligence ? (
             <span
               className={salesApproachPillClass(lead.outreachIntelligence.salesApproach)}
-              title={`Best approach: ${SALES_APPROACH_LABEL[lead.outreachIntelligence.salesApproach]}`}
+              title={`${t("best_approach_header", locale)}: ${salesApproachUiLabel(lead.outreachIntelligence.salesApproach, locale)}`}
             >
               <span className="text-[9px] uppercase tracking-wider opacity-70">
                 {t("approach", locale)}
               </span>
-              <span>{SALES_APPROACH_LABEL[lead.outreachIntelligence.salesApproach]}</span>
+              <span>{salesApproachUiLabel(lead.outreachIntelligence.salesApproach, locale)}</span>
             </span>
           ) : null}
         </div>
@@ -3020,22 +3027,19 @@ function LeadDetailScoreSummary({ lead }: { lead: LeadTableRow }) {
         value={lead.leadScore}
         reasons={lead.leadReasons}
         tone="lead"
+        locale={locale}
       />
       <DetailStat
         label={t("hot_score", locale)}
         value={lead.hotScore}
         reasons={lead.hotReasons}
         tone="hot"
+        locale={locale}
       />
     </div>
   );
 }
 
-const WHY_THIS_LEAD_FALLBACK =
-  "No strong intelligence signals yet. Enrich this lead to generate better recommendations.";
-
-const AI_INSIGHT_FALLBACK =
-  "Not enough intelligence signals yet. Enrich this lead to generate better insight.";
 const OUTREACH_ANGLE_FALLBACK = "No strong outreach angle detected yet.";
 const WEAK_OUTREACH_ANGLES = new Set([
   "Offer a lightweight way to handle reservation inquiries faster.",
@@ -3162,57 +3166,62 @@ function OutreachIntelligencePanel({
 }: {
   profile?: OutreachIntelligenceProfile;
 }) {
+  const { locale } = useLocale();
   if (!profile) return null;
   return (
     <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-          Outreach intelligence
+          {t("outreach_intel_section", locale)}
         </span>
         <span className={urgencyPillClass(profile.urgencyLevel)}>
           <span className="text-[9px] uppercase tracking-wider opacity-70">
-            Urgency
+            {t("urgency_label_header", locale)}
           </span>
-          <span>{URGENCY_LABEL[profile.urgencyLevel]}</span>
+          <span>{urgencyUiLabel(profile.urgencyLevel, locale)}</span>
         </span>
       </div>
       <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-            Best approach
+            {t("best_approach_header", locale)}
           </span>
           <span className={salesApproachPillClass(profile.salesApproach)}>
-            {SALES_APPROACH_LABEL[profile.salesApproach]}
+            {salesApproachUiLabel(profile.salesApproach, locale)}
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-            Style
+            {t("style_header", locale)}
           </span>
           <span className={outreachStylePillClass(profile.outreachStyle)}>
-            {OUTREACH_STYLE_LABEL[profile.outreachStyle]}
+            {outreachStyleUiLabel(profile.outreachStyle, locale)}
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-            Best channel
+            {t("best_channel_header", locale)}
           </span>
           <span className={recommendedChannelPillClass(profile.recommendedChannel)}>
-            {RECOMMENDED_CHANNEL_LABEL[profile.recommendedChannel]}
+            {recommendedChannelUiLabel(profile.recommendedChannel, locale)}
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-            Lead temperature
+            {t("lead_temperature_header", locale)}
           </span>
           <span className={temperaturePillClass(profile.leadTemperature)}>
-            {LEAD_TEMPERATURE_LABEL[profile.leadTemperature]}
+            {leadTemperatureUiLabel(profile.leadTemperature, locale)}
           </span>
         </div>
       </div>
       {profile.rationale.length > 0 ? (
         <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-zinc-500">
-          {profile.rationale.filter(Boolean).slice(0, 3).join(" · ")}
+          {profile.rationale
+            .filter(Boolean)
+            .slice(0, 3)
+            .map((line) => outreachRationaleUiLine(line, locale))
+            .join(" · ")}
         </p>
       ) : null}
     </div>
@@ -3220,6 +3229,7 @@ function OutreachIntelligencePanel({
 }
 
 function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [refined, setRefined] = useState<LeadAiInsight | null>(null);
   const [busy, setBusy] = useState(false);
@@ -3298,11 +3308,11 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
     <div className="space-y-3 rounded-xl border border-cyan-400/15 bg-cyan-500/[0.04] p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-[11px] font-medium uppercase tracking-wider text-cyan-200/90">
-          AI insight
+          {t("ai_insight_section", locale)}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className={aiSourceBadgeClass(active.source)}>
-            {active.source === "llm" ? "Model" : "Rules"}
+            {active.source === "llm" ? t("model_rules", locale) : t("rules", locale)}
           </span>
           {llmAvailable ? (
             <button
@@ -3319,14 +3329,14 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
 
       {!hasBody ? (
         <div className="rounded-lg border border-dashed border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-zinc-500">
-          {AI_INSIGHT_FALLBACK}
+          {t("ai_insight_fallback", locale)}
         </div>
       ) : (
         <>
           {active.aiInsight.trim() ? (
             <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
               <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-                Insight summary
+                {t("insight_summary_header", locale)}
               </div>
               <p className="text-xs leading-relaxed text-zinc-200">{active.aiInsight}</p>
             </div>
@@ -3335,7 +3345,7 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
           {active.painPointSummary.length > 0 ? (
             <div>
               <div className="mb-1.5 text-[10px] uppercase tracking-wider text-zinc-500">
-                Pain points
+                {t("pain_points_header", locale)}
               </div>
               <ul className="space-y-1 text-xs text-zinc-300">
                 {active.painPointSummary.map((line) => (
@@ -3352,7 +3362,7 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
 
           <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/[0.06] px-3 py-2">
             <div className="mb-1 text-[10px] uppercase tracking-wider text-cyan-200/90">
-              Outreach angle
+              {t("outreach_angle", locale)}
             </div>
             <p className="text-xs leading-relaxed text-zinc-200">
               {pickOutreachAngleText(active.outreachAngle, active.painPointSummary)}
@@ -3364,31 +3374,31 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-          Opportunity
+          {t("opportunity", locale)}
         </span>
         <span className={opportunityPillClass(active.opportunityLevel)}>
-          {active.opportunityLevel}
+          {opportunityLevelUiLabel(active.opportunityLevel, locale)}
         </span>
         {lead.outreachIntelligence ? (
           <span
             className={outreachStylePillClass(lead.outreachIntelligence.outreachStyle)}
-            title={`Style: ${OUTREACH_STYLE_LABEL[lead.outreachIntelligence.outreachStyle]}`}
+            title={`${t("style_header", locale)}: ${outreachStyleUiLabel(lead.outreachIntelligence.outreachStyle, locale)}`}
           >
             <span className="text-[9px] uppercase tracking-wider opacity-70">
-              Style
+              {t("style_header", locale)}
             </span>
-            <span>{OUTREACH_STYLE_LABEL[lead.outreachIntelligence.outreachStyle]}</span>
+            <span>{outreachStyleUiLabel(lead.outreachIntelligence.outreachStyle, locale)}</span>
           </span>
         ) : null}
         {lead.outreachIntelligence ? (
           <span
             className={recommendedChannelPillClass(lead.outreachIntelligence.recommendedChannel)}
-            title={`Best channel: ${RECOMMENDED_CHANNEL_LABEL[lead.outreachIntelligence.recommendedChannel]}`}
+            title={`${t("best_channel_header", locale)}: ${recommendedChannelUiLabel(lead.outreachIntelligence.recommendedChannel, locale)}`}
           >
             <span className="text-[9px] uppercase tracking-wider opacity-70">
-              Channel
+              {t("channel_pill_header", locale)}
             </span>
-            <span>{RECOMMENDED_CHANNEL_LABEL[lead.outreachIntelligence.recommendedChannel]}</span>
+            <span>{recommendedChannelUiLabel(lead.outreachIntelligence.recommendedChannel, locale)}</span>
           </span>
         ) : null}
       </div>
@@ -3417,11 +3427,12 @@ function WhyThisLeadChips({
   limit?: number;
   showFallback?: boolean;
 }) {
+  const { locale } = useLocale();
   const reasons = getWhyThisLeadReasons(lead, { enrichment, limit });
   if (reasons.length === 0) {
     return showFallback ? (
       <div className="mt-2 text-[11px] leading-relaxed text-zinc-500">
-        {WHY_THIS_LEAD_FALLBACK}
+        {t("why_this_lead_fallback", locale)}
       </div>
     ) : null;
   }
@@ -3432,9 +3443,9 @@ function WhyThisLeadChips({
         <span
           key={reason.id}
           className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ring-1 ring-inset ${whyThisLeadToneClass(reason.tone)}`}
-          title="Why this lead?"
+          title={t("why_this_lead_chip_title", locale)}
         >
-          {reason.label}
+          {getWhyThisLeadReasonLabel(reason.id, reason.label, locale)}
         </span>
       ))}
     </div>
@@ -3448,11 +3459,12 @@ function WhyThisLeadReasonList({
   lead: ScoredLead;
   enrichment?: WhyThisLeadEnrichment;
 }) {
+  const { locale } = useLocale();
   const reasons = getWhyThisLeadReasons(lead, { enrichment, limit: 5 });
   if (reasons.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-zinc-500">
-        {WHY_THIS_LEAD_FALLBACK}
+        {t("why_this_lead_fallback", locale)}
       </div>
     );
   }
@@ -3464,7 +3476,7 @@ function WhyThisLeadReasonList({
           <span className="mt-0.5 shrink-0 text-emerald-400" aria-hidden>
             ✓
           </span>
-          <span>{reason.label}</span>
+          <span>{getWhyThisLeadReasonLabel(reason.id, reason.label, locale)}</span>
         </li>
       ))}
     </ul>
@@ -3478,6 +3490,7 @@ function LeadDetailIntelligenceSection({
   lead: LeadTableRow;
   finderPersisted?: ContactFinderResult;
 }) {
+  const { locale } = useLocale();
   const angle = lead.heuristicOutreachAngle?.trim() ?? "";
   const intel = lead.intelligenceScore ?? 0;
   const badges = lead.businessSignals ?? [];
@@ -3486,7 +3499,7 @@ function LeadDetailIntelligenceSection({
     <div className="space-y-3 rounded-xl border border-violet-400/20 bg-violet-500/[0.04] p-4">
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] font-medium uppercase tracking-wider text-violet-200/90">
-          Lead intelligence
+          {t("lead_intelligence_section", locale)}
         </div>
         <div
           className="tabular-nums text-sm font-semibold text-violet-100"
@@ -3498,7 +3511,7 @@ function LeadDetailIntelligenceSection({
       <OutreachIntelligencePanel profile={lead.outreachIntelligence} />
       <div>
         <div className="mb-2 text-[11px] uppercase tracking-wider text-zinc-500">
-          Why this lead?
+          {t("why_this_lead_heading", locale)}
         </div>
         <WhyThisLeadReasonList lead={lead} enrichment={finderPersisted} />
       </div>
@@ -3507,9 +3520,9 @@ function LeadDetailIntelligenceSection({
           {badges.slice(0, 8).map((b) => (
             <span
               key={b}
-              className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] capitalize text-zinc-400 ring-1 ring-inset ring-white/10"
+              className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-400 ring-1 ring-inset ring-white/10"
             >
-              {b.replace(/_/g, " ")}
+              {businessSignalUiLabel(b, locale)}
             </span>
           ))}
         </div>
@@ -3517,7 +3530,7 @@ function LeadDetailIntelligenceSection({
       {angle ? (
         <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs leading-relaxed text-zinc-300">
           <span className="text-[10px] uppercase tracking-wider text-zinc-500">
-            Consultative angle ·{" "}
+            {t("consultative_angle_prefix", locale)}{" "}
           </span>
           {angle}
         </div>
@@ -7723,11 +7736,13 @@ function DetailStat({
   value,
   reasons,
   tone,
+  locale,
 }: {
   label: string;
   value: number;
   reasons: string[];
   tone: "lead" | "hot";
+  locale: Locale;
 }) {
   const accent =
     tone === "hot"
@@ -7757,7 +7772,7 @@ function DetailStat({
                   key={`${r}-${i}`}
                   className="inline-flex items-center rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300 ring-1 ring-inset ring-white/10"
                 >
-                  {r}
+                  {scoringChipReasonUiLabel(r, locale)}
                 </span>,
               );
             }
