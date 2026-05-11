@@ -62,16 +62,27 @@ import ImportPanel, {
 } from "@/app/components/ImportPanel";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 import {
+  acquisitionSignalUiLine,
+  acquisitionWeaknessUiLine,
+  aiInsightParagraphUiText,
   businessSignalUiLabel,
+  contactFinderConfidenceUiLabel,
+  contactFinderSourceUiLabel,
   contactQualityUiLabel,
   conversionLeakChipDisplay,
   fillTemplate,
+  followUpTimerUiLabel,
   getWhyThisLeadReasonLabel,
+  leadSignalUiLine,
   leadTemperatureUiLabel,
+  nextActionUiCopy,
   opportunityLevelUiLabel,
+  outreachAngleUiLine,
   outreachPriorityChipLabel,
   outreachRationaleUiLine,
   outreachStyleUiLabel,
+  painPointUiLine,
+  pipelineStageUiLabel,
   queueMessageStatusUiLabel,
   queueSourceUiLabel,
   recommendedActionUiLabel,
@@ -298,17 +309,15 @@ function followUpTargetTimestamp(s: LeadStatusUpdate): number | null {
   return null;
 }
 
-function nextActionCopy(s: LeadStatusUpdate): string {
-  if (s.status === "won" || s.status === "lost") return "Completed";
-  if (s.status === "meeting") return "Close deal";
-  if (s.status === "replied") return "Move to meeting";
-  if (s.status === "needs_follow_up") return "Send follow-up message";
-  if (s.status === "contacted") return "Follow up";
-  if (s.status === "new") return "Send first message";
-  return "Review lead";
+function nextActionCopy(s: LeadStatusUpdate, locale: Locale): string {
+  return nextActionUiCopy(s.status, locale);
 }
 
-function followUpTimerLine(s: LeadStatusUpdate, now: number): string | null {
+function followUpTimerLine(
+  s: LeadStatusUpdate,
+  now: number,
+  locale: Locale,
+): string | null {
   if (
     s.status === "new" ||
     s.status === "replied" ||
@@ -320,9 +329,9 @@ function followUpTimerLine(s: LeadStatusUpdate, now: number): string | null {
   }
   const target = followUpTargetTimestamp(s);
   if (target === null) return null;
-  if (now >= target) return "Follow up now";
+  if (now >= target) return followUpTimerUiLabel(0, locale);
   const h = Math.max(1, Math.ceil((target - now) / (60 * 60 * 1000)));
-  return `Follow up in ${h} hour${h === 1 ? "" : "s"}`;
+  return followUpTimerUiLabel(h, locale);
 }
 
 /** Current-state only: if persisted value is an array (legacy / corrupt), use the last element. */
@@ -2230,7 +2239,7 @@ function LeadInstagramAction({
         href={igHref!}
         target="_blank"
         rel="noopener noreferrer"
-        title={`Instagram verified · @${instagram}`}
+        title={`${t("instagram_verified", locale)} · @${instagram}`}
         onClick={(e) => e.stopPropagation()}
         className={`${square} border-pink-400/20 bg-pink-500/10 text-pink-300 hover:bg-pink-500/20`}
       >
@@ -2244,7 +2253,7 @@ function LeadInstagramAction({
         href={suggestedHref}
         target="_blank"
         rel="noopener noreferrer"
-        title={`Broken Instagram link · search @${firstSuggested}`}
+        title={`${t("ig_discovery_broken_title", locale)} · @${firstSuggested}`}
         onClick={(e) => e.stopPropagation()}
         className={`${square} border-amber-400/25 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20`}
       >
@@ -2258,7 +2267,7 @@ function LeadInstagramAction({
         href={suggestedHref}
         target="_blank"
         rel="noopener noreferrer"
-        title={`Search Instagram · @${firstSuggested} (suggested)`}
+        title={`${t("search_ig", locale)} · @${firstSuggested}`}
         onClick={(e) => e.stopPropagation()}
         className={`${square} border-violet-400/25 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20`}
       >
@@ -2310,11 +2319,11 @@ function InstagramDiscoveryPanel({
   let toneRing: string;
   let toneText: string;
   if (status === "broken") {
-    title = "Broken Instagram link";
+    title = t("ig_discovery_broken_title", locale);
     toneRing = "ring-amber-400/30 bg-amber-500/[0.06]";
     toneText = "text-amber-200";
   } else {
-    title = "Possible Instagram";
+    title = t("ig_discovery_possible_title", locale);
     toneRing = "ring-violet-400/25 bg-violet-500/[0.06]";
     toneText = "text-violet-200";
   }
@@ -2413,7 +2422,7 @@ function AcquisitionIntelligencePanel({
               <ul className="list-inside list-disc space-y-0.5">
                 {signalLines.map((line) => (
                   <li key={line} className="text-zinc-300">
-                    {line}
+                    {acquisitionSignalUiLine(line, locale)}
                   </li>
                 ))}
               </ul>
@@ -2427,7 +2436,7 @@ function AcquisitionIntelligencePanel({
               <ul className="list-inside list-disc space-y-0.5">
                 {weaknessLines.map((line) => (
                   <li key={line} className="text-zinc-300">
-                    {line}
+                    {acquisitionWeaknessUiLine(line, locale)}
                   </li>
                 ))}
               </ul>
@@ -2506,7 +2515,12 @@ type AiMessageModalState =
       phase: "ready";
       message: string;
       styles: Record<OutreachMessageStyle, string>;
+      draftByStyle: Record<OutreachMessageStyle, string>;
       selectedStyle: OutreachMessageStyle;
+      rationaleNote?: string;
+      llmRefined?: boolean;
+      provider?: string | null;
+      regenerateNonce: number;
     }
   | { lead: ScoredLead; phase: "error"; error: string };
 
@@ -2552,6 +2566,11 @@ function AiMessageModal({
   const { locale } = useLocale();
   const [copied, setCopied] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<OutreachMessageStyle>("soft");
+  const [draftByStyle, setDraftByStyle] = useState<Record<OutreachMessageStyle, string>>({
+    soft: "",
+    direct: "",
+    premium: "",
+  });
 
   useEffect(() => {
     setCopied(false);
@@ -2560,6 +2579,7 @@ function AiMessageModal({
   useEffect(() => {
     if (state?.phase === "ready") {
       setSelectedStyle(state.selectedStyle);
+      setDraftByStyle(state.draftByStyle ?? state.styles);
     }
   }, [state]);
 
@@ -2567,7 +2587,9 @@ function AiMessageModal({
 
   const { lead } = state;
   const displayMessage =
-    state.phase === "ready" ? state.styles[selectedStyle] || state.message : "";
+    state.phase === "ready"
+      ? draftByStyle[selectedStyle] || state.styles[selectedStyle] || state.message
+      : "";
   const messageVariantForLog: OutreachMessageVariant =
     selectedStyle === "premium" ? "consultative" : selectedStyle;
   const waReady =
@@ -2680,9 +2702,17 @@ function AiMessageModal({
                   </button>
                 ))}
               </div>
-              <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-zinc-200 sm:text-sm">
-                {displayMessage}
-              </p>
+              {state.rationaleNote ? (
+                <p className="text-[11px] text-zinc-500">{state.rationaleNote}</p>
+              ) : null}
+              <textarea
+                value={displayMessage}
+                onChange={(e) => {
+                  const next = e.target.value ?? "";
+                  setDraftByStyle((cur) => ({ ...cur, [selectedStyle]: next }));
+                }}
+                className="min-h-[160px] w-full resize-y rounded-lg border border-white/10 bg-white/5 p-3 text-[15px] leading-relaxed text-zinc-200 outline-none focus:border-violet-400/40 focus:ring-2 focus:ring-violet-500/20 sm:text-sm"
+              />
               <p className="text-[11px] text-zinc-500">{t("manual_outreach_note", locale)}</p>
             </div>
           )}
@@ -2690,6 +2720,13 @@ function AiMessageModal({
 
         {state.phase === "ready" && (
           <div className="sticky bottom-0 flex flex-col gap-2 border-t border-white/10 bg-zinc-950/95 px-4 py-3 backdrop-blur sm:flex-row sm:items-center sm:justify-end">
+            <button
+              type="button"
+              onClick={() => onRetry(lead)}
+              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 sm:w-auto sm:py-1.5 sm:text-xs"
+            >
+              Yeniden üret
+            </button>
             <button
               type="button"
               onClick={() => void handleCopy()}
@@ -2924,7 +2961,10 @@ function HotCard({
           </span>
         </div>
         <p className="line-clamp-2 text-[10px] leading-relaxed text-zinc-300">
-          {pickOutreachAngleText(lead.outreachAngle, lead.painPointSummary)}
+          {outreachAngleUiLine(
+            pickOutreachAngleText(lead.outreachAngle, lead.painPointSummary),
+            locale,
+          )}
         </p>
       </div>
       {lead.opportunityLevel ? (
@@ -3298,7 +3338,7 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
         source: data.source === "llm" ? "llm" : "rules",
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Refine failed");
+      setError(e instanceof Error ? e.message : t("detail_refine_failed", locale));
     } finally {
       setBusy(false);
     }
@@ -3321,7 +3361,7 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
               onClick={() => void refineWithLlm()}
               className="inline-flex items-center rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium text-cyan-100 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {busy ? "Refining…" : "Polish with AI"}
+              {busy ? t("detail_refining_with_ai", locale) : t("detail_polish_with_ai", locale)}
             </button>
           ) : null}
         </div>
@@ -3338,7 +3378,11 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
               <div className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
                 {t("insight_summary_header", locale)}
               </div>
-              <p className="text-xs leading-relaxed text-zinc-200">{active.aiInsight}</p>
+              <p className="text-xs leading-relaxed text-zinc-200">
+                {active.source === "llm"
+                  ? active.aiInsight
+                  : aiInsightParagraphUiText(active.aiInsight, locale)}
+              </p>
             </div>
           ) : null}
 
@@ -3353,7 +3397,7 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
                     <span className="text-cyan-400" aria-hidden>
                       •
                     </span>
-                    <span>{line}</span>
+                    <span>{painPointUiLine(line, locale)}</span>
                   </li>
                 ))}
               </ul>
@@ -3365,7 +3409,10 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
               {t("outreach_angle", locale)}
             </div>
             <p className="text-xs leading-relaxed text-zinc-200">
-              {pickOutreachAngleText(active.outreachAngle, active.painPointSummary)}
+              {outreachAngleUiLine(
+                pickOutreachAngleText(active.outreachAngle, active.painPointSummary),
+                locale,
+              )}
             </p>
           </div>
 
@@ -3503,7 +3550,7 @@ function LeadDetailIntelligenceSection({
         </div>
         <div
           className="tabular-nums text-sm font-semibold text-violet-100"
-          title="Signal-based opportunity score (structured data, not star rating)"
+          title={t("intelligence_score_title", locale)}
         >
           {intel}
         </div>
@@ -3540,17 +3587,18 @@ function LeadDetailIntelligenceSection({
 }
 
 function LeadDetailMetrics({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
   return (
     <div className="grid grid-cols-2 gap-3 text-xs">
-      <KV label="Units" value={lead.units.toString()} />
-      <KV label="ADR" value={formatTRY(lead.pricePerNight)} />
+      <KV label={t("detail_units", locale)} value={lead.units.toString()} />
+      <KV label={t("detail_adr", locale)} value={formatTRY(lead.pricePerNight)} />
       <KV
-        label="Occupancy 30d"
+        label={t("detail_occupancy_30d", locale)}
         value={`${Math.round(lead.occupancy30d * 100)}%`}
       />
-      <KV label="Rating" value={lead.rating.toFixed(1)} />
-      <KV label="Reviews" value={lead.reviewsCount.toString()} />
-      <KV label="Channels" value={lead.channels.join(", ")} />
+      <KV label={t("detail_rating", locale)} value={lead.rating.toFixed(1)} />
+      <KV label={t("detail_reviews", locale)} value={lead.reviewsCount.toString()} />
+      <KV label={t("detail_channels", locale)} value={lead.channels.join(", ")} />
     </div>
   );
 }
@@ -3582,7 +3630,10 @@ function LeadDetailContactSection({
           label={t("contact_quality", locale)}
           value={contactQualityUiLabel(lead.contactQuality, locale)}
         />
-        <KV label="Source" value="Google Maps" />
+        <KV
+          label={t("detail_source", locale)}
+          value={t("detail_source_google_maps", locale)}
+        />
         <KV
           label={t("first_imported_label", locale)}
           value={relativeCalendarLabel(lead.firstImportedAt ?? lead.createdAt, nowTs, locale)}
@@ -3601,20 +3652,18 @@ function LeadDetailContactSection({
           onChange={(e) => updateLead(lead.id, { doNotContact: e.target.checked })}
         />
         <span>
-          Do not contact{" "}
-          <span className="text-zinc-500">
-            (disables outreach and hides from Focused / Hot)
-          </span>
+          {t("do_not_contact", locale)}{" "}
+          <span className="text-zinc-500">{t("detail_dnc_helper", locale)}</span>
         </span>
       </label>
 
       {lead.signals.length > 0 && (
         <div>
           <div className="mb-1.5 text-[11px] uppercase tracking-wider text-zinc-500">
-            Signals
+            {t("detail_signals_header", locale)}
           </div>
           <p className="text-[11px] leading-relaxed text-zinc-300">
-            {lead.signals.join(" · ")}
+            {lead.signals.map((s) => leadSignalUiLine(s, locale)).join(" · ")}
           </p>
         </div>
       )}
@@ -3649,29 +3698,31 @@ function LeadDetailContactSection({
         <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div className="text-[11px] uppercase tracking-wider text-zinc-500">
-              Contact Finder
+              {t("detail_contact_finder_header", locale)}
             </div>
             <button
               type="button"
               onClick={() => void findBestContact(lead.id, lead.website!)}
               className="inline-flex shrink-0 items-center gap-2 rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20"
             >
-              Find Best Contact
+              {t("detail_find_best_contact", locale)}
             </button>
           </div>
           {!loadingHere && !finderErrHere && !finderPersisted && (
             <div className="text-zinc-500">
-              Click &quot;Find Best Contact&quot; to analyze homepage contact channels.
+              {t("detail_find_best_contact_hint", locale)}
             </div>
           )}
-          {loadingHere && <div className="text-zinc-300">Analyzing website...</div>}
+          {loadingHere && (
+            <div className="text-zinc-300">{t("detail_analyzing_website", locale)}</div>
+          )}
           {finderRequest.status === "error" && finderRequest.leadId === lead.id && (
             <div className="text-rose-300">{finderRequest.message}</div>
           )}
           {finderPersisted && !loadingHere && !finderErrHere && (
             <div className="space-y-1.5 text-zinc-300">
               <div>
-                <span className="text-zinc-500">Best Contact:</span>{" "}
+                <span className="text-zinc-500">{t("detail_best_contact_label", locale)}</span>{" "}
                 <span
                   className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
                     finderPersisted.bestContactType === "VERIFIED_WHATSAPP" ||
@@ -3688,33 +3739,35 @@ function LeadDetailContactSection({
                 >
                   {finderPersisted.bestContactType === "VERIFIED_WHATSAPP" ||
                   finderPersisted.bestContactType === "whatsapp"
-                    ? "Verified WhatsApp"
+                    ? t("detail_verified_whatsapp", locale)
                     : finderPersisted.bestContactType === "GENERATED_WHATSAPP"
-                      ? "WhatsApp Available"
+                      ? t("detail_whatsapp_available", locale)
                       : finderPersisted.bestContactType === "PHONE_ONLY" ||
                           finderPersisted.bestContactType === "mobile" ||
                           finderPersisted.bestContactType === "phone"
-                        ? "Phone Only"
+                        ? t("detail_phone_only", locale)
                         : finderPersisted.bestContactType.toUpperCase()}
                 </span>
               </div>
               <div>
-                <span className="text-zinc-500">Value:</span>{" "}
+                <span className="text-zinc-500">{t("detail_value_label", locale)}</span>{" "}
                 <span className="font-medium text-zinc-100">
                   {finderPersisted.bestContactValue}
                 </span>
               </div>
               <div>
-                <span className="text-zinc-500">Confidence:</span>{" "}
+                <span className="text-zinc-500">{t("detail_confidence_label", locale)}</span>{" "}
                 <span className="font-medium text-zinc-100">
-                  {finderPersisted.confidence}
+                  {contactFinderConfidenceUiLabel(finderPersisted.confidence, locale)}
                 </span>
               </div>
               <div>
-                <span className="text-zinc-500">Source:</span> {finderPersisted.source}
+                <span className="text-zinc-500">{t("detail_source", locale)}:</span>{" "}
+                {contactFinderSourceUiLabel(finderPersisted.source, locale)}
               </div>
               <div>
-                <span className="text-zinc-500">Reason:</span> {finderPersisted.reason}
+                <span className="text-zinc-500">{t("detail_reason_label", locale)}</span>{" "}
+                {finderPersisted.reason}
               </div>
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <button
@@ -3728,13 +3781,13 @@ function LeadDetailContactSection({
                   }}
                   className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-medium text-zinc-200 hover:bg-white/10"
                 >
-                  Copy Number
+                  {t("detail_copy_number", locale)}
                 </button>
               </div>
               {finderPersisted.bestContactType === "website" && lead.phone && (
                 <div>
-                  <span className="text-zinc-500">Source:</span> Google Places phone (
-                  {lead.phone})
+                  <span className="text-zinc-500">{t("detail_source", locale)}:</span>{" "}
+                  {t("detail_google_places_phone", locale)} ({lead.phone})
                 </div>
               )}
             </div>
@@ -3746,9 +3799,8 @@ function LeadDetailContactSection({
 }
 
 /** Follow-up meta + Next Action + Send Message + status (single drawer block, no duplicate sections). */
-function pipelineStageLabel(s: LeadStatusUpdate): string {
-  if (s.doNotContact) return "do_not_contact";
-  return s.status;
+function pipelineStageLabel(s: LeadStatusUpdate, locale: Locale): string {
+  return pipelineStageUiLabel(s.status, Boolean(s.doNotContact), locale);
 }
 
 function LeadDetailWorkflowSection({
@@ -3788,16 +3840,19 @@ function LeadDetailWorkflowSection({
           label={t("do_not_contact", locale)}
           value={s.doNotContact ? t("yes_word", locale) : t("no_word", locale)}
         />
-        <KV label={t("pipeline_stage_label", locale)} value={pipelineStageLabel(s)} />
+        <KV
+          label={t("pipeline_stage_label", locale)}
+          value={pipelineStageLabel(s, locale)}
+        />
       </div>
 
       <div className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2.5 text-xs">
         <div className="text-[10px] uppercase tracking-wider text-zinc-500">
           {t("next_action_header", locale)}
         </div>
-        <p className="mt-1 text-sm text-zinc-100">{nextActionCopy(s)}</p>
+        <p className="mt-1 text-sm text-zinc-100">{nextActionCopy(s, locale)}</p>
         {(() => {
-          const timer = followUpTimerLine(s, now);
+          const timer = followUpTimerLine(s, now, locale);
           if (!timer) return null;
           return <p className="mt-1 text-zinc-400">{timer}</p>;
         })()}
@@ -3822,24 +3877,27 @@ function LeadDetailWorkflowSection({
           onClick={onSendMessage}
           title={
             s.doNotContact
-              ? "Do not contact"
+              ? t("detail_send_title_dnc", locale)
               : terminal
-                ? "Pipeline closed"
+                ? t("detail_send_title_pipeline_closed", locale)
                 : whatsappLink(lead.phone)
-                  ? "Generate message and open WhatsApp"
-                  : "Generate message (copy or send when ready)"
+                  ? t("detail_send_title_open_wa", locale)
+                  : t("detail_send_title_prepare", locale)
           }
           className="mt-3 w-full rounded-md bg-indigo-500 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {sendMessageBusy ? "Preparing…" : "Send Message"}
+          {sendMessageBusy ? t("detail_preparing_message", locale) : t("detail_send_message", locale)}
         </button>
 
         <div className="mt-4 border-t border-white/10 pt-3">
           <div className="mb-1.5 flex items-center justify-between">
-            <div className="text-[11px] uppercase tracking-wider text-zinc-500">Status</div>
+            <div className="text-[11px] uppercase tracking-wider text-zinc-500">
+              {t("detail_status_header", locale)}
+            </div>
             {s.updatedAt && (
               <div className="text-[10px] text-zinc-600">
-                Updated {new Date(s.updatedAt).toLocaleString("en-GB")}
+                {t("detail_status_updated_prefix", locale)}{" "}
+                {new Date(s.updatedAt).toLocaleString(locale === "tr" ? "tr-TR" : "en-GB")}
               </div>
             )}
           </div>
@@ -3902,18 +3960,20 @@ function LeadDetailReplyHelperSection({
       ? whatsappLinkWithText(lead.phone, suggestion.message)
       : null;
   const suggestedLabel = suggestion?.suggestDoNotContact
-    ? "Lost + Do Not Contact"
+    ? t("detail_lost_plus_dnc", locale)
     : suggestion?.suggestedStatus
       ? statusUiLabel(suggestion.suggestedStatus, locale)
-      : "No status suggestion";
+      : t("detail_no_status_suggestion", locale);
 
   return (
     <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
-      <div className="mb-2 text-[10px] uppercase tracking-wider text-zinc-500">Reply Helper</div>
+      <div className="mb-2 text-[10px] uppercase tracking-wider text-zinc-500">
+        {t("detail_reply_helper_header", locale)}
+      </div>
       <textarea
         value={ownerReplyDraft}
         onChange={(e) => onOwnerReplyChange(e.target.value)}
-        placeholder="Owner reply buraya..."
+        placeholder={t("detail_owner_reply_placeholder", locale)}
         rows={3}
         className="w-full resize-none rounded-md border border-white/10 bg-black/30 p-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
       />
@@ -3923,12 +3983,14 @@ function LeadDetailReplyHelperSection({
         onClick={onGenerate}
         className="mt-2 w-full rounded-md bg-indigo-500 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {generateBusy ? "Generating…" : "Generate Reply"}
+        {generateBusy ? t("detail_generating_reply", locale) : t("detail_generate_reply", locale)}
       </button>
       {generateError && <p className="mt-2 text-rose-300">{generateError}</p>}
       {suggestion && (
         <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-2.5">
-          <div className="text-[10px] uppercase tracking-wider text-zinc-500">Suggested Reply</div>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+            {t("detail_suggested_reply_header", locale)}
+          </div>
           <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-100">{suggestion.message}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
@@ -3936,7 +3998,7 @@ function LeadDetailReplyHelperSection({
               onClick={onCopyReply}
               className="rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-xs text-zinc-200 hover:bg-white/10"
             >
-              {copied ? "Copied" : "Copy Reply"}
+              {copied ? t("detail_copied", locale) : t("detail_copy_reply", locale)}
             </button>
             {waLink ? (
               <button
@@ -3945,7 +4007,7 @@ function LeadDetailReplyHelperSection({
                 className="inline-flex items-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-2.5 py-1 text-xs font-medium text-[#25D366] hover:bg-[#25D366]/25"
               >
                 <IconWhatsapp className="h-3.5 w-3.5" />
-                Send via WhatsApp
+                {t("detail_send_via_whatsapp", locale)}
               </button>
             ) : null}
             {(suggestion.suggestedStatus || suggestion.suggestDoNotContact) && (
@@ -3954,12 +4016,12 @@ function LeadDetailReplyHelperSection({
                 onClick={onApplySuggestion}
                 className="rounded-md border border-indigo-400/35 bg-indigo-500/15 px-2.5 py-1 text-xs text-indigo-200 hover:bg-indigo-500/25"
               >
-                Apply Suggested Status
+                {t("detail_apply_suggested_status", locale)}
               </button>
             )}
           </div>
           <div className="mt-2 inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-zinc-300">
-            Suggested next status: {suggestedLabel}
+            {t("detail_suggested_next_status", locale)} {suggestedLabel}
           </div>
         </div>
       )}
@@ -3978,17 +4040,22 @@ function LeadDetailNotesSection({
   setDraftNote: (v: string) => void;
   updateLead: (id: string, patch: Partial<LeadStatusUpdate>) => void;
 }) {
+  const { locale } = useLocale();
   const s = lead._s;
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between">
-        <div className="text-[11px] uppercase tracking-wider text-zinc-500">Notes</div>
-        <div className="text-[10px] text-zinc-600">{draftNote.length} chars</div>
+        <div className="text-[11px] uppercase tracking-wider text-zinc-500">
+          {t("detail_notes_header", locale)}
+        </div>
+        <div className="text-[10px] text-zinc-600">
+          {draftNote.length} {t("detail_notes_chars_suffix", locale)}
+        </div>
       </div>
       <textarea
         value={draftNote}
         onChange={(e) => setDraftNote(e.target.value)}
-        placeholder="Owner picks up calls in the afternoon. Interested in direct booking site. Follow up Tuesday."
+        placeholder={t("detail_notes_placeholder", locale)}
         rows={6}
         className="w-full resize-none rounded-md border border-white/10 bg-black/30 p-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
       />
@@ -3997,13 +4064,13 @@ function LeadDetailNotesSection({
           onClick={() => setDraftNote(s.note ?? "")}
           className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
         >
-          Reset
+          {t("detail_notes_reset", locale)}
         </button>
         <button
           onClick={() => updateLead(lead.id, { note: draftNote })}
           className="rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400"
         >
-          Save note
+          {t("detail_notes_save", locale)}
         </button>
       </div>
     </div>
@@ -5125,12 +5192,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        leadId: lead.id,
         name: lead.name,
         type: lead.type,
         location: `${lead.city}, ${lead.region}`,
         leadScore: lead.leadScore,
         hotScore: lead.hotScore,
         followUp,
+        regenerateNonce: 0,
         intelligenceScore: lead.intelligenceScore ?? 0,
         smartLeadScoreV2: lead.smartLeadScoreV2,
         reviewIntelligenceScore: lead.reviewIntelligenceScore ?? 0,
@@ -5143,6 +5212,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         painPointSummary: lead.painPointSummary ?? [],
         outreachAngle: lead.outreachAngle ?? "",
         outreachIntelligence: lead.outreachIntelligence,
+        whyThisLead: lead.whyThisLead ?? [],
+        websiteIntelligence: lead.websiteIntelligence ?? null,
+        acquisitionIntelligence: lead.acquisitionIntelligence ?? null,
+        conversionLeak: lead.conversionLeak ?? null,
+        commercialReadiness: lead.commercialReadiness ?? null,
+        opportunityProfile: lead.opportunityProfile ?? null,
       }),
     });
     const data = (await res.json()) as { message?: string; error?: string };
@@ -5159,21 +5234,37 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const generateLeadAiStylePack = async (
     lead: ScoredLead,
     followUp = false,
-  ): Promise<{ styles: { direct: string; soft: string; premium: string }; fallback: string }> => {
+    regenerateNonce = 0,
+  ): Promise<{
+    styles: { direct: string; soft: string; premium: string };
+    fallback: string;
+    rationaleNote?: string;
+    llmRefined?: boolean;
+    provider?: string | null;
+  }> => {
     const hasWhatsAppPath = Boolean(whatsappLink(lead.phone));
     const res = await fetch("/api/generate-message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        leadId: lead.id,
         name: lead.name,
         type: lead.type,
         location: `${lead.city}, ${lead.region}`,
         leadScore: lead.leadScore,
         hotScore: lead.hotScore,
         followUp,
+        regenerateNonce,
         intelligenceScore: lead.intelligenceScore ?? 0,
         smartLeadScoreV2: lead.smartLeadScoreV2,
         reviewIntelligenceScore: lead.reviewIntelligenceScore ?? 0,
+        reviewsCount: lead.reviewsCount,
+        daysSinceLastReview: lead.daysSinceLastReview,
+        bookingFlowStrength: lead.bookingFlowStrength,
+        otaDependencyLikelihood: lead.otaDependencyLikelihood,
+        socialDemandStrength: lead.socialDemandStrength,
+        communicationRisk: lead.communicationRisk,
+        contactReadinessScore: lead.contactReadinessScore,
         contactQuality: lead.contactQuality,
         hasWhatsAppPath,
         hasInstagram: lead.hasInstagram,
@@ -5183,6 +5274,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         painPointSummary: lead.painPointSummary ?? [],
         outreachAngle: lead.outreachAngle ?? "",
         outreachIntelligence: lead.outreachIntelligence,
+        whyThisLead: lead.whyThisLead ?? [],
+        websiteIntelligence: lead.websiteIntelligence ?? null,
+        acquisitionIntelligence: lead.acquisitionIntelligence ?? null,
+        conversionLeak: lead.conversionLeak ?? null,
+        commercialReadiness: lead.commercialReadiness ?? null,
+        opportunityProfile: lead.opportunityProfile ?? null,
       }),
     });
     const data = (await res.json()) as {
@@ -5190,6 +5287,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       message?: string;
       error?: string;
       variations?: string[];
+      rationaleNote?: string;
+      llm_refined?: boolean;
+      meta?: { provider?: string | null };
     };
     if (!res.ok) {
       throw new Error(data.error || `Sunucu hatası (${res.status})`);
@@ -5205,7 +5305,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     if (!direct || !soft || !premium) {
       throw new Error("AI message styles missing");
     }
-    return { styles: { direct, soft, premium }, fallback };
+    return {
+      styles: { direct, soft, premium },
+      fallback,
+      rationaleNote: typeof data.rationaleNote === "string" ? data.rationaleNote : undefined,
+      llmRefined: Boolean(data.llm_refined),
+      provider: data.meta?.provider ?? null,
+    };
   };
 
   const generateReplyHelperSuggestion = async (lead: LeadTableRow) => {
@@ -5300,7 +5406,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const useFollowUpCopy = st.status === "needs_follow_up";
     setAiMessageModal({ lead, phase: "loading" });
     try {
-      const pack = await generateLeadAiStylePack(lead, useFollowUpCopy);
+      const pack = await generateLeadAiStylePack(lead, useFollowUpCopy, 0);
       const message = pack.styles.soft || pack.fallback;
       appendOutreachEvent(lead.id, "message_prepared", {
         messageVariant: "soft",
@@ -5311,7 +5417,45 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         phase: "ready",
         message,
         styles: pack.styles,
+        draftByStyle: { ...pack.styles },
         selectedStyle: "soft",
+        rationaleNote: pack.rationaleNote,
+        llmRefined: pack.llmRefined,
+        provider: pack.provider ?? null,
+        regenerateNonce: 0,
+      });
+    } catch (e) {
+      setAiMessageModal({
+        lead,
+        phase: "error",
+        error: e instanceof Error ? e.message : "Bir hata oluştu",
+      });
+    }
+  };
+
+  const regenerateAiMessage = async (lead: ScoredLead) => {
+    const st = getLeadState(lead.id);
+    if (st.doNotContact) return;
+    const useFollowUpCopy = st.status === "needs_follow_up";
+    const nextNonce =
+      aiMessageModal?.phase === "ready" && aiMessageModal.lead.id === lead.id
+        ? aiMessageModal.regenerateNonce + 1
+        : 1;
+    setAiMessageModal({ lead, phase: "loading" });
+    try {
+      const pack = await generateLeadAiStylePack(lead, useFollowUpCopy, nextNonce);
+      const message = pack.styles.soft || pack.fallback;
+      setAiMessageModal({
+        lead,
+        phase: "ready",
+        message,
+        styles: pack.styles,
+        draftByStyle: { ...pack.styles },
+        selectedStyle: "soft",
+        rationaleNote: pack.rationaleNote,
+        llmRefined: pack.llmRefined,
+        provider: pack.provider ?? null,
+        regenerateNonce: nextNonce,
       });
     } catch (e) {
       setAiMessageModal({
@@ -5328,7 +5472,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     const followUp = st.status === "needs_follow_up";
     setDrawerSendBusy(true);
     try {
-      const pack = await generateLeadAiStylePack(lead, followUp);
+      const pack = await generateLeadAiStylePack(lead, followUp, 0);
       const message = pack.styles.soft || pack.fallback;
       appendOutreachEvent(lead.id, "message_prepared", {
         messageVariant: "soft",
@@ -5339,7 +5483,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         phase: "ready",
         message,
         styles: pack.styles,
+        draftByStyle: { ...pack.styles },
         selectedStyle: "soft",
+        rationaleNote: pack.rationaleNote,
+        llmRefined: pack.llmRefined,
+        provider: pack.provider ?? null,
+        regenerateNonce: 0,
       });
     } catch (e) {
       setAiMessageModal({
@@ -7340,7 +7489,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       <AiMessageModal
         state={aiMessageModal}
         onClose={() => setAiMessageModal(null)}
-        onRetry={(l) => void startAiMessage(l)}
+        onRetry={(l) => void regenerateAiMessage(l)}
         onMarkContacted={recordWhatsAppOutreach}
         queuedForOutreach={
           aiMessageModal ? dailyOutreach.todayQueue.includes(aiMessageModal.lead.id) : false
@@ -7648,7 +7797,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           >
             <button
               type="button"
-              aria-label="Close"
+              aria-label={t("drawer_close_aria", locale)}
               onClick={() => setOpenId(null)}
               className="flex-1 bg-black/60 backdrop-blur-sm"
             />
@@ -7681,11 +7830,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   renderNow,
                 )}
                 importIntelligenceLabels={[
-                  ...(lastImportNewIds.includes(openLead.id) ? ["NEW IMPORT"] : []),
-                  ...(lastImportUpdatedIds.includes(openLead.id) ? ["RE-IMPORTED"] : []),
-                  ...((openLead._s.contactAttempts ?? 0) > 0 ? ["CONTACTED BEFORE"] : []),
-                  ...((openLead._s.contactAttempts ?? 0) >= 2 ? ["FOLLOWED UP BEFORE"] : []),
-                  ...(dailyOutreach.todayQueue.includes(openLead.id) ? ["IN QUEUE"] : []),
+                  ...(lastImportNewIds.includes(openLead.id)
+                    ? [t("import_label_new_import", locale)]
+                    : []),
+                  ...(lastImportUpdatedIds.includes(openLead.id)
+                    ? [t("import_label_reimported", locale)]
+                    : []),
+                  ...((openLead._s.contactAttempts ?? 0) > 0
+                    ? [t("import_label_contacted_before", locale)]
+                    : []),
+                  ...((openLead._s.contactAttempts ?? 0) >= 2
+                    ? [t("import_label_followed_up_before", locale)]
+                    : []),
+                  ...(dailyOutreach.todayQueue.includes(openLead.id)
+                    ? [t("import_label_in_queue", locale)]
+                    : []),
                 ]}
                 now={renderNow}
               />

@@ -831,6 +831,397 @@ const UI = {
   sig_operationally_mature: { en: "Operationally mature", tr: "Operasyonel olarak olgun" },
   sig_growth_oriented: { en: "Growth oriented", tr: "Büyüme odaklı" },
   sig_high_roi_potential: { en: "High roi potential", tr: "Yüksek ROI potansiyeli" },
+
+  // Lead detail drawer — header / metrics
+  detail_units: { en: "Units", tr: "Birim sayısı" },
+  detail_adr: { en: "ADR", tr: "Ortalama gecelik" },
+  detail_occupancy_30d: { en: "Occupancy 30d", tr: "Doluluk (30 gün)" },
+  detail_rating: { en: "Rating", tr: "Puan" },
+  detail_reviews: { en: "Reviews", tr: "Yorumlar" },
+  detail_channels: { en: "Channels", tr: "Kanallar" },
+  detail_source: { en: "Source", tr: "Kaynak" },
+  detail_source_google_maps: { en: "Google Maps", tr: "Google Haritalar" },
+
+  // Lead detail drawer — contact section
+  detail_signals_header: { en: "Signals", tr: "Sinyaller" },
+  detail_dnc_helper: {
+    en: "(disables outreach and hides from Focused / Hot)",
+    tr: "(iletişimi kapatır ve Odak / Sıcak listelerinden çıkarır)",
+  },
+  detail_contact_finder_header: { en: "Contact Finder", tr: "İletişim bulucu" },
+  detail_find_best_contact: { en: "Find Best Contact", tr: "En iyi kanalı bul" },
+  detail_find_best_contact_hint: {
+    en: "Click \"Find Best Contact\" to analyze homepage contact channels.",
+    tr: "İletişim kanallarını analiz etmek için “En iyi kanalı bul”a tıklayın.",
+  },
+  detail_analyzing_website: { en: "Analyzing website...", tr: "Site analiz ediliyor…" },
+  detail_best_contact_label: { en: "Best Contact:", tr: "En iyi kanal:" },
+  detail_value_label: { en: "Value:", tr: "Değer:" },
+  detail_confidence_label: { en: "Confidence:", tr: "Güven:" },
+  detail_reason_label: { en: "Reason:", tr: "Gerekçe:" },
+  detail_copy_number: { en: "Copy Number", tr: "Numarayı kopyala" },
+  detail_google_places_phone: { en: "Google Places phone", tr: "Google Places telefonu" },
+  detail_verified_whatsapp: { en: "Verified WhatsApp", tr: "Doğrulanmış WhatsApp" },
+  detail_whatsapp_available: { en: "WhatsApp Available", tr: "WhatsApp mevcut" },
+  detail_phone_only: { en: "Phone Only", tr: "Yalnızca telefon" },
+  detail_confidence_high: { en: "high", tr: "yüksek" },
+  detail_confidence_medium: { en: "medium", tr: "orta" },
+  detail_confidence_low: { en: "low", tr: "düşük" },
+
+  // Lead detail drawer — workflow / next action / status
+  detail_status_header: { en: "Status", tr: "Durum" },
+  detail_status_updated_prefix: { en: "Updated", tr: "Güncellendi" },
+  detail_send_message: { en: "Send Message", tr: "Mesaj gönder" },
+  detail_preparing_message: { en: "Preparing…", tr: "Hazırlanıyor…" },
+  detail_send_title_dnc: { en: "Do not contact", tr: "İletişim kurulmasın" },
+  detail_send_title_pipeline_closed: { en: "Pipeline closed", tr: "Pipeline kapandı" },
+  detail_send_title_open_wa: {
+    en: "Generate message and open WhatsApp",
+    tr: "Mesajı oluştur ve WhatsApp’ı aç",
+  },
+  detail_send_title_prepare: {
+    en: "Generate message (copy or send when ready)",
+    tr: "Mesajı oluştur (hazır olunca kopyala veya gönder)",
+  },
+  next_action_completed: { en: "Completed", tr: "Tamamlandı" },
+  next_action_close_deal: { en: "Close deal", tr: "Anlaşmayı kapat" },
+  next_action_move_to_meeting: { en: "Move to meeting", tr: "Görüşmeye geç" },
+  next_action_send_follow_up: { en: "Send follow-up message", tr: "Takip mesajı gönder" },
+  next_action_follow_up: { en: "Follow up", tr: "Takibi sürdür" },
+  next_action_send_first_message: { en: "Send first message", tr: "İlk iletişimi başlat" },
+  next_action_review_lead: { en: "Review lead", tr: "Leadi gözden geçir" },
+  follow_up_now: { en: "Follow up now", tr: "Şimdi takip et" },
+  follow_up_in_hours_one: { en: "Follow up in 1 hour", tr: "1 saat içinde takip" },
+  follow_up_in_hours_many: { en: "Follow up in {hours} hours", tr: "{hours} saat içinde takip" },
+  pipeline_stage_dnc: { en: "do not contact", tr: "iletişim kurulmasın" },
+
+  // Lead detail drawer — AI insight panel
+  detail_polish_with_ai: { en: "Polish with AI", tr: "AI ile cilala" },
+  detail_refining_with_ai: { en: "Refining…", tr: "İyileştiriliyor…" },
+  detail_refine_failed: { en: "Refine failed", tr: "İyileştirilemedi" },
+
+  // Lead detail drawer — reply helper
+  detail_reply_helper_header: { en: "Reply Helper", tr: "Yanıt yardımcısı" },
+  detail_owner_reply_placeholder: {
+    en: "Paste owner's reply here…",
+    tr: "İşletme sahibinin yanıtını buraya yapıştırın…",
+  },
+  detail_generate_reply: { en: "Generate Reply", tr: "Yanıt oluştur" },
+  detail_generating_reply: { en: "Generating…", tr: "Hazırlanıyor…" },
+  detail_suggested_reply_header: { en: "Suggested Reply", tr: "Önerilen yanıt" },
+  detail_copy_reply: { en: "Copy Reply", tr: "Yanıtı kopyala" },
+  detail_copied: { en: "Copied", tr: "Kopyalandı" },
+  detail_send_via_whatsapp: { en: "Send via WhatsApp", tr: "WhatsApp ile gönder" },
+  detail_apply_suggested_status: { en: "Apply Suggested Status", tr: "Önerilen durumu uygula" },
+  detail_suggested_next_status: { en: "Suggested next status:", tr: "Önerilen sonraki durum:" },
+  detail_lost_plus_dnc: { en: "Lost + Do Not Contact", tr: "Kayıp + İletişim kurulmasın" },
+  detail_no_status_suggestion: { en: "No status suggestion", tr: "Durum önerisi yok" },
+
+  // Lead detail drawer — notes
+  detail_notes_header: { en: "Notes", tr: "Notlar" },
+  detail_notes_chars_suffix: { en: "chars", tr: "karakter" },
+  detail_notes_placeholder: {
+    en: "Owner picks up calls in the afternoon. Interested in direct booking site. Follow up Tuesday.",
+    tr: "İşletme sahibi öğleden sonra arıyor. Doğrudan rezervasyon sayfasıyla ilgileniyor. Salı günü takip edilecek.",
+  },
+  detail_notes_reset: { en: "Reset", tr: "Sıfırla" },
+  detail_notes_save: { en: "Save note", tr: "Notu kaydet" },
+
+  // Drawer chrome
+  drawer_close_aria: { en: "Close panel", tr: "Paneli kapat" },
+  intelligence_score_title: {
+    en: "Signal-based opportunity score (structured data, not star rating)",
+    tr: "Sinyal tabanlı fırsat skoru (yıldız puanı değil; yapılandırılmış veri)",
+  },
+
+  // Import intelligence labels (shown in drawer beside Next Action)
+  import_label_new_import: { en: "New import", tr: "Yeni içe aktarma" },
+  import_label_reimported: { en: "Re-imported", tr: "Yeniden içe aktarıldı" },
+  import_label_contacted_before: { en: "Contacted before", tr: "Daha önce iletişim" },
+  import_label_followed_up_before: { en: "Followed up before", tr: "Daha önce takip edildi" },
+  import_label_in_queue: { en: "In queue", tr: "Kuyrukta" },
+
+  // Instagram discovery panel
+  ig_discovery_broken_title: { en: "Broken Instagram link", tr: "Bozuk Instagram bağlantısı" },
+  ig_discovery_possible_title: { en: "Possible Instagram", tr: "Olası Instagram hesabı" },
+
+  // AI insight — pain-point summary fallback lines
+  pain_possible_response_delay: {
+    en: "Possible response delay",
+    tr: "Olası geç dönüş riski",
+  },
+  pain_guest_reachability: {
+    en: "Guest reachability concerns in reviews",
+    tr: "Yorumlarda misafir ulaşımı sıkıntısı",
+  },
+  pain_reservation_friction: {
+    en: "Reservation or booking friction in reviews",
+    tr: "Yorumlarda rezervasyon sürtünmesi",
+  },
+  pain_communication_gaps: {
+    en: "Communication gaps mentioned in reviews",
+    tr: "Yorumlarda iletişim eksikliği belirtiliyor",
+  },
+  pain_cleanliness_ops: {
+    en: "Operations/cleanliness signals in reviews",
+    tr: "Yorumlarda operasyon / temizlik sinyalleri",
+  },
+  pain_value_concerns: {
+    en: "Value-for-money concerns in reviews",
+    tr: "Yorumlarda fiyat / değer kaygısı",
+  },
+  pain_review_other: {
+    en: "Review-flagged guest concern",
+    tr: "Yorumlardan misafir tarafı sıkıntı",
+  },
+  pain_weak_booking_flow: {
+    en: "Weak or unclear direct booking flow",
+    tr: "Doğrudan rezervasyon akışı zayıf görünüyor",
+  },
+  pain_no_owned_website: {
+    en: "No owned website on listing",
+    tr: "Listede kendi web sitesi yok",
+  },
+  pain_limited_owned_footprint: {
+    en: "Limited owned digital footprint",
+    tr: "Kendine ait dijital varlık sınırlı",
+  },
+  pain_heavy_platform_dependence: {
+    en: "Heavy platform dependence",
+    tr: "OTA/platform bağımlılığı yüksek olabilir",
+  },
+  pain_revenue_concentrated: {
+    en: "Revenue concentrated on few channels",
+    tr: "Gelir az sayıda kanalda yoğunlaşmış",
+  },
+  pain_reputation_attention: {
+    en: "Reputation attention may help",
+    tr: "İtibar tarafı dikkat gerektirebilir",
+  },
+  pain_reviews_less_recent: {
+    en: "Reviews look less recent online",
+    tr: "Yorumlar yakın tarihli görünmüyor",
+  },
+  pain_social_funnel_gap: {
+    en: "Social funnel gap for this scale",
+    tr: "Bu ölçek için sosyal huni eksik",
+  },
+  pain_premium_no_funnel: {
+    en: "Premium positioning without a strong owned funnel",
+    tr: "Premium konum; kendi hunisi güçsüz",
+  },
+  pain_phone_not_ideal: {
+    en: "Phone not ideal for instant outreach",
+    tr: "Telefon anlık iletişim için ideal değil",
+  },
+  pain_no_listed_phone: {
+    en: "No listed phone",
+    tr: "Listelenmiş telefon yok",
+  },
+  pain_weak_booking_cta: {
+    en: "Booking CTA appears weak or unclear",
+    tr: "Rezervasyon çağrısı zayıf veya net değil",
+  },
+  pain_no_clear_booking_flow: {
+    en: "No clear direct booking flow",
+    tr: "Net bir doğrudan rezervasyon akışı yok",
+  },
+  pain_external_only_booking: {
+    en: "Booking path appears external/OTA dependent",
+    tr: "Rezervasyon yolu dışa / OTA’ya bağlı görünüyor",
+  },
+  pain_weak_contact_visibility: {
+    en: "Weak contact visibility on public surfaces",
+    tr: "Açık yüzeylerde iletişim görünürlüğü zayıf",
+  },
+  pain_low_operational_activity: {
+    en: "Recent operational activity looks softer",
+    tr: "Son dönem operasyonel hareket düşük görünüyor",
+  },
+  pain_website_lacks_cta: {
+    en: "Website may lack a clear booking call-to-action",
+    tr: "Sitede net bir rezervasyon çağrısı eksik olabilir",
+  },
+  pain_site_booking_thin: {
+    en: "Owned site present but booking path looks thin",
+    tr: "Kendi sitesi var; rezervasyon yolu zayıf görünüyor",
+  },
+  pain_direct_outreach_ready: {
+    en: "Direct outreach available (WhatsApp-ready)",
+    tr: "Doğrudan iletişim açık (WhatsApp uyumlu)",
+  },
+  pain_instagram_surface: {
+    en: "Instagram available as a contact surface",
+    tr: "İletişim için Instagram kullanılabilir",
+  },
+
+  // AI insight — outreach angle fallbacks
+  angle_prevent_lost_reservations: {
+    en: "Prevent lost reservations from late or missed WhatsApp replies.",
+    tr: "Geciken veya kaçan WhatsApp dönüşlerinin yol açtığı kayıp rezervasyonların önüne geçin.",
+  },
+  angle_tighten_inquiry_path: {
+    en: "Tighten the path from inquiry to confirmed booking on your fastest channel.",
+    tr: "İlk talepten onaylı rezervasyona giden yolu en hızlı kanalınızda sıkılaştırın.",
+  },
+  angle_capture_more_direct: {
+    en: "Capture more direct demand while guests are already messaging you.",
+    tr: "Misafir size yazmışken doğrudan rezervasyonu kazanın.",
+  },
+  angle_close_gap_attention: {
+    en: "Close the gap between attention and a clear reservation action.",
+    tr: "İlgi ile net bir rezervasyon adımı arasındaki açığı kapatın.",
+  },
+  angle_lightweight_inquiry: {
+    en: "Offer a lightweight way to handle reservation inquiries faster.",
+    tr: "Rezervasyon taleplerini daha hızlı yönetecek hafif bir akış sunun.",
+  },
+  angle_explore_inquiry_handling: {
+    en: "Explore whether inquiry handling and direct booking match guest expectations.",
+    tr: "Talep yönetimi ve doğrudan rezervasyonun misafir beklentisiyle örtüşüp örtüşmediğini değerlendirin.",
+  },
+  angle_reduce_response_delays: {
+    en: "Reduce response delays during peak inquiry hours.",
+    tr: "Yoğun talep saatlerinde yanıt gecikmelerini azaltın.",
+  },
+  angle_improve_booking_conversion: {
+    en: "Improve direct booking conversion flow.",
+    tr: "Doğrudan rezervasyon dönüşüm akışını güçlendirin.",
+  },
+  angle_capture_instagram_demand: {
+    en: "Capture more Instagram-driven reservations.",
+    tr: "Instagram kaynaklı rezervasyonların payını artırın.",
+  },
+  angle_no_strong_angle: {
+    en: "No strong outreach angle detected yet.",
+    tr: "Henüz güçlü bir iletişim açısı bulunamadı.",
+  },
+
+  // AI insight — paragraph sentence fallbacks
+  insight_para_direct_booking_upside: {
+    en: "This business appears to have direct booking upside alongside platform visibility.",
+    tr: "İşletme; platform görünürlüğüne ek olarak doğrudan rezervasyon potansiyeli taşıyor.",
+  },
+  insight_para_direct_potential: {
+    en: "This business shows direct-booking potential based on listing signals.",
+    tr: "Liste sinyalleri doğrudan rezervasyon potansiyeline işaret ediyor.",
+  },
+  insight_para_strengthen_owned: {
+    en: "Public signals suggest room to strengthen owned reservation channels.",
+    tr: "Sinyaller; işletmenin kendi rezervasyon kanallarında güçlenme alanı olduğunu gösteriyor.",
+  },
+  insight_para_review_hints: {
+    en: "Review and listing signals hint at {pain}.",
+    tr: "Yorum ve liste sinyalleri {pain} işaret ediyor.",
+  },
+  insight_para_notable_themes: {
+    en: "Notable themes include {pain}.",
+    tr: "Öne çıkan tema: {pain}.",
+  },
+  insight_para_whatsapp_consultative: {
+    en: "WhatsApp availability makes consultative outreach practical.",
+    tr: "WhatsApp erişimi danışman tonlu iletişimi pratikleştiriyor.",
+  },
+  insight_para_instagram_surface: {
+    en: "Instagram offers a workable surface for a light-touch conversation.",
+    tr: "Instagram, yumuşak tonlu bir görüşme için uygun bir yüzey sunuyor.",
+  },
+  insight_para_opp_very_high: {
+    en: "Overall opportunity is very high for immediate outreach.",
+    tr: "Toplam fırsat seviyesi çok yüksek; hızlı temas önerilir.",
+  },
+  insight_para_opp_high: {
+    en: "Overall opportunity looks strong for a focused reservation-ops conversation.",
+    tr: "Fırsat seviyesi güçlü; rezervasyon operasyonlarına odaklı bir görüşme uygun.",
+  },
+  insight_para_opp_medium: {
+    en: "Worth a short discovery touch if the channel fit looks right.",
+    tr: "Kanal uyumu yerindeyse kısa bir keşif teması anlamlı.",
+  },
+
+  // Acquisition signals (rendered in detail expand)
+  acq_sig_ig_verified: {
+    en: "Instagram discovery: validated link/handle",
+    tr: "Instagram keşfi: bağlantı / kullanıcı adı doğrulandı",
+  },
+  acq_sig_ig_handle_present: {
+    en: "Instagram handle or URL present",
+    tr: "Instagram kullanıcı adı veya URL’si mevcut",
+  },
+  acq_sig_ig_possible: {
+    en: "Instagram may exist (plausible handles; verify manually)",
+    tr: "Instagram hesabı bulunabilir (olası kullanıcı adları; manuel doğrulama gerek)",
+  },
+  acq_sig_whatsapp_available: {
+    en: "WhatsApp available (phone or site link)",
+    tr: "WhatsApp erişimi var (telefon veya site bağlantısı)",
+  },
+  acq_sig_website_exists: {
+    en: "Website exists",
+    tr: "Kendi web sitesi mevcut",
+  },
+  acq_sig_ota_footprint: {
+    en: "OTA / platform listing footprint",
+    tr: "OTA / platform listeleme görünürlüğü var",
+  },
+  acq_sig_high_ota: {
+    en: "Elevated OTA likelihood (distribution-led acquisition)",
+    tr: "Yüksek OTA olasılığı (dağıtım odaklı edinim)",
+  },
+  acq_sig_strong_social: {
+    en: "Strong social demand",
+    tr: "Sosyal tarafta talep güçlü",
+  },
+  acq_sig_moderate_social: {
+    en: "Moderate social demand",
+    tr: "Sosyal tarafta talep orta düzeyde",
+  },
+  acq_sig_campaign_lang: {
+    en: "Campaign / promo language in copy",
+    tr: "Metinde kampanya / promosyon dili",
+  },
+  acq_sig_paid_traffic: {
+    en: "Possible paid traffic (tracking params or modeled likelihood)",
+    tr: "Olası ücretli trafik (izleme parametreleri veya model bazlı olasılık)",
+  },
+  acq_sig_booking_pressure: {
+    en: "Booking or conversion pressure relative to social attention",
+    tr: "Sosyal ilgiye kıyasla rezervasyon / dönüşüm baskısı",
+  },
+  acq_sig_strong_booking_surface: {
+    en: "Stronger direct booking surface / CTAs",
+    tr: "Doğrudan rezervasyon yüzeyi ve çağrılar güçlü",
+  },
+
+  // Acquisition weaknesses
+  acq_weak_ig_invalid: {
+    en: "Instagram surface appears invalid or broken",
+    tr: "Instagram yüzeyi geçersiz veya bozuk görünüyor",
+  },
+  acq_weak_no_whatsapp: {
+    en: "No clear WhatsApp path",
+    tr: "Net bir WhatsApp kanalı yok",
+  },
+  acq_weak_no_website: {
+    en: "No owned website",
+    tr: "Kendi web sitesi yok",
+  },
+  acq_weak_weak_booking: {
+    en: "Weak direct booking flow",
+    tr: "Doğrudan rezervasyon akışı zayıf görünüyor",
+  },
+  acq_weak_social_outpace: {
+    en: "Social attention may outpace booking capture",
+    tr: "Sosyal ilgi, rezervasyon dönüşümünün önüne geçiyor olabilir",
+  },
+  acq_weak_single_surface: {
+    en: "Limited acquisition channel mix (single-surface risk)",
+    tr: "Sınırlı edinim kanal karması (tek yüzey riski)",
+  },
+  acq_weak_heavy_ota: {
+    en: "Heavy OTA reliance with thin owned conversion path",
+    tr: "OTA/platform bağımlılığı yüksek; doğrudan dönüşüm yolu zayıf",
+  },
 } as const;
 
 export type UiKey = keyof typeof UI;
@@ -1166,4 +1557,298 @@ export function outreachRationaleUiLine(line: string, locale: Locale): string {
     return `‘${m[1]}’ için varsayılan üslup`;
   }
   return line;
+}
+
+const PAIN_POINT_UI: Record<string, UiKey> = {
+  "Possible response delay": "pain_possible_response_delay",
+  "Guest reachability concerns in reviews": "pain_guest_reachability",
+  "Reservation or booking friction in reviews": "pain_reservation_friction",
+  "Communication gaps mentioned in reviews": "pain_communication_gaps",
+  "Operations/cleanliness signals in reviews": "pain_cleanliness_ops",
+  "Value-for-money concerns in reviews": "pain_value_concerns",
+  "Review-flagged guest concern": "pain_review_other",
+  "Weak or unclear direct booking flow": "pain_weak_booking_flow",
+  "No owned website on listing": "pain_no_owned_website",
+  "Limited owned digital footprint": "pain_limited_owned_footprint",
+  "Heavy platform dependence": "pain_heavy_platform_dependence",
+  "Revenue concentrated on few channels": "pain_revenue_concentrated",
+  "Reputation attention may help": "pain_reputation_attention",
+  "Reviews look less recent online": "pain_reviews_less_recent",
+  "Social funnel gap for this scale": "pain_social_funnel_gap",
+  "Premium positioning without a strong owned funnel": "pain_premium_no_funnel",
+  "Phone not ideal for instant outreach": "pain_phone_not_ideal",
+  "No listed phone": "pain_no_listed_phone",
+  "Booking CTA appears weak or unclear": "pain_weak_booking_cta",
+  "No clear direct booking flow": "pain_no_clear_booking_flow",
+  "Booking path appears external/OTA dependent": "pain_external_only_booking",
+  "Weak contact visibility on public surfaces": "pain_weak_contact_visibility",
+  "Recent operational activity looks softer": "pain_low_operational_activity",
+  "Website may lack a clear booking call-to-action": "pain_website_lacks_cta",
+  "Owned site present but booking path looks thin": "pain_site_booking_thin",
+  "Direct outreach available (WhatsApp-ready)": "pain_direct_outreach_ready",
+  "Instagram available as a contact surface": "pain_instagram_surface",
+};
+
+/** Localize a single rule-based pain-point summary line; pass-through for unknown text. */
+export function painPointUiLine(line: string, locale: Locale): string {
+  if (locale !== "tr") return line;
+  const key = PAIN_POINT_UI[line];
+  return key ? t(key, locale) : line;
+}
+
+const OUTREACH_ANGLE_UI: Record<string, UiKey> = {
+  "Prevent lost reservations from late or missed WhatsApp replies.":
+    "angle_prevent_lost_reservations",
+  "Tighten the path from inquiry to confirmed booking on your fastest channel.":
+    "angle_tighten_inquiry_path",
+  "Capture more direct demand while guests are already messaging you.":
+    "angle_capture_more_direct",
+  "Close the gap between attention and a clear reservation action.":
+    "angle_close_gap_attention",
+  "Offer a lightweight way to handle reservation inquiries faster.":
+    "angle_lightweight_inquiry",
+  "Explore whether inquiry handling and direct booking match guest expectations.":
+    "angle_explore_inquiry_handling",
+  "Reduce response delays during peak inquiry hours.":
+    "angle_reduce_response_delays",
+  "Improve direct booking conversion flow.":
+    "angle_improve_booking_conversion",
+  "Capture more Instagram-driven reservations.":
+    "angle_capture_instagram_demand",
+  "No strong outreach angle detected yet.":
+    "angle_no_strong_angle",
+};
+
+/** Localize a rule-derived outreach angle sentence; LLM Turkish text passes through. */
+export function outreachAngleUiLine(line: string, locale: Locale): string {
+  if (locale !== "tr") return line;
+  const key = OUTREACH_ANGLE_UI[line.trim()];
+  return key ? t(key, locale) : line;
+}
+
+const AI_INSIGHT_SENTENCE_UI: Record<string, UiKey> = {
+  "This business appears to have direct booking upside alongside platform visibility.":
+    "insight_para_direct_booking_upside",
+  "This business shows direct-booking potential based on listing signals.":
+    "insight_para_direct_potential",
+  "Public signals suggest room to strengthen owned reservation channels.":
+    "insight_para_strengthen_owned",
+  "WhatsApp availability makes consultative outreach practical.":
+    "insight_para_whatsapp_consultative",
+  "Instagram offers a workable surface for a light-touch conversation.":
+    "insight_para_instagram_surface",
+  "Overall opportunity is very high for immediate outreach.":
+    "insight_para_opp_very_high",
+  "Overall opportunity looks strong for a focused reservation-ops conversation.":
+    "insight_para_opp_high",
+  "Worth a short discovery touch if the channel fit looks right.":
+    "insight_para_opp_medium",
+};
+
+const INSIGHT_REVIEW_HINT_RE = /^Review and listing signals hint at (.+)\.$/i;
+const INSIGHT_NOTABLE_THEMES_RE = /^Notable themes include (.+)\.$/i;
+
+/** Localize a rule-derived AI insight paragraph; falls back to the whole text. */
+export function aiInsightParagraphUiText(text: string, locale: Locale): string {
+  if (locale !== "tr") return text;
+  const raw = text.trim();
+  if (!raw) return raw;
+
+  const sentences = raw
+    .split(/(?<=[.!?])\s+/u)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (sentences.length === 0) return raw;
+
+  const translated = sentences.map((sentence) => {
+    const key = AI_INSIGHT_SENTENCE_UI[sentence];
+    if (key) return t(key, locale);
+
+    const reviewMatch = INSIGHT_REVIEW_HINT_RE.exec(sentence);
+    if (reviewMatch) {
+      const pain = painPointUiLine(reviewMatch[1].trim(), locale).toLowerCase();
+      return fillTemplate(t("insight_para_review_hints", locale), { pain });
+    }
+
+    const notableMatch = INSIGHT_NOTABLE_THEMES_RE.exec(sentence);
+    if (notableMatch) {
+      const pain = painPointUiLine(notableMatch[1].trim(), locale).toLowerCase();
+      return fillTemplate(t("insight_para_notable_themes", locale), { pain });
+    }
+
+    return sentence;
+  });
+
+  return translated.join(" ").replace(/\s+/g, " ").trim();
+}
+
+const ACQUISITION_SIGNAL_UI: Record<string, UiKey> = {
+  "Instagram discovery: validated link/handle": "acq_sig_ig_verified",
+  "Instagram handle or URL present": "acq_sig_ig_handle_present",
+  "Instagram may exist (plausible handles; verify manually)": "acq_sig_ig_possible",
+  "WhatsApp available (phone or site link)": "acq_sig_whatsapp_available",
+  "Website exists": "acq_sig_website_exists",
+  "OTA / platform listing footprint": "acq_sig_ota_footprint",
+  "Elevated OTA likelihood (distribution-led acquisition)": "acq_sig_high_ota",
+  "Strong social demand": "acq_sig_strong_social",
+  "Moderate social demand": "acq_sig_moderate_social",
+  "Campaign / promo language in copy": "acq_sig_campaign_lang",
+  "Possible paid traffic (tracking params or modeled likelihood)": "acq_sig_paid_traffic",
+  "Booking or conversion pressure relative to social attention": "acq_sig_booking_pressure",
+  "Stronger direct booking surface / CTAs": "acq_sig_strong_booking_surface",
+};
+
+const ACQUISITION_WEAKNESS_UI: Record<string, UiKey> = {
+  "Instagram surface appears invalid or broken": "acq_weak_ig_invalid",
+  "No clear WhatsApp path": "acq_weak_no_whatsapp",
+  "No owned website": "acq_weak_no_website",
+  "Weak direct booking flow": "acq_weak_weak_booking",
+  "Social attention may outpace booking capture": "acq_weak_social_outpace",
+  "Limited acquisition channel mix (single-surface risk)": "acq_weak_single_surface",
+  "Heavy OTA reliance with thin owned conversion path": "acq_weak_heavy_ota",
+};
+
+export function acquisitionSignalUiLine(line: string, locale: Locale): string {
+  if (locale !== "tr") return line;
+  const key = ACQUISITION_SIGNAL_UI[line];
+  return key ? t(key, locale) : line;
+}
+
+export function acquisitionWeaknessUiLine(line: string, locale: Locale): string {
+  if (locale !== "tr") return line;
+  const key = ACQUISITION_WEAKNESS_UI[line];
+  return key ? t(key, locale) : line;
+}
+
+/** Localize the next-action copy for the lead detail drawer. */
+export function nextActionUiCopy(
+  status:
+    | "new"
+    | "contacted"
+    | "needs_follow_up"
+    | "replied"
+    | "meeting"
+    | "won"
+    | "lost",
+  locale: Locale,
+): string {
+  switch (status) {
+    case "won":
+    case "lost":
+      return t("next_action_completed", locale);
+    case "meeting":
+      return t("next_action_close_deal", locale);
+    case "replied":
+      return t("next_action_move_to_meeting", locale);
+    case "needs_follow_up":
+      return t("next_action_send_follow_up", locale);
+    case "contacted":
+      return t("next_action_follow_up", locale);
+    case "new":
+      return t("next_action_send_first_message", locale);
+    default:
+      return t("next_action_review_lead", locale);
+  }
+}
+
+/** Localize follow-up countdown text. */
+export function followUpTimerUiLabel(hoursUntil: number, locale: Locale): string {
+  if (hoursUntil <= 0) return t("follow_up_now", locale);
+  if (hoursUntil === 1) return t("follow_up_in_hours_one", locale);
+  return fillTemplate(t("follow_up_in_hours_many", locale), { hours: hoursUntil });
+}
+
+/** Localize the pipeline-stage chip in the drawer. */
+export function pipelineStageUiLabel(
+  status:
+    | "new"
+    | "contacted"
+    | "needs_follow_up"
+    | "replied"
+    | "meeting"
+    | "won"
+    | "lost",
+  doNotContact: boolean,
+  locale: Locale,
+): string {
+  if (doNotContact) return t("pipeline_stage_dnc", locale);
+  return statusUiLabel(status, locale);
+}
+
+/** Localize contact-finder confidence enum ("high" | "medium" | "low"). */
+export function contactFinderConfidenceUiLabel(
+  confidence: string,
+  locale: Locale,
+): string {
+  switch (confidence) {
+    case "high":
+      return t("detail_confidence_high", locale);
+    case "medium":
+      return t("detail_confidence_medium", locale);
+    case "low":
+      return t("detail_confidence_low", locale);
+    default:
+      return confidence;
+  }
+}
+
+const LEAD_SIGNAL_UI: Record<string, string> = {
+  "High season pricing": "Yüksek sezon fiyatlaması",
+  "Sold out next 2 weekends": "Önümüzdeki 2 hafta sonu dolu",
+  "Premium ADR": "Premium gecelik fiyat",
+  "No own website": "Kendi web sitesi yok",
+  "High occupancy": "Doluluk yüksek",
+  "Booking #1 in district": "Bölgede Booking 1 numara",
+  "Single channel only": "Yalnızca tek kanal",
+  "Low online presence": "Çevrimiçi görünürlük zayıf",
+  "No Instagram": "Instagram yok",
+  "High ADR": "Yüksek gecelik fiyat",
+  "Repeat guest signals": "Tekrar gelen misafir sinyali",
+  "Trending category": "Yükselen kategori",
+  "Backpacker favorite": "Sırt çantalı misafir favorisi",
+  "High review velocity": "Yorum hızı yüksek",
+  "High volume": "Yüksek hacim",
+  "Stable bookings": "Rezervasyon trendi stabil",
+  "Fast-growing region": "Hızlı büyüyen bölge",
+  "Direct-only": "Yalnızca doğrudan rezervasyon",
+  "5.0 rating": "5.0 puan",
+  "Low channel count": "Düşük kanal sayısı",
+  "Soft season": "Ölü sezon",
+  "Tasteful brand": "Özenli marka",
+  Established: "Köklü işletme",
+  "Quiet shoulder season": "Sakin ara sezon",
+  "GCC inbound trend": "Körfez bölgesi inbound trendi",
+  "Weekend demand from İstanbul": "İstanbul’dan hafta sonu talebi",
+  "Arabic-speaking demand": "Arapça konuşan misafir talebi",
+  "Premium villa segment": "Premium villa segmenti",
+  "Hot island summer": "Adada yoğun yaz",
+  "Single channel": "Tek kanal",
+  "Weekend city break demand": "Hafta sonu şehir kaçamağı talebi",
+  "Stable demand": "Stabil talep",
+};
+
+/** Localize a mock / data-driven lead signal line; unknown values pass through. */
+export function leadSignalUiLine(line: string, locale: Locale): string {
+  if (locale !== "tr") return line;
+  return LEAD_SIGNAL_UI[line] ?? line;
+}
+
+/** Localize the contact-finder source enum. */
+export function contactFinderSourceUiLabel(source: string, locale: Locale): string {
+  if (locale !== "tr") return source;
+  switch (source) {
+    case "Website WhatsApp link":
+      return "Sitedeki WhatsApp bağlantısı";
+    case "Website phone number":
+      return "Sitedeki telefon numarası";
+    case "Website Instagram link":
+      return "Sitedeki Instagram bağlantısı";
+    case "Website email":
+      return "Sitedeki e-posta";
+    case "Website homepage":
+      return "Site ana sayfası";
+    default:
+      return source;
+  }
 }

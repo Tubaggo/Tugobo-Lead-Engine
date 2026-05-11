@@ -350,6 +350,58 @@ function pickMessageSignalTheme(lead: LeadForAiInsight): MessageSignalTheme {
   return "general_hospitality";
 }
 
+function listSurfaceFromChannels(channels: readonly string[]): string | null {
+  const order = ["Booking", "Airbnb", "Tatilsepeti"] as const;
+  const hit = order.find((c) => channels.includes(c));
+  return hit ?? null;
+}
+
+function buildObservationLine(theme: MessageSignalTheme, lead: LeadForAiInsight): string {
+  const sig = new Set(lead.businessSignals ?? []);
+  const ota = listSurfaceFromChannels(lead.channels);
+  const hasOta = Boolean(ota) || sig.has("ota_dependency") || sig.has("single_channel_risk");
+  const hasWhatsapp = lead.hasWhatsAppPath && lead.contactQuality !== "low";
+  const hasInsta = lead.hasInstagram || sig.has("instagram_presence_gap");
+  const hasWeakBooking =
+    sig.has("conversion_gap") ||
+    sig.has("no_booking_flow") ||
+    sig.has("weak_booking_cta") ||
+    sig.has("external_only_booking_dependency") ||
+    sig.has("missing_own_website") ||
+    lead.websiteIntelligence?.hasBookingEngine === false ||
+    lead.websiteIntelligence?.hasBookingCtaText === false;
+
+  switch (theme) {
+    case "direct_booking_opportunity": {
+      if (ota) return `İşletmenizi incelerken özellikle ${ota} tarafında görünürlüğün güçlü olduğunu gördüm.`;
+      if (hasOta) return "İşletmenizi incelerken OTA tarafının güçlü göründüğünü fark ettim.";
+      return "İşletmenizin görünürlüğü fena değil; asıl kazanım çoğu zaman doğrudan tarafta oluyor.";
+    }
+    case "instagram_demand": {
+      if (hasInsta) return "İşletmenizin Instagram tarafı aktif görünüyor.";
+      return "Sosyal tarafta bir ilgi sinyali var gibi görünüyor.";
+    }
+    case "whatsapp_flow": {
+      if (hasWhatsapp) return "İşletmenizde WhatsApp hattının erişilebilir olduğu görünüyor.";
+      return "İletişim tarafında misafirlerin hızlı dönüş beklediği bir yüzey var gibi.";
+    }
+    case "booking_flow_gap": {
+      if (hasWeakBooking) return "İşletmenizi incelerken rezervasyona giden adımın bazı noktalarda net olmayabileceğini düşündüm.";
+      return "İşletmenizi incelerken ilgi var ama rezervasyona giden yol her zaman net olmayabiliyor.";
+    }
+    case "communication_risk": {
+      if (hasWhatsapp) return "İşletmenizde WhatsApp üzerinden talep almak mümkün görünüyor.";
+      return "İşletmenizi incelerken iletişim tarafında hızın kritik olduğu bir tablo var gibi.";
+    }
+    case "general_hospitality":
+    default: {
+      if (hasOta) return "İşletmenizi incelerken kanallar tarafında görünürlüğün iyi olduğunu gördüm.";
+      if (hasInsta) return "İşletmenizi incelerken sosyal tarafta hareket olduğunu gördüm.";
+      return "İşletmenizi incelerken birkaç küçük iyileştirmeyle gelir tarafında alan olabileceğini düşündüm.";
+    }
+  }
+}
+
 /**
  * Maps an outreach style to the WhatsApp message variant we ship as the
  * default `message`. Other variants stay available in `styles` for the UI.
@@ -373,10 +425,105 @@ function styleVariantFor(
   }
 }
 
+function hashSeed(seed: string): number {
+  // Small deterministic hash, used for stable variation picking (no crypto).
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function pickVariant(seed: string | undefined, salt: string, items: readonly string[]): string {
+  if (items.length === 0) return "";
+  const h = hashSeed(`${seed ?? "default"}|${salt}`);
+  return items[h % items.length] ?? items[0] ?? "";
+}
+
+function buildRationaleSignalClause(lead: LeadForAiInsight): string {
+  const sig = new Set(lead.businessSignals ?? []);
+  const pieces: string[] = [];
+  if (sig.has("ota_dependency") || sig.has("external_only_booking_dependency")) {
+    pieces.push("OTA ağırlığını dengeleme");
+  }
+  if (
+    sig.has("conversion_gap") ||
+    sig.has("no_booking_flow") ||
+    sig.has("weak_booking_cta") ||
+    sig.has("missing_own_website")
+  ) {
+    pieces.push("talep → rezervasyon geçişini netleştirme");
+  }
+  if (lead.hasInstagram || sig.has("instagram_presence_gap")) {
+    pieces.push("Instagram talebini rezervasyona çevirme");
+  }
+  if (lead.hasWhatsAppPath && lead.contactQuality !== "low") {
+    pieces.push("WhatsApp dönüş hızını artırma");
+  }
+  return pieces.slice(0, 2).join(" / ");
+}
+
+function varyOutreachText(params: {
+  text: string;
+  seed?: string;
+  style: OutreachMessageStyle;
+  followUp: boolean;
+  lead: LeadForAiInsight;
+}): string {
+  const { text, seed, style, followUp, lead } = params;
+  let out = text.trim();
+  if (!out) return out;
+
+  const opener = pickVariant(seed, `opener|${style}|${followUp ? "fu" : "new"}`, [
+    "Merhaba",
+    "Selam",
+    "Merhaba, kısa bir not bırakayım",
+    "Merhaba, müsaitseniz kısaca yazayım",
+  ]);
+  out = out.replace(/^Merhaba,?/i, opener);
+
+  const signal = buildRationaleSignalClause(lead);
+  if (signal && (style === "direct" || style === "premium")) {
+    const insert = pickVariant(seed, `signal|${style}|${followUp ? "fu" : "new"}`, [
+      `(${signal})`,
+      `(${signal} odağıyla)`,
+      `(${signal} tarafında)`,
+    ]);
+    // Insert after first comma, or after opener.
+    const commaIdx = out.indexOf(",");
+    if (commaIdx >= 0 && commaIdx < 42) {
+      out = `${out.slice(0, commaIdx + 1)} ${insert} ${out.slice(commaIdx + 1).trim()}`;
+    } else {
+      out = `${insert} ${out}`;
+    }
+  }
+
+  const cta = pickVariant(seed, `cta|${style}|${followUp ? "fu" : "new"}`, [
+    "Uygun olursa kısa bir örnek paylaşabilirim.",
+    "İsterseniz 2 dakikada özetleyebilirim.",
+    "Uygun görürseniz işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+  ]);
+  if (/Uygun olursa kısa bir örnek paylaşabilirim\.\s*$/i.test(out)) {
+    out = out.replace(/Uygun olursa kısa bir örnek paylaşabilirim\.\s*$/i, cta);
+  } else if (/İsterseniz nasıl çalıştığını kısaca gösterebilirim\.\s*$/i.test(out)) {
+    out = out.replace(/İsterseniz nasıl çalıştığını kısaca gösterebilirim\.\s*$/i, cta);
+  } else if (/Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim\.\s*$/i.test(out)) {
+    out = out.replace(/Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim\.\s*$/i, cta);
+  } else if (/Uygun olursa kısa bir fikir paylaşabilirim\.\s*$/i.test(out)) {
+    out = out.replace(/Uygun olursa kısa bir fikir paylaşabilirim\.\s*$/i, cta);
+  } else {
+    // Ensure a clear, non-spam CTA exists.
+    if (!/[.!?]\s*$/.test(out)) out += ".";
+    out = `${out} ${cta}`.replace(/\s+/g, " ").trim();
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+
 /** Short, consultative WhatsApp copy variants for review/copy flow. */
 export function generateWhatsAppMessage(
   lead: LeadForAiInsight,
-  opts?: { followUp?: boolean },
+  opts?: { followUp?: boolean; variationSeed?: string },
 ): LeadWhatsAppMessagePack {
   const followUp = opts?.followUp === true;
   const weakSignals = !hasMeaningfulSignals(lead);
@@ -384,15 +531,20 @@ export function generateWhatsAppMessage(
   const preferredVariant: OutreachMessageStyle = lead.outreachIntelligence
     ? styleVariantFor(lead.outreachIntelligence.outreachStyle)
     : "soft";
+  const seed = opts?.variationSeed;
 
   if (weakSignals) {
     const soft =
-      "Merhaba, konaklama işletmelerinde rezervasyon öncesi mesaj akışını daha düzenli hale getirmeye odaklanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.";
+      "Merhaba, işletmenizi incelerken iletişim ve rezervasyon tarafında küçük dokunuşlarla hızlanabilecek alanlar olabileceğini düşündüm. Uygun olursa 2 dakikada bir örnek paylaşabilirim.";
     const direct =
-      "Merhaba, konaklama tarafında ilk talebi kaçırmadan ilerleten kısa bir mesaj akışı kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.";
+      "Merhaba, işletmenizi incelerken talebin rezervasyona daha hızlı ilerlemesini etkileyen birkaç nokta olabileceğini gördüm. İsterseniz 2 dakikada kısaca paylaşabilirim.";
     const premium =
-      "Merhaba, turizm tarafında rezervasyon öncesi iletişimi daha net hale getiren sade bir çerçeve uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.";
-    const styles = { soft, direct, premium };
+      "Merhaba, işletmenizi incelerken görünürlük iyi olsa bile dönüşümü etkileyen küçük sürtünmeler olabileceğini düşündüm. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.";
+    const styles = {
+      soft: varyOutreachText({ text: soft, seed, style: "soft", followUp, lead }),
+      direct: varyOutreachText({ text: direct, seed, style: "direct", followUp, lead }),
+      premium: varyOutreachText({ text: premium, seed, style: "premium", followUp, lead }),
+    };
     return { message: styles[preferredVariant], styles, weakSignals };
   }
 
@@ -402,121 +554,159 @@ export function generateWhatsAppMessage(
   > = {
     communication_risk: {
       soft: {
-        base: "Merhaba, konaklama işletmelerinde özellikle yoğun saatlerde gelen mesajların kaçmaması için kısa bir akış uyguluyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        base: `${buildObservationLine("communication_risk", lead)} Birçok tesiste özellikle yoğun saatlerde (ve gece) gelen talepler kaçabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir not bırakmak istedim. Yoğun saatlerde geciken dönüşleri azaltmak için pratik bir mesaj düzeni kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+          `${buildObservationLine("communication_risk", lead)} Kısa bir not bırakayım: yoğun saatlerde geciken dönüşler genelde dönüşümü düşürüyor. Uygun olursa kısa bir örnek paylaşabilirim.`,
       },
       direct: {
-        base: "Merhaba, rezervasyon öncesi mesajlara daha hızlı dönüş almayı sağlayan net bir akış kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        base: `${buildObservationLine("communication_risk", lead)} Genelde sorun “talep yok” değil, hızlı dönüş verememek oluyor. İsterseniz 2 dakikada nasıl toparladığımızı paylaşabilirim.`,
         followUp:
-          "Merhaba, hızlı hatırlatma bırakayım. Mesajlara geç dönüşü azaltan kısa bir düzenimiz var. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+          `${buildObservationLine("communication_risk", lead)} Hızlı bir hatırlatma bırakayım: mesajlara geç dönüşü azaltan kısa bir akış var. İsterseniz 2 dakikada paylaşabilirim.`,
       },
       premium: {
-        base: "Merhaba, birçok konaklama işletmesinde talep geliyor fakat geciken yanıtlar dönüşümü düşürüyor. Bu noktayı iyileştiren turizm odaklı bir yaklaşım uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        base: `${buildObservationLine("communication_risk", lead)} Talep geliyor ama yanıt gecikince dönüşüm düşüyor; özellikle WhatsApp tarafında bu çok sık oluyor. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.`,
         followUp:
-          "Merhaba, tekrar rahatsız etmeyeyim diye kısa yazıyorum. Özellikle yoğun dönemlerde yanıt süresini toparlayan bir çerçeveyle ilerliyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+          `${buildObservationLine("communication_risk", lead)} Tekrar rahatsız etmeyeyim diye kısa yazıyorum: yanıt süresini toparlamak çoğu tesiste hızlı etki ediyor. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.`,
       },
     },
     booking_flow_gap: {
       soft: {
-        base: "Merhaba, konaklama işletmelerinde talebin rezervasyona daha net ilerlemesi için sade bir mesaj akışı kuruyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        base: `${buildObservationLine("booking_flow_gap", lead)} Genelde sorun trafik değil; “talep → rezervasyon” adımının net olmaması oluyor. Uygun olursa kısa bir örnek paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir not bırakayım. Gelen taleplerin rezervasyona dönüşmesini kolaylaştıran pratik bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+          `${buildObservationLine("booking_flow_gap", lead)} Kısa bir not bırakayım: gelen taleplerin rezervasyona dönüşmesini kolaylaştıran küçük bir akış var. Uygun olursa paylaşabilirim.`,
       },
       direct: {
-        base: "Merhaba, soru aşamasındaki talepleri daha hızlı rezervasyona çeviren kısa bir yöntem kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        base: `${buildObservationLine("booking_flow_gap", lead)} Soru aşamasındaki talepleri net bir “sonraki adım”la hızlıca rezervasyona taşımak mümkün. İsterseniz 2 dakikada paylaşabilirim.`,
         followUp:
-          "Merhaba, tekrar yazıyorum. Talebi rezervasyona taşıyan kısa yöntemi dilerseniz 2 dakikada özetleyebilirim.",
+          `${buildObservationLine("booking_flow_gap", lead)} Tekrar yazıyorum: talebi rezervasyona taşıyan kısa yöntemi dilerseniz 2 dakikada özetleyebilirim.`,
       },
       premium: {
-        base: "Merhaba, turizmde çoğu zaman ilgi var ama rezervasyona giden adımlar net kalmıyor. Bu geçişi güçlendiren konaklama odaklı bir sistem kurguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        base: `${buildObservationLine("booking_flow_gap", lead)} İlgi var ama rezervasyona giden adımlar netleşmeyince dönüşüm kaçıyor. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir hatırlatma bırakayım. Talepten rezervasyona geçişi sadeleştiren bir çerçevemiz var. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+          `${buildObservationLine("booking_flow_gap", lead)} Kısa bir hatırlatma bırakayım: talepten rezervasyona geçişi sadeleştiren bir çerçeve var. Uygun olursa işletmeniz özelinde paylaşabilirim.`,
       },
     },
     instagram_demand: {
       soft: {
-        base: "Merhaba, Instagram'dan gelen taleplerin sıcakken rezervasyona dönmesi için kısa bir mesaj düzeni kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        base: `${buildObservationLine("instagram_demand", lead)} Bu durumda genelde sorun içerik değil; DM/WhatsApp tarafında dönüşüm akışı oluyor. Uygun olursa kısa bir örnek paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir not bırakayım. Instagram taleplerini bekletmeden rezervasyona taşıyan pratik bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+          `${buildObservationLine("instagram_demand", lead)} Kısa bir not bırakayım: Instagram talepleri sıcakken “sonraki adım” net olmazsa kaçabiliyor. Uygun olursa örnek paylaşabilirim.`,
       },
       direct: {
-        base: "Merhaba, Instagram ve WhatsApp hattındaki talepleri daha hızlı rezervasyona çeviren bir akış kuruyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        base: `${buildObservationLine("instagram_demand", lead)} Instagram’dan gelen talebi hızlıca rezervasyona bağlayan kısa bir akış var. İsterseniz 2 dakikada paylaşabilirim.`,
         followUp:
-          "Merhaba, tekrar yazıyorum. Instagram'dan gelen talepler için kullandığımız hızlı rezervasyon akışını isterseniz kısaca paylaşabilirim.",
+          `${buildObservationLine("instagram_demand", lead)} Tekrar yazıyorum: Instagram’dan gelen talepler için kullandığımız kısa akışı isterseniz paylaşabilirim.`,
       },
       premium: {
-        base: "Merhaba, konaklama işletmelerinde sosyal medyadan ilgi geliyor fakat rezervasyona dönüş net olmayabiliyor. Bu dönüşümü güçlendiren turizm odaklı bir yaklaşım uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        base: `${buildObservationLine("instagram_demand", lead)} Sosyal medya ilgisi var ama rezervasyona dönüş net olmayabiliyor; çoğu zaman mesele “cevap” değil “yönlendirme”. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir hatırlatma bırakayım. Sosyal medya talebinin rezervasyona daha net ilerlemesi için sade bir çerçeveyle ilerliyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+          `${buildObservationLine("instagram_demand", lead)} Kısa bir hatırlatma bırakayım: sosyal talepten rezervasyona geçişi netleştiren sade bir çerçeve var. Uygun olursa işletmeniz özelinde paylaşabilirim.`,
       },
     },
     whatsapp_flow: {
       soft: {
-        base: "Merhaba, WhatsApp hattına gelen taleplerin kaybolmaması için konaklama tarafında kısa bir akış kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        base: `${buildObservationLine("whatsapp_flow", lead)} WhatsApp tarafında özellikle gece gelen sorular bazen arada kaybolabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir not bırakayım. WhatsApp'ta gelen talepleri daha düzenli takip etmek için pratik bir yapı kuruyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+          `${buildObservationLine("whatsapp_flow", lead)} Kısa bir not bırakayım: WhatsApp’ta gelen talepleri düzenli takip edince kaçan rezervasyon azalıyor. Uygun olursa örnek paylaşabilirim.`,
       },
       direct: {
-        base: "Merhaba, WhatsApp'tan gelen rezervasyon sorularını daha hızlı sonuca götüren bir yöntem kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        base: `${buildObservationLine("whatsapp_flow", lead)} WhatsApp’taki rezervasyon sorularını daha hızlı sonuca götüren pratik bir akış var. İsterseniz 2 dakikada paylaşabilirim.`,
         followUp:
-          "Merhaba, tekrar yazıyorum. WhatsApp akışını hızlandıran kısa yöntemimizi isterseniz 2 dakikada paylaşabilirim.",
+          `${buildObservationLine("whatsapp_flow", lead)} Tekrar yazıyorum: WhatsApp akışını hızlandıran kısa yöntemi isterseniz 2 dakikada paylaşabilirim.`,
       },
       premium: {
-        base: "Merhaba, birçok konaklama işletmesinde WhatsApp trafiği güçlü ama akış net olmadığında fırsatlar kaçabiliyor. Bu tarafı sadeleştiren turizm odaklı bir sistem uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        base: `${buildObservationLine("whatsapp_flow", lead)} WhatsApp trafiği güçlü olduğunda mesele genelde “kaç talep geldiği” değil, hangisinin rezervasyona gittiği oluyor. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir hatırlatma bırakayım. WhatsApp tarafında talebi daha kontrollü ilerleten bir çerçevemiz var. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+          `${buildObservationLine("whatsapp_flow", lead)} Kısa bir hatırlatma bırakayım: WhatsApp’ta talebi daha kontrollü ilerleten sade bir çerçeve var. Uygun olursa işletmeniz özelinde paylaşabilirim.`,
       },
     },
     direct_booking_opportunity: {
       soft: {
-        base: "Merhaba, konaklama işletmelerinde doğrudan rezervasyon payını artırmaya odaklanan kısa bir iletişim akışı kuruyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        base: `${buildObservationLine("direct_booking_opportunity", lead)} Bu tabloda genelde kaçan yer “doğrudan” tarafta oluyor (misafir soruyor ama yönlendirme net değil). Uygun olursa kısa bir örnek paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir not bırakayım. Doğrudan rezervasyon payını destekleyen pratik bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+          `${buildObservationLine("direct_booking_opportunity", lead)} Kısa bir not bırakayım: OTA görünürlüğünü bozmadan doğrudan payı destekleyen küçük dokunuşlar var. Uygun olursa örnek paylaşabilirim.`,
       },
       direct: {
-        base: "Merhaba, üçüncü taraf kanallara bağlı kalmadan daha fazla doğrudan rezervasyon almak için uygulanabilir bir yöntem kullanıyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        base: `${buildObservationLine("direct_booking_opportunity", lead)} OTA’ya gelen ilgiyi doğrudan rezervasyona daha sık bağlayan pratik bir akış var. İsterseniz 2 dakikada paylaşabilirim.`,
         followUp:
-          "Merhaba, tekrar yazıyorum. Doğrudan rezervasyon tarafını güçlendiren kısa yöntemi isterseniz kısaca paylaşabilirim.",
+          `${buildObservationLine("direct_booking_opportunity", lead)} Tekrar yazıyorum: doğrudan rezervasyon tarafını güçlendiren kısa yöntemi isterseniz paylaşabilirim.`,
       },
       premium: {
-        base: "Merhaba, turizmde görünürlük yüksek olsa da doğrudan rezervasyona dönen pay çoğu zaman sınırlı kalıyor. Bu dengeyi iyileştiren konaklama odaklı bir yapı uyguluyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        base: `${buildObservationLine("direct_booking_opportunity", lead)} Görünürlük yüksek olsa da doğrudan rezervasyona dönen pay çoğu tesiste sınırlı kalıyor; genelde sebep yönlendirme/akış. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir hatırlatma bırakayım. Kanal dengesini doğrudan rezervasyon lehine toparlayan bir çerçeve kullanıyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+          `${buildObservationLine("direct_booking_opportunity", lead)} Kısa bir hatırlatma bırakayım: kanal dengesini doğrudan lehine toparlayan sade bir çerçeve var. Uygun olursa işletmeniz özelinde paylaşabilirim.`,
       },
     },
     general_hospitality: {
       soft: {
-        base: "Merhaba, konaklama işletmelerinde rezervasyon öncesi iletişimi sadeleştiren kısa bir sistem kullanıyoruz. Uygun olursa kısa bir örnek paylaşabilirim.",
+        base: `${buildObservationLine("general_hospitality", lead)} Genelde küçük bir iletişim/rezervasyon akışı düzeltmesi bile dönüşümü hissedilir etkiliyor. Uygun olursa kısa bir örnek paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir not bırakayım. İlk temas ile rezervasyon arasındaki süreci daha düzenli hale getiren bir akışımız var. Uygun olursa kısa bir örnek paylaşabilirim.",
+          `${buildObservationLine("general_hospitality", lead)} Kısa bir not bırakayım: ilk temas ile rezervasyon arasını netleştiren küçük bir akış var. Uygun olursa örnek paylaşabilirim.`,
       },
       direct: {
-        base: "Merhaba, konaklama tarafında talebi daha hızlı rezervasyona taşıyan pratik bir yöntem uyguluyoruz. İsterseniz nasıl çalıştığını kısaca gösterebilirim.",
+        base: `${buildObservationLine("general_hospitality", lead)} Talebi daha hızlı rezervasyona taşıyan pratik bir yöntem var. İsterseniz 2 dakikada paylaşabilirim.`,
         followUp:
-          "Merhaba, tekrar yazıyorum. Talebi rezervasyona taşıyan kısa yöntemi dilerseniz 2 dakikada özetleyebilirim.",
+          `${buildObservationLine("general_hospitality", lead)} Tekrar yazıyorum: talebi rezervasyona taşıyan kısa yöntemi dilerseniz 2 dakikada özetleyebilirim.`,
       },
       premium: {
-        base: "Merhaba, turizmde rezervasyon öncesi iletişim net olduğunda dönüşüm belirgin şekilde iyileşiyor. Bu alana özel sade bir sistemle ilerliyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+        base: `${buildObservationLine("general_hospitality", lead)} Rezervasyon öncesi iletişim net olduğunda dönüşüm belirgin iyileşiyor; çoğu zaman 2-3 küçük dokunuş yetiyor. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.`,
         followUp:
-          "Merhaba, kısa bir hatırlatma bırakayım. Rezervasyon öncesi iletişimi daha tutarlı hale getiren bir çerçeve kullanıyoruz. Uygun olursa işletmeniz özelinde kısa bir fikir paylaşabilirim.",
+          `${buildObservationLine("general_hospitality", lead)} Kısa bir hatırlatma bırakayım: rezervasyon öncesi iletişimi tutarlı hale getiren sade bir çerçeve var. Uygun olursa işletmeniz özelinde paylaşabilirim.`,
       },
     },
   };
 
   const selected = templates[theme];
   if (followUp) {
-    const soft = selected.soft.followUp;
-    const direct = selected.direct.followUp;
-    const premium = selected.premium.followUp;
-    const styles = { soft, direct, premium };
+    const styles = {
+      soft: varyOutreachText({
+        text: selected.soft.followUp,
+        seed,
+        style: "soft",
+        followUp: true,
+        lead,
+      }),
+      direct: varyOutreachText({
+        text: selected.direct.followUp,
+        seed,
+        style: "direct",
+        followUp: true,
+        lead,
+      }),
+      premium: varyOutreachText({
+        text: selected.premium.followUp,
+        seed,
+        style: "premium",
+        followUp: true,
+        lead,
+      }),
+    };
     return { message: styles[preferredVariant], styles, weakSignals };
   }
 
-  const soft = selected.soft.base;
-  const direct = selected.direct.base;
-  const premium = selected.premium.base;
-  const styles = { soft, direct, premium };
+  const styles = {
+    soft: varyOutreachText({
+      text: selected.soft.base,
+      seed,
+      style: "soft",
+      followUp: false,
+      lead,
+    }),
+    direct: varyOutreachText({
+      text: selected.direct.base,
+      seed,
+      style: "direct",
+      followUp: false,
+      lead,
+    }),
+    premium: varyOutreachText({
+      text: selected.premium.base,
+      seed,
+      style: "premium",
+      followUp: false,
+      lead,
+    }),
+  };
 
   return { message: styles[preferredVariant], styles, weakSignals };
 }
