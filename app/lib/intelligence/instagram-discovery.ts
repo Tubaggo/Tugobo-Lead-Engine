@@ -93,37 +93,75 @@ export function generateInstagramHandleSuggestions(input: {
   name?: string;
   type?: string;
   city?: string;
+  website?: string;
+  signalText?: string;
 }): string[] {
   const tokens = tokenize(input.name);
-  if (tokens.length === 0) return [];
+  const cityTokens = tokenize(input.city);
+  const typeTokens = tokenize(input.type);
+  const signalTokens = tokenize(input.signalText).filter((t) => t.length >= 4).slice(0, 4);
+  let websiteToken = "";
+  try {
+    if (input.website?.trim()) {
+      const u = new URL(/^https?:\/\//i.test(input.website) ? input.website : `https://${input.website}`);
+      websiteToken = u.hostname
+        .replace(/^www\./i, "")
+        .split(".")[0]
+        ?.replace(/[^a-z0-9]/gi, "")
+        .toLowerCase();
+    }
+  } catch {
+    websiteToken = "";
+  }
+
+  const baseTokens = [...tokens];
+  if (baseTokens.length === 0) {
+    if (cityTokens.length > 0) baseTokens.push(cityTokens[0]);
+    if (typeTokens.length > 0) baseTokens.push(typeTokens[0]);
+    if (signalTokens.length > 0) baseTokens.push(signalTokens[0]);
+  }
+  if (baseTokens.length === 0) return [];
 
   const ordered: string[] = [];
   const push = (s: string) => {
     if (!ordered.includes(s)) ordered.push(s);
   };
 
-  push(tokens.join(""));
-  if (tokens.length >= 2) push(tokens.join("_"));
+  push(baseTokens.join(""));
+  if (baseTokens.length >= 2) push(baseTokens.join("_"));
 
-  const nonType = tokens.filter((t) => !TYPE_WORDS.has(t));
-  if (nonType.length > 0 && nonType.length < tokens.length) {
+  const nonType = baseTokens.filter((t) => !TYPE_WORDS.has(t));
+  if (nonType.length > 0 && nonType.length < baseTokens.length) {
     push(nonType.join(""));
   }
 
-  if (tokens.length >= 2) push(tokens.slice(-2).join(""));
-  if (tokens.length >= 2) push(tokens.slice(1).join(""));
+  if (baseTokens.length >= 2) push(baseTokens.slice(-2).join(""));
+  if (baseTokens.length >= 2) push(baseTokens.slice(1).join(""));
 
-  const replacedTokens = tokens.map((t) => TYPE_REPLACEMENTS[t] ?? t);
-  if (replacedTokens.join("") !== tokens.join("")) {
+  const replacedTokens = baseTokens.map((t) => TYPE_REPLACEMENTS[t] ?? t);
+  if (replacedTokens.join("") !== baseTokens.join("")) {
     push(replacedTokens.join(""));
   }
 
-  const cityTokens = tokenize(input.city);
-  if (cityTokens.length > 0 && !tokens.includes(cityTokens[0])) {
-    push([...cityTokens, ...tokens].join(""));
+  const location = cityTokens[0] ?? nonType[0] ?? signalTokens[0] ?? "";
+  if (location) {
+    push(`${location}hotel`);
+    push(`hotel${location}`);
+    push(`${location}_hotel`);
+  }
+  if (websiteToken && websiteToken.length >= 4) {
+    push(websiteToken);
+    if (location && websiteToken !== location) push(`${location}${websiteToken}`);
+  }
+  if (location && nonType[0] && nonType[0] !== location) {
+    push(`${location}${nonType[0]}`);
+    push(`${nonType[0]}${location}`);
+  }
+  if (cityTokens.length > 0 && !baseTokens.includes(cityTokens[0])) {
+    push([...cityTokens, ...baseTokens].join(""));
   }
 
-  return ordered.filter(isHandleShaped).slice(0, 6);
+  return ordered.filter(isHandleShaped).slice(0, 10);
 }
 
 /**
@@ -143,11 +181,15 @@ export function determineInstagramDiscovery(input: {
   businessName?: string;
   city?: string;
   type?: string;
+  website?: string;
+  socialSignalText?: string;
 }): InstagramDiscoveryProfile {
   const suggestions = generateInstagramHandleSuggestions({
     name: input.businessName,
     type: input.type,
     city: input.city,
+    website: input.website,
+    signalText: input.socialSignalText,
   });
 
   let status: InstagramDiscoveryStatus;
@@ -161,13 +203,14 @@ export function determineInstagramDiscovery(input: {
     confidence = 22;
   } else if (suggestions.length > 0) {
     status = "possible";
-    confidence = 35 + Math.min(suggestions.length, 4) * 4;
+    confidence = 52 + Math.min(suggestions.length, 4) * 4;
   } else if (!input.businessName?.trim()) {
-    status = "unknown";
-    confidence = 8;
+    status = "possible";
+    confidence = 45;
   } else {
-    status = "unknown";
-    confidence = 12;
+    // Avoid hard negative when evidence is thin: keep as likely presence.
+    status = "possible";
+    confidence = 48;
   }
 
   const needsManualCheck = status === "possible" || status === "broken";

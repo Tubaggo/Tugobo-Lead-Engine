@@ -45,6 +45,24 @@ export type LeadAiInsight = {
   source: AiInsightSource;
 };
 
+export type ConfidenceLevel = "low" | "medium" | "high";
+
+/**
+ * AI-powered business interpretation layer for lead detail context.
+ * Kept lightweight and fully serializable for API/UI transport.
+ */
+export type LeadInterpretation = {
+  summary: string;
+  acquisitionProfile: string;
+  recommendedApproach: string;
+  salesAngle: string;
+  channelRecommendation: string;
+  confidenceLevel: ConfidenceLevel;
+  keySignals: string[];
+  risks: string[];
+  opportunities: string[];
+};
+
 export type OutreachMessageStyle = "soft" | "direct" | "premium";
 
 export type LeadWhatsAppMessagePack = {

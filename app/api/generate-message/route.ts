@@ -168,6 +168,116 @@ function parseOutreachIntelligence(
   };
 }
 
+function readStringField(rec: Record<string, unknown>, key: string): string | null {
+  const v = rec[key];
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+function readNumberField(rec: Record<string, unknown>, key: string): number | null {
+  const v = rec[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function parseAcquisitionContext(input: {
+  acquisitionIntelligence: unknown;
+  conversionLeak: unknown;
+  bookingFlowStrength: number;
+  otaDependencyLikelihood: number;
+  businessSignals: BusinessSignal[];
+  channels: string[];
+}): {
+  otaDependency: string;
+  weakDirectBooking: boolean;
+  instagramLikelihood: string;
+  conversionGaps: string[];
+  acquisitionMaturity: string | null;
+  consultativeFocus: string[];
+} {
+  const rec = isRecord(input.acquisitionIntelligence)
+    ? input.acquisitionIntelligence
+    : null;
+  const discoveryStatus = rec ? readStringField(rec, "instagramDiscoveryStatus") : null;
+  const instagramConfidence = rec ? readStringField(rec, "instagramConfidence") : null;
+  const acquisitionMaturity = rec ? readStringField(rec, "acquisitionMaturity") : null;
+  const suggestedHandlesRaw = rec?.suggestedInstagramHandles;
+  const suggestedInstagramHandles = Array.isArray(suggestedHandlesRaw)
+    ? suggestedHandlesRaw.filter((h): h is string => typeof h === "string").slice(0, 4)
+    : [];
+
+  const otaScore = Number.isFinite(input.otaDependencyLikelihood)
+    ? input.otaDependencyLikelihood
+    : readNumberField(rec ?? {}, "otaDependencyLikelihood") ?? 0;
+  const otaDependency =
+    otaScore >= 72 || input.channels.some((c) => c === "Booking" || c === "Airbnb")
+      ? "high"
+      : otaScore >= 50
+        ? "medium"
+        : "low";
+
+  const weakDirectBooking =
+    (Number.isFinite(input.bookingFlowStrength) && input.bookingFlowStrength < 55) ||
+    input.businessSignals.includes("conversion_gap") ||
+    input.businessSignals.includes("no_booking_flow") ||
+    input.businessSignals.includes("weak_booking_cta") ||
+    input.businessSignals.includes("external_only_booking_dependency");
+
+  const instagramLikelihood =
+    discoveryStatus === "verified"
+      ? "high"
+      : discoveryStatus === "possible" || instagramConfidence === "likely"
+        ? "likely"
+        : discoveryStatus === "broken"
+          ? "weak"
+          : "likely";
+
+  const conversionGaps: string[] = [];
+  if (input.businessSignals.includes("conversion_gap")) {
+    conversionGaps.push("attention_to_booking_gap");
+  }
+  if (input.businessSignals.includes("no_booking_flow")) {
+    conversionGaps.push("no_clear_booking_path");
+  }
+  if (input.businessSignals.includes("weak_booking_cta")) {
+    conversionGaps.push("weak_booking_cta");
+  }
+  if (input.businessSignals.includes("external_only_booking_dependency")) {
+    conversionGaps.push("external_booking_dependency");
+  }
+  if (isRecord(input.conversionLeak)) {
+    const leakLevel = readStringField(input.conversionLeak, "conversionLeakLevel");
+    const leakScore = readNumberField(input.conversionLeak, "conversionLeakScore");
+    if (leakLevel) conversionGaps.push(`conversion_leak:${leakLevel}`);
+    if (typeof leakScore === "number" && leakScore >= 60) {
+      conversionGaps.push("high_conversion_leak_score");
+    }
+  }
+
+  const consultativeFocus: string[] = [];
+  if (otaDependency !== "low") {
+    consultativeFocus.push("reduce OTA-heavy dependency with direct demand capture");
+  }
+  if (weakDirectBooking) {
+    consultativeFocus.push("clarify inquiry-to-booking flow on owned surfaces");
+  }
+  if (instagramLikelihood === "likely" && suggestedInstagramHandles.length > 0) {
+    consultativeFocus.push(
+      `possible instagram discovery (${suggestedInstagramHandles.map((h) => `@${h}`).join(", ")})`,
+    );
+  }
+  if (consultativeFocus.length === 0) {
+    consultativeFocus.push("keep the tone diagnostic and tailored to this property");
+  }
+
+  return {
+    otaDependency,
+    weakDirectBooking,
+    instagramLikelihood,
+    conversionGaps,
+    acquisitionMaturity,
+    consultativeFocus,
+  };
+}
+
 export async function POST(req: Request) {
   let body: unknown;
   try {
@@ -317,6 +427,19 @@ export async function POST(req: Request) {
           conversionLeak: body.conversionLeak ?? null,
           commercialReadiness: body.commercialReadiness ?? null,
           opportunityProfile: body.opportunityProfile ?? null,
+          acquisitionContext: parseAcquisitionContext({
+            acquisitionIntelligence: body.acquisitionIntelligence ?? null,
+            conversionLeak: body.conversionLeak ?? null,
+            bookingFlowStrength,
+            otaDependencyLikelihood,
+            businessSignals,
+            channels,
+          }),
+          messagingGoals: [
+            "consultative_tone",
+            "property_specific_personalization",
+            "avoid_generic_sales_spam",
+          ],
           leadNumbers: {
             leadScore,
             hotScore,

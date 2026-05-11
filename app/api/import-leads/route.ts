@@ -11,6 +11,70 @@ const TEXT_SEARCH =
   "https://maps.googleapis.com/maps/api/place/textsearch/json";
 const PLACE_DETAILS =
   "https://maps.googleapis.com/maps/api/place/details/json";
+const DETAIL_REQUEST_DELAY_MIN_MS = 500;
+const DETAIL_REQUEST_DELAY_MAX_MS = 1000;
+const DETAILS_CACHE_TTL_MS = 10 * 60 * 1000;
+const RATE_LIMIT_FRIENDLY_TR_ERROR =
+  "Google Places kısa süreli istek limitine takıldı. Birkaç dakika bekleyip tekrar deneyin.";
+
+type PlacesStatus = "OK" | "ZERO_RESULTS" | "OVER_QUERY_LIMIT" | "RESOURCE_EXHAUSTED" | string;
+
+type PlacesTextSearchResponse = {
+  status: PlacesStatus;
+  error_message?: string;
+  results?: GoogleTextResult[];
+};
+
+type PlacesDetailsResponse = {
+  status: PlacesStatus;
+  result?: GoogleDetailsResult;
+  error_message?: string;
+};
+
+type RateLimitedError = Error & { isRateLimit: true };
+
+const placeDetailsCache = new Map<
+  string,
+  { value: GoogleDetailsResult | null; expiresAt: number }
+>();
+const placeDetailsInflight = new Map<string, Promise<GoogleDetailsResult | null>>();
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function randomDelayMs(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function isRateLimitStatus(status: string | undefined) {
+  return status === "OVER_QUERY_LIMIT" || status === "RESOURCE_EXHAUSTED";
+}
+
+function isRateLimitMessage(message: string | undefined) {
+  if (!message) return false;
+  return /rate[-\s]?limit|over[_\s]?query[_\s]?limit|resource[_\s]?exhausted/i.test(message);
+}
+
+function isRateLimitResponse(status: string | undefined, errorMessage: string | undefined) {
+  return isRateLimitStatus(status) || isRateLimitMessage(errorMessage);
+}
+
+function createRateLimitError(): RateLimitedError {
+  const err = new Error(RATE_LIMIT_FRIENDLY_TR_ERROR) as RateLimitedError;
+  err.isRateLimit = true;
+  return err;
+}
+
+function isRateLimitedError(err: unknown): err is RateLimitedError {
+  return (
+    err instanceof Error &&
+    ((err as Partial<RateLimitedError>).isRateLimit === true ||
+      isRateLimitMessage(err.message))
+  );
+}
 
 async function fetchTextSearch(query: string, apiKey: string) {
   const u = new URL(TEXT_SEARCH);
@@ -19,11 +83,11 @@ async function fetchTextSearch(query: string, apiKey: string) {
   u.searchParams.set("language", "tr");
   u.searchParams.set("region", "tr");
   const res = await fetch(u.toString(), { cache: "no-store" });
-  return res.json() as Promise<{
-    status: string;
-    error_message?: string;
-    results?: GoogleTextResult[];
-  }>;
+  const data = (await res.json()) as PlacesTextSearchResponse;
+  if (isRateLimitResponse(data.status, data.error_message)) {
+    throw createRateLimitError();
+  }
+  return data;
 }
 
 async function fetchPlaceDetails(
@@ -39,13 +103,44 @@ async function fetchPlaceDetails(
   u.searchParams.set("key", apiKey);
   u.searchParams.set("language", "tr");
   const res = await fetch(u.toString(), { cache: "no-store" });
-  const data = (await res.json()) as {
-    status: string;
-    result?: GoogleDetailsResult;
-    error_message?: string;
-  };
+  const data = (await res.json()) as PlacesDetailsResponse;
+  if (isRateLimitResponse(data.status, data.error_message)) {
+    throw createRateLimitError();
+  }
   if (data.status !== "OK" || !data.result) return null;
   return data.result;
+}
+
+async function fetchPlaceDetailsCached(
+  placeId: string,
+  apiKey: string,
+): Promise<GoogleDetailsResult | null> {
+  const now = Date.now();
+  const cached = placeDetailsCache.get(placeId);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+  if (cached) {
+    placeDetailsCache.delete(placeId);
+  }
+
+  const inflight = placeDetailsInflight.get(placeId);
+  if (inflight) return inflight;
+
+  const request = fetchPlaceDetails(placeId, apiKey)
+    .then((value) => {
+      placeDetailsCache.set(placeId, {
+        value,
+        expiresAt: Date.now() + DETAILS_CACHE_TTL_MS,
+      });
+      return value;
+    })
+    .finally(() => {
+      placeDetailsInflight.delete(placeId);
+    });
+
+  placeDetailsInflight.set(placeId, request);
+  return request;
 }
 
 export async function POST(req: Request) {
@@ -88,7 +183,13 @@ export async function POST(req: Request) {
   let searchData: Awaited<ReturnType<typeof fetchTextSearch>>;
   try {
     searchData = await fetchTextSearch(query, apiKey);
-  } catch {
+  } catch (err) {
+    if (isRateLimitedError(err)) {
+      return NextResponse.json(
+        { error: RATE_LIMIT_FRIENDLY_TR_ERROR, leads: [] },
+        { status: 429 },
+      );
+    }
     return NextResponse.json(
       { error: "Google Places request failed", leads: [] },
       { status: 502 },
@@ -100,6 +201,12 @@ export async function POST(req: Request) {
   }
 
   if (searchData.status !== "OK" && searchData.status !== "ZERO_RESULTS") {
+    if (isRateLimitResponse(searchData.status, searchData.error_message)) {
+      return NextResponse.json(
+        { error: RATE_LIMIT_FRIENDLY_TR_ERROR, leads: [] },
+        { status: 429 },
+      );
+    }
     return NextResponse.json(
       {
         error:
@@ -122,12 +229,34 @@ export async function POST(req: Request) {
     if (top.length >= 10) break;
   }
 
-  const detailPairs = await Promise.all(
-    top.map(async (r) => {
-      const details = await fetchPlaceDetails(r.place_id, apiKey);
-      return { text: r, details };
-    }),
-  );
+  const detailPairs: Array<{ text: GoogleTextResult; details: GoogleDetailsResult | null }> = [];
+  const seenDetailPlaceIds = new Set<string>();
+  for (let i = 0; i < top.length; i += 1) {
+    const r = top[i];
+    if (seenDetailPlaceIds.has(r.place_id)) {
+      continue;
+    }
+    seenDetailPlaceIds.add(r.place_id);
+
+    try {
+      const details = await fetchPlaceDetailsCached(r.place_id, apiKey);
+      detailPairs.push({ text: r, details });
+    } catch (err) {
+      if (isRateLimitedError(err)) {
+        return NextResponse.json(
+          { error: RATE_LIMIT_FRIENDLY_TR_ERROR, leads: [] },
+          { status: 429 },
+        );
+      }
+      detailPairs.push({ text: r, details: null });
+    }
+
+    if (i < top.length - 1) {
+      await delay(
+        randomDelayMs(DETAIL_REQUEST_DELAY_MIN_MS, DETAIL_REQUEST_DELAY_MAX_MS),
+      );
+    }
+  }
 
   const leads = detailPairs.map(({ text, details }) =>
     mapGooglePlaceToScoredLead(text, details, city, type),

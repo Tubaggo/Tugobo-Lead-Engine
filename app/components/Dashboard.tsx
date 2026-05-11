@@ -40,6 +40,7 @@ import {
 } from "@/app/lib/generate";
 import type {
   LeadAiInsight,
+  LeadInterpretation,
   OpportunityLevel,
   OutreachMessageStyle,
 } from "@/app/lib/intelligence/ai-insight";
@@ -104,12 +105,26 @@ const CONTACT_FINDER_MAP_KEY = "tugobo-lead-engine:contact-finder-map-v1";
 const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
 const DAILY_OUTREACH_STORAGE_KEY = "tugobo-lead-engine:daily-outreach-v1";
 const OUTREACH_LOG_KEY = "tugobo-lead-engine:outreach-log-v1";
+const AI_INTERPRETATION_CACHE_KEY = "tugobo-lead-engine:ai-interpretation-cache-v1";
 /** Max leads staged for today's outreach queue (local calendar day). */
 const DAILY_OUTREACH_LIMIT = 20;
 const AUTO_QUEUE_COOLDOWN_DAYS = 2;
 const AUTO_QUEUE_RECENT_CONTACT_DAYS = 7;
 const IMPORT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const LEGACY_CREATED_AT_TS = Date.UTC(2024, 0, 1, 0, 0, 0, 0);
+
+type AiInterpretationCacheValue = Pick<
+  LeadInterpretation,
+  | "summary"
+  | "acquisitionProfile"
+  | "recommendedApproach"
+  | "salesAngle"
+  | "channelRecommendation"
+  | "confidenceLevel"
+> & {
+  createdAt: number;
+  sourceLabel: "ai" | "rules";
+};
 
 type LastImportPayload = {
   batch: ScoredLead[];
@@ -2283,7 +2298,7 @@ function LeadInstagramAction({
       onClick={(e) => e.preventDefault()}
       aria-disabled
       title={
-        broken ? t("instagram_link_broken_long", locale) : t("instagram_none_on_file", locale)
+        broken ? t("instagram_link_broken_long", locale) : t("possible_instagram", locale)
       }
       className={`${square} border-white/10 bg-white/5 text-zinc-500 cursor-not-allowed`}
     >
@@ -2386,6 +2401,68 @@ function AcquisitionIntelligencePanel({
   const hasDetail = signalLines.length > 0 || weaknessLines.length > 0;
   const minimal = isAcquisitionUiMinimal(acquisition);
 
+  const confidenceToneClass = (value: string): string => {
+    switch (value) {
+      case "confirmed":
+        return "border-emerald-400/25 bg-emerald-500/10 text-emerald-200";
+      case "likely":
+        return "border-sky-400/25 bg-sky-500/10 text-sky-200";
+      case "weak":
+        return "border-amber-400/25 bg-amber-500/10 text-amber-200";
+      default:
+        return "border-zinc-500/25 bg-zinc-500/10 text-zinc-300";
+    }
+  };
+
+  const confidenceLabel = (v: unknown): string => {
+    if (v === "confirmed") return t("confidence_confirmed", locale);
+    if (v === "likely") return t("confidence_likely", locale);
+    if (v === "weak") return t("confidence_weak", locale);
+    if (v === "missing") return t("confidence_missing", locale);
+    if (typeof v === "number") {
+      if (v >= 80) return t("confidence_confirmed", locale);
+      if (v >= 50) return t("confidence_likely", locale);
+      if (v >= 25) return t("confidence_weak", locale);
+      return t("confidence_missing", locale);
+    }
+    return String(v ?? "");
+  };
+
+  const maturityLabel = (v: unknown): string => {
+    if (v === "low") return t("maturity_low", locale);
+    if (v === "medium") return t("maturity_medium", locale);
+    if (v === "high") return t("maturity_high", locale);
+    return String(v ?? "");
+  };
+
+  const confidenceItems: Array<{ key: string; label: string; value: string }> = [
+    {
+      key: "website",
+      label: t("chip_conf_website", locale),
+      value: String(acquisition.websiteConfidence ?? "missing"),
+    },
+    {
+      key: "instagram",
+      label: t("chip_conf_instagram", locale),
+      value: String(acquisition.instagramConfidence ?? "likely"),
+    },
+    {
+      key: "whatsapp",
+      label: t("chip_conf_whatsapp", locale),
+      value: String(acquisition.whatsappConfidence ?? "missing"),
+    },
+    {
+      key: "ota",
+      label: t("chip_conf_ota", locale),
+      value: String(acquisition.otaConfidence ?? "missing"),
+    },
+    {
+      key: "ads",
+      label: t("chip_conf_ads", locale),
+      value: String(acquisition.adsLikelihood ?? "weak"),
+    },
+  ];
+
   if (minimal && !hasDetail) return null;
   if (!summary && !hasDetail) return null;
 
@@ -2395,6 +2472,22 @@ function AcquisitionIntelligencePanel({
         <div className="min-w-0 flex-1">
           <div className="font-medium uppercase tracking-wider text-teal-200/90">
             {t("acq_intel_title", locale)}
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            <span className="inline-flex items-center rounded-full border border-violet-400/25 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-200">
+              {t("chip_acq_maturity", locale)}{" "}
+              <span className="ml-1 uppercase">
+                {maturityLabel(acquisition.acquisitionMaturity)}
+              </span>
+            </span>
+            {confidenceItems.map((item) => (
+              <span
+                key={item.key}
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${confidenceToneClass(item.value)}`}
+              >
+                {item.label}: {confidenceLabel(item.value)}
+              </span>
+            ))}
           </div>
           {summary ? (
             <p className="mt-1 leading-relaxed text-zinc-300">{summary}</p>
@@ -3268,12 +3361,77 @@ function OutreachIntelligencePanel({
   );
 }
 
+function stableLeadInterpretationKey(lead: LeadTableRow): string {
+  const id = lead.id?.trim();
+  if (id) return `id:${id}`;
+  const name = lead.name?.trim().toLowerCase() || "unknown";
+  const city = lead.city?.trim().toLowerCase() || "unknown";
+  const location = lead.region?.trim().toLowerCase() || "unknown";
+  return `biz:${name}|${city}|${location}`;
+}
+
+function loadAiInterpretationCache(): Record<string, AiInterpretationCacheValue> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(AI_INTERPRETATION_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, AiInterpretationCacheValue> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+      const row = v as Partial<AiInterpretationCacheValue>;
+      if (
+        typeof row.summary !== "string" ||
+        typeof row.acquisitionProfile !== "string" ||
+        typeof row.recommendedApproach !== "string" ||
+        typeof row.salesAngle !== "string" ||
+        typeof row.channelRecommendation !== "string"
+      ) {
+        continue;
+      }
+      if (
+        row.confidenceLevel !== "low" &&
+        row.confidenceLevel !== "medium" &&
+        row.confidenceLevel !== "high"
+      ) {
+        continue;
+      }
+      out[k] = {
+        summary: row.summary,
+        acquisitionProfile: row.acquisitionProfile,
+        recommendedApproach: row.recommendedApproach,
+        salesAngle: row.salesAngle,
+        channelRecommendation: row.channelRecommendation,
+        confidenceLevel: row.confidenceLevel,
+        createdAt: typeof row.createdAt === "number" ? row.createdAt : Date.now(),
+        sourceLabel: row.sourceLabel === "rules" ? "rules" : "ai",
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveAiInterpretationCache(cache: Record<string, AiInterpretationCacheValue>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(AI_INTERPRETATION_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore quota errors
+  }
+}
+
 function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [refined, setRefined] = useState<LeadAiInsight | null>(null);
+  const [interpretation, setInterpretation] = useState<AiInterpretationCacheValue | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const stableKey = stableLeadInterpretationKey(lead);
+  const cacheKey = `${stableKey}:${locale}`;
 
   useEffect(() => {
     let cancelled = false;
@@ -3292,8 +3450,10 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
 
   useEffect(() => {
     setRefined(null);
+    const cache = loadAiInterpretationCache();
+    setInterpretation(cache[cacheKey] ?? null);
     setError(null);
-  }, [lead.id]);
+  }, [cacheKey]);
 
   const base: LeadAiInsight = {
     aiInsight: lead.aiInsight ?? "",
@@ -3310,17 +3470,53 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
     active.painPointSummary.length > 0 ||
     active.outreachAngle.trim().length > 0;
 
+  function buildRuleBasedInterpretation(): AiInterpretationCacheValue {
+    const summary =
+      active.aiInsight.trim() ||
+      (locale === "tr"
+        ? "Kural bazlı sinyaller bu leadde iyileştirilebilir bir satış fırsatı olduğunu gösteriyor."
+        : "Rule-based signals suggest this lead has actionable sales opportunity.");
+    const acquisitionProfile =
+      active.painPointSummary[0]?.trim() ||
+      (locale === "tr"
+        ? "Edinim olgunluğu orta seviyede; doğrudan kanallar güçlendirilebilir."
+        : "Acquisition maturity appears mid-level with room to strengthen owned channels.");
+    const recommendedApproach =
+      locale === "tr"
+        ? "Kısa, danışman tonda bir ilk temasla rezervasyon akışı netliği üzerine konuşun."
+        : "Use a short consultative first touch focused on booking-flow clarity.";
+    const salesAngle = pickOutreachAngleText(active.outreachAngle, active.painPointSummary);
+    const channelRecommendation =
+      locale === "tr"
+        ? "WhatsApp/Instagram erişimi varsa hızlı geri dönüş penceresinden ilerleyin."
+        : "Prioritize fast-response channels such as WhatsApp/Instagram when available.";
+    return {
+      summary,
+      acquisitionProfile,
+      recommendedApproach,
+      salesAngle,
+      channelRecommendation,
+      confidenceLevel: "medium",
+      createdAt: Date.now(),
+      sourceLabel: "rules",
+    };
+  }
+
   async function refineWithLlm() {
-    if (!llmAvailable || busy) return;
+    if (busy) return;
     setBusy(true);
     setError(null);
+    const previous = interpretation;
     try {
       const res = await fetch("/api/ai-insight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lead }),
+        body: JSON.stringify({ lead, locale }),
       });
-      const data = (await res.json()) as LeadAiInsight & { error?: string };
+      const data = (await res.json()) as LeadAiInsight & {
+        error?: string;
+        interpretation?: LeadInterpretation | null;
+      };
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setRefined({
         aiInsight: data.aiInsight,
@@ -3337,7 +3533,34 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
             : "medium",
         source: data.source === "llm" ? "llm" : "rules",
       });
+      const next = data.interpretation
+        ? {
+            summary: data.interpretation.summary,
+            acquisitionProfile: data.interpretation.acquisitionProfile,
+            recommendedApproach: data.interpretation.recommendedApproach,
+            salesAngle: data.interpretation.salesAngle,
+            channelRecommendation: data.interpretation.channelRecommendation,
+            confidenceLevel: data.interpretation.confidenceLevel,
+            createdAt: Date.now(),
+            sourceLabel: data.source === "llm" ? ("ai" as const) : ("rules" as const),
+          }
+        : null;
+      if (next) {
+        setInterpretation(next);
+        const cache = loadAiInterpretationCache();
+        cache[cacheKey] = next;
+        saveAiInterpretationCache(cache);
+      }
     } catch (e) {
+      if (previous) {
+        setInterpretation(previous);
+      } else {
+        const fallback = buildRuleBasedInterpretation();
+        setInterpretation(fallback);
+        const cache = loadAiInterpretationCache();
+        cache[cacheKey] = fallback;
+        saveAiInterpretationCache(cache);
+      }
       setError(e instanceof Error ? e.message : t("detail_refine_failed", locale));
     } finally {
       setBusy(false);
@@ -3361,7 +3584,7 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
               onClick={() => void refineWithLlm()}
               className="inline-flex items-center rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium text-cyan-100 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {busy ? t("detail_refining_with_ai", locale) : t("detail_polish_with_ai", locale)}
+              {busy ? t("detail_refining_with_ai", locale) : t("ai_reinterpret", locale)}
             </button>
           ) : null}
         </div>
@@ -3449,6 +3672,48 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
           </span>
         ) : null}
       </div>
+
+      {interpretation ? (
+        <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/[0.05] px-3 py-2.5">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[10px] uppercase tracking-wider text-cyan-200/90">
+              {t("ai_sales_commentary_section", locale)}
+            </div>
+            <span className="inline-flex items-center rounded-full border border-cyan-400/25 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-cyan-100">
+              {t("ai_confidence_label", locale)} · {interpretation.confidenceLevel}
+            </span>
+          </div>
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] text-zinc-400">
+            <span>
+              {interpretation.sourceLabel === "ai"
+                ? t("ai_interpretation_label_ai", locale)
+                : t("ai_interpretation_label_rules", locale)}
+            </span>
+            <span>·</span>
+            <span>
+              {t("ai_last_updated_label", locale)}{" "}
+              {new Date(interpretation.createdAt).toLocaleString(
+                locale === "tr" ? "tr-TR" : "en-US",
+              )}
+            </span>
+          </div>
+          <div className="space-y-2 text-xs leading-relaxed text-zinc-200">
+            <p>{interpretation.summary}</p>
+            <p>
+              <span className="text-zinc-400">{t("ai_recommended_approach_label", locale)}:</span>{" "}
+              {interpretation.recommendedApproach}
+            </p>
+            <p>
+              <span className="text-zinc-400">{t("ai_sales_angle_label", locale)}:</span>{" "}
+              {interpretation.salesAngle}
+            </p>
+            <p>
+              <span className="text-zinc-400">{t("ai_acquisition_profile_label", locale)}:</span>{" "}
+              {interpretation.acquisitionProfile}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {error ? <div className="text-[11px] text-rose-300">{error}</div> : null}
     </div>

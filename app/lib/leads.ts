@@ -31,6 +31,10 @@ import {
   calculateOpportunityProfile,
   type OpportunityProfile,
 } from "./intelligence/opportunity-engine";
+import type {
+  MaturityLevel,
+  SignalConfidence,
+} from "./intelligence/confidence";
 
 export type { BusinessSignal };
 export type {
@@ -40,7 +44,11 @@ export type {
   AcquisitionIntentLevel,
 };
 export type { CommercialReadiness, CommercialReadinessLevel };
-export { calculateAcquisitionPriorityBoost, getAcquisitionPriorityReason } from "./intelligence/acquisition-intelligence";
+export {
+  calculateAcquisitionMaturity,
+  calculateAcquisitionPriorityBoost,
+  getAcquisitionPriorityReason,
+} from "./intelligence/acquisition-intelligence";
 export type {
   ConversionLeak,
   ConversionLeakLevel,
@@ -58,6 +66,7 @@ export {
 export type { OpportunityLevel, AiInsightSource };
 export type { OutreachIntelligenceProfile };
 export type { OpportunityProfile };
+export type { SignalConfidence, MaturityLevel };
 
 export type OutreachPriorityBucket = "today" | "high" | "medium" | "low" | "archive";
 export type RecommendedAction =
@@ -157,8 +166,16 @@ export type WebsiteIntelligenceSummary = {
   hasTelLink?: boolean;
   hasBookingCtaText?: boolean;
   hasBookingEngine?: boolean;
+  hasContactPage?: boolean;
+  hasInquiryForm?: boolean;
+  hasSocialIcons?: boolean;
+  hasOtaOutboundLinks?: boolean;
+  bookingFlowQuality?: number;
   mobileViewportPresent?: boolean;
   confidence?: number;
+  websiteConfidence?: SignalConfidence;
+  directBookingMaturity?: MaturityLevel;
+  conversionMaturity?: MaturityLevel;
   errors?: string[];
   /** Present when homepage enrichment estimates outbound social link depth (0–100). */
   socialLinksQuality?: number;
@@ -210,6 +227,15 @@ export type ScoredLead = Lead & {
   conversionLeak?: ConversionLeak;
   /** Deterministic likelihood of investing in growth / conversion systems. */
   commercialReadiness?: CommercialReadiness;
+  /** Confidence-based acquisition enrichment (optional for older persisted data). */
+  websiteConfidence?: SignalConfidence;
+  instagramConfidence?: SignalConfidence | number;
+  whatsappConfidence?: SignalConfidence;
+  otaConfidence?: SignalConfidence;
+  adsLikelihood?: SignalConfidence;
+  directBookingMaturity?: MaturityLevel;
+  conversionMaturity?: MaturityLevel;
+  acquisitionMaturity?: MaturityLevel;
   /** Unified opportunity engine output (v2). */
   opportunityProfile?: OpportunityProfile;
   /** Outreach prioritization layer; independent from leadScore. */
@@ -1444,6 +1470,14 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     intelligenceScore: intel.intelligenceScore,
     acquisitionIntelligence: enrichment.acquisitionIntelligence,
     commercialReadiness: enrichment.commercialReadiness,
+    websiteConfidence: enrichment.acquisitionIntelligence.websiteConfidence,
+    instagramConfidence: enrichment.acquisitionIntelligence.instagramConfidence,
+    whatsappConfidence: enrichment.acquisitionIntelligence.whatsappConfidence,
+    otaConfidence: enrichment.acquisitionIntelligence.otaConfidence,
+    adsLikelihood: enrichment.acquisitionIntelligence.adsLikelihood,
+    directBookingMaturity: enrichment.acquisitionIntelligence.directBookingMaturity,
+    conversionMaturity: enrichment.acquisitionIntelligence.conversionMaturity,
+    acquisitionMaturity: enrichment.acquisitionIntelligence.acquisitionMaturity,
   };
   const ai = generateLeadInsight(toLeadForAiInsight(base), "rules");
   const withAi: ScoredLead = {

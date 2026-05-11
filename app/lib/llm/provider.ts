@@ -1,11 +1,14 @@
 import {
   getPainPointSummary,
   type LeadAiInsight,
+  type LeadInterpretation,
   type LeadForAiInsight,
   type LeadWhatsAppMessagePack,
 } from "@/app/lib/intelligence/ai-insight";
+import type { Locale } from "@/app/lib/i18n";
 import { deepseekChatText, getDeepSeekApiKey } from "./deepseek";
 import {
+  LEAD_INTERPRETATION_SYSTEM,
   LEAD_INSIGHT_SYSTEM,
   OUTREACH_PACK_SYSTEM,
   REFINE_SINGLE_COPY_SYSTEM,
@@ -94,6 +97,80 @@ function parseRefineTextJson(raw: string): string | null {
   return text || null;
 }
 
+function parseLeadInterpretationJson(raw: string): LeadInterpretation | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+
+  const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+  const acquisitionProfile =
+    typeof parsed.acquisitionProfile === "string"
+      ? parsed.acquisitionProfile.trim()
+      : "";
+  const recommendedApproach =
+    typeof parsed.recommendedApproach === "string"
+      ? parsed.recommendedApproach.trim()
+      : "";
+  const salesAngle = typeof parsed.salesAngle === "string" ? parsed.salesAngle.trim() : "";
+  const channelRecommendation =
+    typeof parsed.channelRecommendation === "string"
+      ? parsed.channelRecommendation.trim()
+      : "";
+  const confidenceRaw =
+    typeof parsed.confidenceLevel === "string" ? parsed.confidenceLevel.trim() : "";
+  const confidenceLevel =
+    confidenceRaw === "low" || confidenceRaw === "medium" || confidenceRaw === "high"
+      ? confidenceRaw
+      : null;
+  const keySignals = Array.isArray(parsed.keySignals)
+    ? parsed.keySignals
+        .filter((x): x is string => typeof x === "string")
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .slice(0, 5)
+    : [];
+  const risks = Array.isArray(parsed.risks)
+    ? parsed.risks
+        .filter((x): x is string => typeof x === "string")
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .slice(0, 4)
+    : [];
+  const opportunities = Array.isArray(parsed.opportunities)
+    ? parsed.opportunities
+        .filter((x): x is string => typeof x === "string")
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .slice(0, 4)
+    : [];
+
+  if (
+    !summary ||
+    !acquisitionProfile ||
+    !recommendedApproach ||
+    !salesAngle ||
+    !channelRecommendation ||
+    !confidenceLevel
+  ) {
+    return null;
+  }
+  return {
+    summary,
+    acquisitionProfile,
+    recommendedApproach,
+    salesAngle,
+    channelRecommendation,
+    confidenceLevel,
+    keySignals,
+    risks,
+    opportunities,
+  };
+}
+
 function mergeAiInsightWithAcquisition(
   aiInsight: string,
   acquisitionNote: string,
@@ -119,6 +196,43 @@ function leadInsightUserContext(
     outreachIntelligence: input.outreachIntelligence ?? null,
     heuristicOutreachAngle: input.heuristicOutreachAngle ?? null,
     rulePainSummary: getPainPointSummary(input),
+    ruleOutreachAngle: rulesBaseline.outreachAngle,
+    ruleOpportunityLevel: rulesBaseline.opportunityLevel,
+    extra: extraContext ?? undefined,
+  });
+}
+
+function leadInterpretationUserContext(
+  input: LeadForAiInsight,
+  rulesBaseline: LeadAiInsight,
+  language: Locale,
+  extraContext?: Record<string, unknown> | null,
+): string {
+  const acq = isRecord(extraContext?.acquisition) ? extraContext.acquisition : null;
+  const reviewVolume =
+    typeof extraContext?.reviewsCount === "number" ? extraContext.reviewsCount : null;
+
+  return JSON.stringify({
+    language,
+    signals: {
+      otaPresence: input.channels.includes("Booking") || input.channels.includes("Airbnb"),
+      websiteConfidence: acq?.websiteConfidence ?? null,
+      instagramConfidence: acq?.instagramConfidence ?? null,
+      whatsappConfidence: acq?.whatsappConfidence ?? null,
+      reviewVolume,
+      acquisitionMaturity: acq?.acquisitionMaturity ?? null,
+      conversionMaturity: acq?.conversionMaturity ?? null,
+      directBookingMaturity: acq?.directBookingMaturity ?? null,
+      hotScore: input.hotScore,
+      leadScore: input.leadScore,
+    },
+    channels: input.channels,
+    contactQuality: input.contactQuality,
+    hasWhatsAppPath: input.hasWhatsAppPath,
+    hasInstagram: input.hasInstagram,
+    hasOwnWebsite: input.hasOwnWebsite,
+    businessSignals: input.businessSignals ?? [],
+    painPointSummary: getPainPointSummary(input),
     ruleOutreachAngle: rulesBaseline.outreachAngle,
     ruleOpportunityLevel: rulesBaseline.opportunityLevel,
     extra: extraContext ?? undefined,
@@ -180,6 +294,32 @@ export async function generateLLMLeadInsight(
     opportunityLevel: rulesBaseline.opportunityLevel,
     source: "llm",
   };
+}
+
+/**
+ * Optional LLM interpretation layer for compact business/acquisition/sales narrative.
+ */
+export async function generateLLMLeadInterpretation(params: {
+  input: LeadForAiInsight;
+  rulesBaseline: LeadAiInsight;
+  language: Locale;
+  extraContext?: Record<string, unknown> | null;
+}): Promise<LeadInterpretation | null> {
+  const messages: ChatMessage[] = [
+    { role: "system", content: LEAD_INTERPRETATION_SYSTEM },
+    {
+      role: "user",
+      content: leadInterpretationUserContext(
+        params.input,
+        params.rulesBaseline,
+        params.language,
+        params.extraContext,
+      ),
+    },
+  ];
+  const raw = await chatForInsight(messages, true);
+  if (!raw) return null;
+  return parseLeadInterpretationJson(raw);
 }
 
 async function chatForOutreach(messages: ChatMessage[]): Promise<string | null> {

@@ -2,6 +2,12 @@ import {
   determineInstagramDiscovery,
   type InstagramDiscoveryStatus,
 } from "./instagram-discovery";
+import {
+  confidenceFromScore,
+  maturityFromScore,
+  type MaturityLevel,
+  type SignalConfidence,
+} from "./confidence";
 
 export type AcquisitionIntentLevel = "low" | "medium" | "high" | "very_high";
 
@@ -31,10 +37,15 @@ export type WebsiteIntelForAcquisition = {
   hasTelLink?: boolean;
   hasBookingCtaText?: boolean;
   hasBookingEngine?: boolean;
+  hasContactPage?: boolean;
+  hasInquiryForm?: boolean;
   mobileViewportPresent?: boolean;
   confidence?: number;
   errors?: string[];
   socialLinksQuality?: number;
+  /** Homepage enrichment booking-path quality (0–100), when available. */
+  bookingFlowQuality?: number;
+  hasSocialIcons?: boolean;
 };
 
 type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
@@ -69,8 +80,16 @@ export type AcquisitionIntelligenceProfile = {
   instagramActivityLevel: InstagramActivityLevel;
   /** Lightweight, rule-based reachability check on the IG link/handle. */
   instagramStatus: InstagramStatus;
-  /** 0–100 confidence in the *discovery* result (mirrors the discovery layer). */
-  instagramConfidence: number;
+  /** Confidence label for IG discovery/surface quality. */
+  instagramConfidence: SignalConfidence | number;
+  /** Confidence layers for acquisition surfaces and maturity. */
+  websiteConfidence: SignalConfidence;
+  whatsappConfidence: SignalConfidence;
+  otaConfidence: SignalConfidence;
+  adsLikelihood: SignalConfidence;
+  directBookingMaturity: MaturityLevel;
+  conversionMaturity: MaturityLevel;
+  acquisitionMaturity: MaturityLevel;
   /** Reasons for an invalid/unknown validation status (debug + UI tooltip). */
   instagramInvalidReasons: string[];
   /** Discovery layer — `verified`/`broken`/`possible`/`unknown`. Use this for UI; `not_found` is reserved for explicit overrides. */
@@ -115,6 +134,83 @@ export type AcquisitionIntelligenceInput = {
 
 function clamp(n: number, min = 0, max = 100): number {
   return Math.max(min, Math.min(max, n));
+}
+
+/**
+ * Acquisition sophistication (how well the business surfaces and captures demand).
+ * Separate from lead fit / opportunity scoring — composite of observable channels only.
+ */
+export function calculateAcquisitionMaturity(input: {
+  digitalMaturity: number;
+  bookingFlowStrength: number;
+  socialDemandStrength: number;
+  otaDependencyLikelihood: number;
+  reviewsCount: number;
+  daysSinceLastReview: number;
+  contactQuality: ContactQuality;
+  hasWhatsAppPath: boolean;
+  hasInstagram: boolean;
+  instagramLinkQuality: number;
+  channels: readonly Channel[];
+  hasOwnWebsite: boolean;
+  website?: string;
+  websiteIntelligence?: WebsiteIntelForAcquisition;
+}): MaturityLevel {
+  const wi = input.websiteIntelligence;
+  const hasSite = input.hasOwnWebsite || Boolean(input.website?.trim());
+  let websiteQuality = clamp(
+    input.digitalMaturity * 0.55 +
+      (typeof wi?.confidence === "number" ? wi.confidence * 0.35 : hasSite ? 48 : 22) +
+      (wi?.mobileViewportPresent === true ? 6 : 0) +
+      (typeof wi?.socialLinksQuality === "number" ? wi.socialLinksQuality * 0.08 : 0) +
+      (wi?.hasSocialIcons === true ? 8 : 0),
+  );
+  if (typeof wi?.bookingFlowQuality === "number" && Number.isFinite(wi.bookingFlowQuality)) {
+    websiteQuality = Math.round(websiteQuality * 0.55 + clamp(wi.bookingFlowQuality) * 0.45);
+  }
+
+  const otaChannelCount = input.channels.filter(
+    (c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti",
+  ).length;
+  const otaPresence = clamp(
+    input.otaDependencyLikelihood * 0.72 + Math.min(28, otaChannelCount * 9),
+  );
+
+  let socialSignals = clamp(
+    input.socialDemandStrength * 0.55 +
+      input.instagramLinkQuality * 0.35 +
+      (input.hasInstagram ? 10 : 0),
+  );
+  if (typeof wi?.socialLinksQuality === "number") {
+    socialSignals = Math.round(socialSignals * 0.85 + clamp(wi.socialLinksQuality) * 0.15);
+  }
+
+  const reviews = Number.isFinite(input.reviewsCount) ? Math.max(0, input.reviewsCount) : 0;
+  let reviewVolume = clamp(22 + Math.min(78, Math.log10(reviews + 1) * 38));
+  if (input.daysSinceLastReview <= 7) reviewVolume = clamp(reviewVolume + 8);
+  else if (input.daysSinceLastReview <= 21) reviewVolume = clamp(reviewVolume + 4);
+
+  let contactAccessibility =
+    input.contactQuality === "high" ? 88 : input.contactQuality === "medium" ? 62 : 34;
+  if (input.hasWhatsAppPath) contactAccessibility = clamp(contactAccessibility + 18);
+  if (wi?.hasWhatsAppLink === true) contactAccessibility = clamp(contactAccessibility + 10);
+  if (wi?.hasTelLink === true) contactAccessibility = clamp(contactAccessibility + 6);
+  if (wi?.hasContactPage === true || wi?.hasInquiryForm === true) {
+    contactAccessibility = clamp(contactAccessibility + 8);
+  }
+
+  const conversionFlow = clamp(input.bookingFlowStrength);
+
+  const composite = Math.round(
+    websiteQuality * 0.22 +
+      otaPresence * 0.15 +
+      socialSignals * 0.2 +
+      reviewVolume * 0.13 +
+      contactAccessibility * 0.15 +
+      conversionFlow * 0.15,
+  );
+
+  return maturityFromScore(composite);
 }
 
 function normalizeScanText(
@@ -880,6 +976,8 @@ export function buildAcquisitionIntelligence(
     businessName: input.businessName,
     city: input.city,
     type: input.type,
+    website: input.website,
+    socialSignalText: input.socialSignalText,
   });
 
   const isInvalidIg = validation.status === "invalid";
@@ -955,6 +1053,83 @@ export function buildAcquisitionIntelligence(
   if (socialDemandIntent === "high" && socialConversionGap !== "low") adDrivenLeadPotential += 12;
   adDrivenLeadPotential = Math.round(clamp(adDrivenLeadPotential));
 
+  const websiteConfidence: SignalConfidence =
+    input.hasOwnWebsite || Boolean(input.website?.trim())
+      ? confidenceFromScore(input.websiteIntelligence?.confidence ?? 70, {
+          confirmed: 80,
+          likely: 55,
+          weak: 30,
+        })
+      : "missing";
+  const hasMobileLikeContact =
+    input.hasWhatsAppPath || input.contactQuality === "high" || input.contactQuality === "medium";
+  const hasContactCta =
+    input.websiteIntelligence?.hasWhatsAppLink === true ||
+    input.websiteIntelligence?.hasContactPage === true ||
+    input.websiteIntelligence?.hasInquiryForm === true ||
+    input.websiteIntelligence?.hasTelLink === true ||
+    input.websiteIntelligence?.hasBookingCtaText === true;
+  const onlyLandlineExists =
+    input.contactQuality === "low" &&
+    input.websiteIntelligence?.hasTelLink === true &&
+    !input.hasWhatsAppPath &&
+    input.websiteIntelligence?.hasWhatsAppLink !== true;
+  const hasReachableChannel =
+    input.hasWhatsAppPath ||
+    input.websiteIntelligence?.hasWhatsAppLink === true ||
+    input.hasInstagram ||
+    input.websiteIntelligence?.hasContactPage === true ||
+    input.websiteIntelligence?.hasInquiryForm === true;
+  const isStrictMissingWhatsapp =
+    !hasMobileLikeContact && !hasReachableChannel && onlyLandlineExists;
+  const whatsappConfidence: SignalConfidence = isStrictMissingWhatsapp
+    ? "missing"
+    : input.hasWhatsAppPath
+      ? "confirmed"
+      : hasMobileLikeContact && hasContactCta
+        ? "likely"
+        : "weak";
+  const otaConfidence: SignalConfidence =
+    input.channels.some((c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti")
+      ? confidenceFromScore(input.otaDependencyLikelihood, {
+          confirmed: 80,
+          likely: 55,
+          weak: 30,
+        })
+      : "missing";
+  const adsLikelihood: SignalConfidence = confidenceFromScore(paidTrafficLikelihood, {
+    confirmed: 75,
+    likely: 55,
+    weak: 35,
+  });
+  const directBookingMaturity: MaturityLevel = maturityFromScore(input.bookingFlowStrength);
+  const conversionMaturity: MaturityLevel = maturityFromScore(
+    100 - input.bookingFlowStrength,
+  );
+  const acquisitionMaturity: MaturityLevel = calculateAcquisitionMaturity({
+    digitalMaturity: input.digitalMaturity,
+    bookingFlowStrength: input.bookingFlowStrength,
+    socialDemandStrength: input.socialDemandStrength,
+    otaDependencyLikelihood: input.otaDependencyLikelihood,
+    reviewsCount: input.reviewsCount,
+    daysSinceLastReview: input.daysSinceLastReview,
+    contactQuality: input.contactQuality,
+    hasWhatsAppPath: input.hasWhatsAppPath,
+    hasInstagram: effectiveHasInstagram,
+    instagramLinkQuality,
+    channels: input.channels,
+    hasOwnWebsite: input.hasOwnWebsite,
+    website: input.website,
+    websiteIntelligence: input.websiteIntelligence,
+  });
+
+  const instagramConfidence: SignalConfidence =
+    discovery.instagramDiscoveryStatus === "verified"
+      ? "confirmed"
+      : discovery.instagramDiscoveryStatus === "broken"
+        ? "weak"
+        : "likely";
+
   const base: AcquisitionIntelligenceProfileBase = {
     hasInstagram: input.hasInstagram,
     instagramHandleDetected: effectiveHandleDetected,
@@ -964,7 +1139,14 @@ export function buildAcquisitionIntelligence(
     instagramActivityEstimate,
     instagramActivityLevel,
     instagramStatus: validation.status,
-    instagramConfidence: discovery.instagramConfidence,
+    instagramConfidence,
+    websiteConfidence,
+    whatsappConfidence,
+    otaConfidence,
+    adsLikelihood,
+    directBookingMaturity,
+    conversionMaturity,
+    acquisitionMaturity,
     instagramInvalidReasons: validation.reasons,
     instagramDiscoveryStatus: discovery.instagramDiscoveryStatus,
     suggestedInstagramHandles: discovery.suggestedInstagramHandles,

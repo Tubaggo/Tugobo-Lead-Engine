@@ -77,21 +77,35 @@ function hasDirectChannel(channels: readonly Channel[]): boolean {
 
 export function detectBookingFlowStrength(input: EnrichmentV2Input): number {
   let score = 20;
+  const hasWebsitePresence =
+    input.hasOwnWebsite ||
+    Boolean(input.website?.trim()) ||
+    typeof input.websiteIntelligence?.bookingFlowQuality === "number";
   const hasCta = input.websiteIntelligence?.hasBookingCtaText === true;
   const hasEngine = input.websiteIntelligence?.hasBookingEngine === true;
   const hasTel = input.websiteIntelligence?.hasTelLink === true;
   const externalOtaWebsite = looksLikeOtaUrl(input.website);
+  const qualityHint = input.websiteIntelligence?.bookingFlowQuality;
+  const hasContactPage = input.websiteIntelligence?.hasContactPage === true;
+  const hasInquiryForm = input.websiteIntelligence?.hasInquiryForm === true;
+  const hasOtaOutboundLinks = input.websiteIntelligence?.hasOtaOutboundLinks === true;
 
-  if (input.hasOwnWebsite) score += 28;
+  if (hasWebsitePresence) score += 20;
   if (hasDirectChannel(input.channels)) score += 20;
   if (hasEngine) score += 18;
   if (hasCta) score += 16;
   if (input.hasWhatsAppPath || hasTel) score += 10;
+  if (hasContactPage) score += 8;
+  if (hasInquiryForm) score += 10;
 
-  if (!input.hasOwnWebsite) score -= 18;
+  if (typeof qualityHint === "number" && Number.isFinite(qualityHint)) {
+    score = Math.round(score * 0.45 + clamp(qualityHint) * 0.55);
+  }
+  if (!hasWebsitePresence) score -= 10;
   if (input.websiteIntelligence?.hasBookingCtaText === false) score -= 12;
   if (input.websiteIntelligence?.hasBookingEngine === false) score -= 10;
   if (externalOtaWebsite) score -= 22;
+  if (hasOtaOutboundLinks) score -= 8;
 
   return Math.round(clamp(score));
 }

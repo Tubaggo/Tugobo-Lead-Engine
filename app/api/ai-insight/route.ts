@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { generateLeadInsight } from "@/app/lib/intelligence/ai-insight";
-import { generateLLMLeadInsight, getLlmProviderStatus } from "@/app/lib/llm/provider";
+import {
+  generateLLMLeadInsight,
+  generateLLMLeadInterpretation,
+  getLlmProviderStatus,
+} from "@/app/lib/llm/provider";
+import type { Locale } from "@/app/lib/i18n";
 import { toLeadForAiInsight, type ScoredLead } from "@/app/lib/leads";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -9,7 +14,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function insightLlmExtraFromLead(lead: ScoredLead): Record<string, unknown> | null {
   const out: Record<string, unknown> = {};
+  out.reviewsCount = lead.reviewsCount;
   const acqProfile = lead.acquisitionIntelligence;
+  const confidenceSignals = {
+    websiteConfidence: lead.websiteConfidence,
+    instagramConfidence: lead.instagramConfidence,
+    whatsappConfidence: lead.whatsappConfidence,
+    otaConfidence: lead.otaConfidence,
+    adsLikelihood: lead.adsLikelihood,
+    acquisitionMaturity: lead.acquisitionMaturity,
+    conversionMaturity: lead.conversionMaturity,
+    directBookingMaturity: lead.directBookingMaturity,
+  };
   const a = acqProfile?.acquisition;
   if (a) {
     out.acquisition = {
@@ -18,7 +34,10 @@ function insightLlmExtraFromLead(lead: ScoredLead): Record<string, unknown> | nu
       acquisitionChannels: a.acquisitionChannels,
       acquisitionSignals: (a.acquisitionSignals ?? []).slice(0, 8),
       acquisitionWeaknesses: (a.acquisitionWeaknesses ?? []).slice(0, 6),
+      ...confidenceSignals,
     };
+  } else {
+    out.acquisition = confidenceSignals;
   }
   const c = lead.commercialReadiness;
   if (c) {
@@ -58,19 +77,37 @@ export async function POST(req: Request) {
   }
 
   const scored = body.lead as unknown as ScoredLead;
+  const locale: Locale = body.locale === "en" ? "en" : "tr";
   const input = toLeadForAiInsight(scored);
 
   const rules = generateLeadInsight(input, "rules");
   const status = getLlmProviderStatus();
   if (!status.llm_enabled) {
-    return NextResponse.json(rules);
+    return NextResponse.json({
+      ...rules,
+      interpretation: null,
+    });
   }
 
   try {
     const extra = insightLlmExtraFromLead(scored);
-    const refined = await generateLLMLeadInsight(input, rules, extra);
-    return NextResponse.json(refined ?? rules);
+    const [refined, interpretation] = await Promise.all([
+      generateLLMLeadInsight(input, rules, extra),
+      generateLLMLeadInterpretation({
+        input,
+        rulesBaseline: rules,
+        language: locale,
+        extraContext: extra,
+      }),
+    ]);
+    return NextResponse.json({
+      ...(refined ?? rules),
+      interpretation,
+    });
   } catch {
-    return NextResponse.json(rules);
+    return NextResponse.json({
+      ...rules,
+      interpretation: null,
+    });
   }
 }

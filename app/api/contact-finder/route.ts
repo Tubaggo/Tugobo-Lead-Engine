@@ -1,4 +1,8 @@
 import { NextResponse } from "next/server";
+import {
+  confidenceFromScore,
+  maturityFromScore,
+} from "@/app/lib/intelligence/confidence";
 
 type ContactFinderType =
   | "VERIFIED_WHATSAPP"
@@ -30,9 +34,17 @@ type ContactFinderResponse = {
     hasTelLink: boolean;
     hasBookingCtaText: boolean;
     hasBookingEngine: boolean;
+    hasContactPage: boolean;
+    hasInquiryForm: boolean;
+    hasSocialIcons: boolean;
+    hasOtaOutboundLinks: boolean;
+    bookingFlowQuality: number;
     mobileViewportPresent: boolean;
     socialLinksQuality: number;
     confidence: number;
+    websiteConfidence: "confirmed" | "likely" | "weak" | "missing";
+    directBookingMaturity: "low" | "medium" | "high";
+    conversionMaturity: "low" | "medium" | "high";
   };
 };
 
@@ -83,6 +95,49 @@ function hasBookingEngineLink(html: string): boolean {
   return /(book(?:ing)?\.|airbnb\.|expedia\.|hotels\.com|synxis|cloudbeds|littlehotelier|sirvoy|innroad|booking\s*engine)/i.test(
     html,
   );
+}
+
+function hasContactPageLink(html: string): boolean {
+  return /href=["'][^"']*(?:\/|^)(?:contact|iletisim|bize-ulasin|reach-us|reservation-contact)[^"']*["']/i.test(
+    html,
+  );
+}
+
+function hasInquiryForm(html: string): boolean {
+  if (!/<form[\s>][\s\S]*?<\/form>/i.test(html)) return false;
+  return /(name|id|placeholder)=["'][^"']*(?:message|inquiry|talep|rezervasyon|reservation|contact)[^"']*["']/i.test(
+    html,
+  );
+}
+
+function hasSocialIconsOrLinks(html: string): boolean {
+  return /(instagram\.com|facebook\.com|tiktok\.com|youtube\.com|x\.com|twitter\.com|linkedin\.com)/i.test(
+    html,
+  );
+}
+
+function hasOtaOutboundLinks(html: string): boolean {
+  return /(booking\.com|airbnb\.|expedia\.|hotels\.com|tatilsepeti\.)/i.test(html);
+}
+
+function calculateBookingFlowQuality(input: {
+  bookingCta: boolean;
+  bookingEngine: boolean;
+  hasContactPage: boolean;
+  hasInquiryForm: boolean;
+  hasWhatsapp: boolean;
+  hasSocialIcons: boolean;
+  hasOtaOutboundLinks: boolean;
+}): number {
+  let score = 24;
+  if (input.bookingCta) score += 22;
+  if (input.bookingEngine) score += 24;
+  if (input.hasContactPage) score += 10;
+  if (input.hasInquiryForm) score += 10;
+  if (input.hasWhatsapp) score += 12;
+  if (input.hasSocialIcons) score += 8;
+  if (input.hasOtaOutboundLinks) score -= 16;
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 function classifyPhones(text: string): { mobile: string[]; landline: string[] } {
@@ -326,6 +381,19 @@ export async function POST(req: Request) {
     const hasViewport = hasMobileViewport(html);
     const bookingCta = hasBookingCtaText(html);
     const bookingEngine = hasBookingEngineLink(html);
+    const contactPage = hasContactPageLink(html);
+    const inquiryForm = hasInquiryForm(html);
+    const socialIcons = hasSocialIconsOrLinks(html);
+    const otaOutboundLinks = hasOtaOutboundLinks(html);
+    const bookingFlowQuality = calculateBookingFlowQuality({
+      bookingCta,
+      bookingEngine,
+      hasContactPage: contactPage,
+      hasInquiryForm: inquiryForm,
+      hasWhatsapp: foundWhatsapp.length > 0,
+      hasSocialIcons: socialIcons,
+      hasOtaOutboundLinks: otaOutboundLinks,
+    });
     const socialLinksQuality = estimateSocialLinksQuality({
       instagram: foundInstagram,
       whatsapp: foundWhatsapp,
@@ -346,17 +414,51 @@ export async function POST(req: Request) {
     const confidenceBase =
       (bookingCta ? 24 : 0) +
       (bookingEngine ? 24 : 0) +
+      (contactPage ? 12 : 0) +
+      (inquiryForm ? 12 : 0) +
       (hasViewport ? 18 : 0) +
       (foundWhatsapp.length > 0 ? 20 : 0) +
-      (foundTel.length > 0 ? 14 : 0);
+      (foundTel.length > 0 ? 14 : 0) +
+      (socialIcons ? 8 : 0) -
+      (otaOutboundLinks ? 10 : 0);
+    const websiteConfidenceScore = Math.max(0, Math.min(100, confidenceBase));
+    const websiteConfidence = confidenceFromScore(websiteConfidenceScore, {
+      confirmed: 80,
+      likely: 55,
+      weak: 30,
+    });
+    const directBookingMaturity = maturityFromScore(bookingFlowQuality);
+    const conversionMaturity = maturityFromScore(
+      Math.round(
+        Math.max(
+          0,
+          Math.min(
+            100,
+            bookingFlowQuality * 0.6 +
+              (foundWhatsapp.length > 0 ? 20 : 0) +
+              (inquiryForm ? 12 : 0) +
+              (contactPage ? 8 : 0) -
+              (otaOutboundLinks ? 10 : 0),
+          ),
+        ),
+      ),
+    );
     result.websiteIntelligence = {
       hasWhatsAppLink: foundWhatsapp.length > 0,
       hasTelLink: foundTel.length > 0,
       hasBookingCtaText: bookingCta,
       hasBookingEngine: bookingEngine,
+      hasContactPage: contactPage,
+      hasInquiryForm: inquiryForm,
+      hasSocialIcons: socialIcons,
+      hasOtaOutboundLinks: otaOutboundLinks,
+      bookingFlowQuality,
       mobileViewportPresent: hasViewport,
       socialLinksQuality,
-      confidence: Math.max(0, Math.min(100, confidenceBase)),
+      confidence: websiteConfidenceScore,
+      websiteConfidence,
+      directBookingMaturity,
+      conversionMaturity,
     };
 
     return NextResponse.json(result);

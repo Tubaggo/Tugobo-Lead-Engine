@@ -401,11 +401,24 @@ const UI = {
     en: "Elevated acquisition posture versus typical listings in this set.",
     tr: "Bu sete kıyasla daha yüksek edinim profili.",
   },
-  acq_intel_title: { en: "Acquisition intelligence", tr: "Müşteri edinimi özeti" },
+  acq_intel_title: { en: "Acquisition intelligence", tr: "Müşteri edinimi içgörüsü" },
   acq_intel_limited: {
     en: "Limited acquisition signals for this lead.",
     tr: "Bu lead için sınırlı edinim sinyali.",
   },
+  chip_acq_maturity: { en: "Acquisition maturity", tr: "Edinim olgunluğu" },
+  chip_conf_website: { en: "Website", tr: "Web sitesi" },
+  chip_conf_instagram: { en: "Instagram", tr: "Instagram" },
+  chip_conf_whatsapp: { en: "WhatsApp", tr: "WhatsApp" },
+  chip_conf_ota: { en: "OTA", tr: "OTA" },
+  chip_conf_ads: { en: "Ads", tr: "Reklam" },
+  confidence_confirmed: { en: "confirmed", tr: "yüksek güven" },
+  confidence_likely: { en: "likely", tr: "olası" },
+  confidence_weak: { en: "weak", tr: "düşük güven" },
+  confidence_missing: { en: "missing", tr: "tespit edilmedi" },
+  maturity_low: { en: "low", tr: "düşük" },
+  maturity_medium: { en: "medium", tr: "orta" },
+  maturity_high: { en: "high", tr: "yüksek" },
   less: { en: "Less", tr: "Az" },
   detail: { en: "Detail", tr: "Detay" },
   signals: { en: "Signals", tr: "Sinyaller" },
@@ -415,7 +428,7 @@ const UI = {
     en: "Broken Instagram link",
     tr: "Bozuk Instagram bağlantısı",
   },
-  instagram_none_on_file: { en: "No Instagram on file", tr: "Kayıtta Instagram yok" },
+  instagram_none_on_file: { en: "Instagram not listed", tr: "Instagram listede görünmüyor" },
   suggested_prefix: { en: "Suggested", tr: "Önerilen" },
   also_handles: { en: "also", tr: "ayrıca" },
 
@@ -586,6 +599,16 @@ const UI = {
     en: "Not enough intelligence signals yet. Enrich this lead to generate better insight.",
     tr: "Henüz yeterli sinyal yok. Daha iyi özet için leadi zenginleştirin.",
   },
+  ai_sales_insight_section: { en: "AI Sales Insight", tr: "AI satış içgörüsü" },
+  ai_sales_commentary_section: { en: "AI Sales Commentary", tr: "AI Satış Yorumu" },
+  ai_confidence_label: { en: "Confidence", tr: "Güven" },
+  ai_recommended_approach_label: { en: "Recommended approach", tr: "Önerilen yaklaşım" },
+  ai_sales_angle_label: { en: "Outreach angle", tr: "İletişim açısı" },
+  ai_acquisition_profile_label: { en: "Acquisition interpretation", tr: "Edinim yorumu" },
+  ai_reinterpret: { en: "Re-interpret", tr: "Yeniden yorumla" },
+  ai_last_updated_label: { en: "Last updated", tr: "Son güncelleme" },
+  ai_interpretation_label_rules: { en: "Rule-based interpretation", tr: "Kural bazlı yorum" },
+  ai_interpretation_label_ai: { en: "Interpreted with AI", tr: "AI ile yorumlandı" },
   insight_summary_header: { en: "Insight summary", tr: "Özet" },
   pain_points_header: { en: "Pain points", tr: "Sıkıntı noktaları" },
   channel_pill_header: { en: "Channel", tr: "Kanal" },
@@ -1150,11 +1173,11 @@ const UI = {
   },
   acq_sig_ig_possible: {
     en: "Instagram may exist (plausible handles; verify manually)",
-    tr: "Instagram hesabı bulunabilir (olası kullanıcı adları; manuel doğrulama gerek)",
+    tr: "Instagram hesabı bulunabilir (olası kullanıcı adlarıyla manuel doğrulama önerilir)",
   },
   acq_sig_whatsapp_available: {
     en: "WhatsApp available (phone or site link)",
-    tr: "WhatsApp erişimi var (telefon veya site bağlantısı)",
+    tr: "WhatsApp erişimi mevcut (telefon veya site bağlantısı)",
   },
   acq_sig_website_exists: {
     en: "Website exists",
@@ -1162,11 +1185,11 @@ const UI = {
   },
   acq_sig_ota_footprint: {
     en: "OTA / platform listing footprint",
-    tr: "OTA / platform listeleme görünürlüğü var",
+    tr: "OTA / platform tarafında görünürlük mevcut",
   },
   acq_sig_high_ota: {
     en: "Elevated OTA likelihood (distribution-led acquisition)",
-    tr: "Yüksek OTA olasılığı (dağıtım odaklı edinim)",
+    tr: "OTA bağımlılığı yüksek görünüyor (dağıtım odaklı edinim)",
   },
   acq_sig_strong_social: {
     en: "Strong social demand",
@@ -1182,29 +1205,29 @@ const UI = {
   },
   acq_sig_paid_traffic: {
     en: "Possible paid traffic (tracking params or modeled likelihood)",
-    tr: "Olası ücretli trafik (izleme parametreleri veya model bazlı olasılık)",
+    tr: "Ücretli trafik olasılığı mevcut (izleme parametreleri / model tahmini)",
   },
   acq_sig_booking_pressure: {
     en: "Booking or conversion pressure relative to social attention",
-    tr: "Sosyal ilgiye kıyasla rezervasyon / dönüşüm baskısı",
+    tr: "Sosyal ilgiye kıyasla rezervasyon dönüşümünde baskı işareti",
   },
   acq_sig_strong_booking_surface: {
     en: "Stronger direct booking surface / CTAs",
-    tr: "Doğrudan rezervasyon yüzeyi ve çağrılar güçlü",
+    tr: "Doğrudan rezervasyon yüzeyi ve çağrı dili güçlü",
   },
 
   // Acquisition weaknesses
   acq_weak_ig_invalid: {
     en: "Instagram surface appears invalid or broken",
-    tr: "Instagram yüzeyi geçersiz veya bozuk görünüyor",
+    tr: "Instagram yüzeyi geçersiz ya da bozuk görünüyor",
   },
   acq_weak_no_whatsapp: {
     en: "No clear WhatsApp path",
-    tr: "Net bir WhatsApp kanalı yok",
+    tr: "Net bir WhatsApp erişim yolu görünmüyor",
   },
   acq_weak_no_website: {
     en: "No owned website",
-    tr: "Kendi web sitesi yok",
+    tr: "Sahipli web yüzeyi görünmüyor",
   },
   acq_weak_weak_booking: {
     en: "Weak direct booking flow",
@@ -1212,15 +1235,15 @@ const UI = {
   },
   acq_weak_social_outpace: {
     en: "Social attention may outpace booking capture",
-    tr: "Sosyal ilgi, rezervasyon dönüşümünün önüne geçiyor olabilir",
+    tr: "Sosyal talep, rezervasyona dönüşüm kapasitesini aşıyor olabilir",
   },
   acq_weak_single_surface: {
     en: "Limited acquisition channel mix (single-surface risk)",
-    tr: "Sınırlı edinim kanal karması (tek yüzey riski)",
+    tr: "Edinim kanal karması sınırlı (tek yüzey riski)",
   },
   acq_weak_heavy_ota: {
     en: "Heavy OTA reliance with thin owned conversion path",
-    tr: "OTA/platform bağımlılığı yüksek; doğrudan dönüşüm yolu zayıf",
+    tr: "OTA bağımlılığı yüksek; sahipli dönüşüm yolu zayıf",
   },
 } as const;
 
@@ -1797,12 +1820,12 @@ const LEAD_SIGNAL_UI: Record<string, string> = {
   "High season pricing": "Yüksek sezon fiyatlaması",
   "Sold out next 2 weekends": "Önümüzdeki 2 hafta sonu dolu",
   "Premium ADR": "Premium gecelik fiyat",
-  "No own website": "Kendi web sitesi yok",
+  "No own website": "Doğrudan rezervasyon akışı zayıf olabilir",
   "High occupancy": "Doluluk yüksek",
   "Booking #1 in district": "Bölgede Booking 1 numara",
   "Single channel only": "Yalnızca tek kanal",
   "Low online presence": "Çevrimiçi görünürlük zayıf",
-  "No Instagram": "Instagram yok",
+  "No Instagram": "Instagram hesabı bulunabilir",
   "High ADR": "Yüksek gecelik fiyat",
   "Repeat guest signals": "Tekrar gelen misafir sinyali",
   "Trending category": "Yükselen kategori",
