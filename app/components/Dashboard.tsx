@@ -57,6 +57,7 @@ import {
   type WhyThisLeadEnrichment,
   type WhyThisLeadReason,
 } from "@/app/lib/intelligence/why-this-lead";
+import { buildSalesSignalSourceBullets } from "@/app/lib/intelligence/signal-source-bullets";
 import ImportPanel, {
   type ImportRequest,
   type ImportResult,
@@ -2382,14 +2383,103 @@ function InstagramDiscoveryPanel({
   );
 }
 
+/** Lead detail chips: nuanced website / WhatsApp / Instagram copy (TR + EN). */
+type LeadDetailConfidenceContext = Pick<
+  ScoredLead,
+  | "website"
+  | "hasOwnWebsite"
+  | "instagram"
+  | "hasInstagram"
+  | "phone"
+  | "extractedPhones"
+  | "extractedSocialLinks"
+>;
+
+function websiteConfidenceDisplayLabel(
+  raw: string | undefined,
+  lead: LeadDetailConfidenceContext | undefined,
+  locale: Locale,
+): string {
+  const hasUrl = Boolean(lead?.website?.trim());
+  const c = raw ?? "missing";
+  if (locale === "tr") {
+    if (c === "confirmed") return "Web sitesi doğrulandı";
+    if (c === "likely") return hasUrl ? "Web sitesi muhtemelen erişilebilir" : "Web sinyali olası";
+    if (c === "weak" || c === "unknown")
+      return hasUrl ? "Web sitesi var, doğrulama gerekli" : "Web sinyali sınırlı; kontrol önerilir";
+    return hasUrl ? "Web sitesi var, doğrulama gerekli" : "Kayıtta web adresi yok";
+  }
+  if (c === "confirmed") return "Website looks verified";
+  if (c === "likely") return hasUrl ? "Website likely reachable" : "Website signal probable";
+  if (c === "weak" || c === "unknown") return hasUrl ? "Website on file — verify" : "Limited website signal";
+  return hasUrl ? "Website on file — verify" : "No website on record";
+}
+
+function whatsappConfidenceDisplayLabel(
+  raw: string | undefined,
+  lead: LeadDetailConfidenceContext | undefined,
+  locale: Locale,
+): string {
+  const hasPath =
+    Boolean(lead?.phone?.trim()) &&
+    normalizePhoneForWhatsApp(lead?.phone ?? "") !== null;
+  const hasWaUrl = (lead?.extractedSocialLinks ?? []).some((u) =>
+    /wa\.me|whatsapp\.com/i.test(u),
+  );
+  const c = raw ?? "missing";
+  if (locale === "tr") {
+    if (c === "confirmed") return "WhatsApp erişimi doğrulanmış görünüyor";
+    if (hasPath || c === "likely" || hasWaUrl) return "WhatsApp muhtemel";
+    if (c === "weak" || c === "unknown") return "WhatsApp doğrulanmalı";
+    return hasWaUrl ? "WhatsApp muhtemel" : "Mobil WhatsApp hattı net değil";
+  }
+  if (c === "confirmed") return "WhatsApp path looks verified";
+  if (hasPath || c === "likely" || hasWaUrl) return "WhatsApp likely";
+  if (c === "weak" || c === "unknown") return "WhatsApp should be verified";
+  return hasWaUrl ? "WhatsApp likely" : "WhatsApp path unclear";
+}
+
+function instagramConfidenceDisplayLabel(
+  raw: unknown,
+  lead: LeadDetailConfidenceContext | undefined,
+  locale: Locale,
+): string {
+  const hasHandle = Boolean(lead?.instagram?.trim()) || lead?.hasInstagram;
+  const hasIgUrl = (lead?.extractedSocialLinks ?? []).some((u) => /instagram\.com/i.test(u));
+  if (typeof raw === "number") {
+    if (locale === "tr") {
+      if (raw >= 80) return "Instagram sinyali güçlü; doğrulanmalı";
+      if (raw >= 50) return "Olası Instagram hesabı";
+      return "Manuel kontrol gerekli";
+    }
+    if (raw >= 80) return "Strong Instagram signal — verify";
+    if (raw >= 50) return "Likely Instagram presence";
+    return "Manual check recommended";
+  }
+  const c = typeof raw === "string" ? raw : "likely";
+  if (locale === "tr") {
+    if (c === "confirmed") return "Instagram bağlantısı güçlü";
+    if (c === "likely") return hasHandle || hasIgUrl ? "Olası Instagram hesabı" : "Instagram sinyali olası";
+    if (c === "weak" || c === "unknown") return "Manuel kontrol gerekli";
+    return hasHandle || hasIgUrl ? "Olası Instagram hesabı" : "Instagram bilgisi sınırlı";
+  }
+  if (c === "confirmed") return "Instagram link looks strong";
+  if (c === "likely") return hasHandle || hasIgUrl ? "Likely Instagram account" : "Instagram signal probable";
+  if (c === "weak" || c === "unknown") return "Manual check recommended";
+  return hasHandle || hasIgUrl ? "Likely Instagram account" : "Limited Instagram info";
+}
+
 /**
  * One-line acquisition summary plus optional expansion for structured signals
  * (kept compact when {@link isAcquisitionUiMinimal}).
  */
 function AcquisitionIntelligencePanel({
   acquisition,
+  lead,
 }: {
   acquisition?: AcquisitionIntelligenceProfile;
+  /** When set (lead detail), website / WhatsApp / Instagram chip values use nuanced copy. */
+  lead?: LeadDetailConfidenceContext | null;
 }) {
   const { locale } = useLocale();
   const [detailOpen, setDetailOpen] = useState(false);
@@ -2408,6 +2498,7 @@ function AcquisitionIntelligencePanel({
       case "likely":
         return "border-sky-400/25 bg-sky-500/10 text-sky-200";
       case "weak":
+      case "unknown":
         return "border-amber-400/25 bg-amber-500/10 text-amber-200";
       default:
         return "border-zinc-500/25 bg-zinc-500/10 text-zinc-300";
@@ -2480,14 +2571,28 @@ function AcquisitionIntelligencePanel({
                 {maturityLabel(acquisition.acquisitionMaturity)}
               </span>
             </span>
-            {confidenceItems.map((item) => (
-              <span
-                key={item.key}
-                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${confidenceToneClass(item.value)}`}
-              >
-                {item.label}: {confidenceLabel(item.value)}
-              </span>
-            ))}
+            {confidenceItems.map((item) => {
+              const chipText =
+                lead && item.key === "website"
+                  ? websiteConfidenceDisplayLabel(acquisition.websiteConfidence, lead, locale)
+                  : lead && item.key === "whatsapp"
+                    ? whatsappConfidenceDisplayLabel(acquisition.whatsappConfidence, lead, locale)
+                    : lead && item.key === "instagram"
+                      ? instagramConfidenceDisplayLabel(
+                          acquisition.instagramConfidence,
+                          lead,
+                          locale,
+                        )
+                      : confidenceLabel(item.value);
+              return (
+                <span
+                  key={item.key}
+                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${confidenceToneClass(item.value)}`}
+                >
+                  {item.label}: {chipText}
+                </span>
+              );
+            })}
           </div>
           {summary ? (
             <p className="mt-1 leading-relaxed text-zinc-300">{summary}</p>
@@ -2845,7 +2950,7 @@ function AiMessageModal({
               </button>
             ) : (
               <span
-                title="WhatsApp bulunamadı"
+                title={t("detail_whatsapp_disabled_title", locale)}
                 className="inline-flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-500 sm:w-auto sm:py-1.5 sm:text-xs"
               >
                 <IconWhatsapp className="h-4 w-4" />
@@ -2870,6 +2975,7 @@ function LeadWhatsAppAction({
   onMarkContacted: (id: string) => void;
   outreachDisabled?: boolean;
 }) {
+  const { locale } = useLocale();
   const wa = whatsappLink(phone);
   const square =
     "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition sm:h-8 sm:w-8";
@@ -2901,7 +3007,7 @@ function LeadWhatsAppAction({
   }
   return (
     <span
-      title="WhatsApp bulunamadı"
+      title={t("detail_whatsapp_disabled_title", locale)}
       aria-disabled="true"
       className={`${square} cursor-not-allowed border-white/10 bg-white/5 text-zinc-500`}
     >
@@ -3361,6 +3467,20 @@ function OutreachIntelligencePanel({
   );
 }
 
+function aiInterpretationConfidenceBadgeClass(
+  level: LeadInterpretation["confidenceLevel"],
+): string {
+  const base =
+    "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider";
+  if (level === "high") {
+    return `${base} border-emerald-400/35 bg-emerald-500/15 text-emerald-100`;
+  }
+  if (level === "medium") {
+    return `${base} border-amber-400/40 bg-amber-500/15 text-amber-100`;
+  }
+  return `${base} border-rose-400/35 bg-zinc-900/55 text-rose-100/95`;
+}
+
 function stableLeadInterpretationKey(lead: LeadTableRow): string {
   const id = lead.id?.trim();
   if (id) return `id:${id}`;
@@ -3472,29 +3592,31 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
 
   function buildRuleBasedInterpretation(): AiInterpretationCacheValue {
     const summary =
-      active.aiInsight.trim() ||
+      active.aiInsight.trim().split(/(?<=[.!?])\s+/).slice(0, 1).join(" ").trim() ||
       (locale === "tr"
-        ? "Kural bazlı sinyaller bu leadde iyileştirilebilir bir satış fırsatı olduğunu gösteriyor."
-        : "Rule-based signals suggest this lead has actionable sales opportunity.");
+        ? "Kayıtlı sinyaller elle dokunulabilir bir satış profili gösteriyor."
+        : "On-file signals look workable for a short sales touch.");
     const acquisitionProfile =
       active.painPointSummary[0]?.trim() ||
       (locale === "tr"
-        ? "Edinim olgunluğu orta seviyede; doğrudan kanallar güçlendirilebilir."
-        : "Acquisition maturity appears mid-level with room to strengthen owned channels.");
+        ? "Veri tarafında boşluk varsa mesajda iddiasız ilerlemek iyi olur."
+        : "If data is thin, keep the first message humble.");
+    const salesAngle = pickOutreachAngleText(active.outreachAngle, active.painPointSummary);
+    const salesAngleOne =
+      salesAngle.split(/(?<=[.!?])\s+/).slice(0, 1).join(" ").trim() || salesAngle;
     const recommendedApproach =
       locale === "tr"
-        ? "Kısa, danışman tonda bir ilk temasla rezervasyon akışı netliği üzerine konuşun."
-        : "Use a short consultative first touch focused on booking-flow clarity.";
-    const salesAngle = pickOutreachAngleText(active.outreachAngle, active.painPointSummary);
+        ? "Kısa, danışman tonlu bir WhatsApp veya mesajla güçlü kanal üzerinden açılabilir."
+        : "Open with a short, consultative note on the strongest channel you see.";
     const channelRecommendation =
       locale === "tr"
-        ? "WhatsApp/Instagram erişimi varsa hızlı geri dönüş penceresinden ilerleyin."
-        : "Prioritize fast-response channels such as WhatsApp/Instagram when available.";
+        ? "Mümkünse tek mesajda net ol; hızlı dönüş bekleyen kanalı seç."
+        : "Prefer one clear message on whichever channel answers fastest.";
     return {
       summary,
       acquisitionProfile,
       recommendedApproach,
-      salesAngle,
+      salesAngle: salesAngleOne,
       channelRecommendation,
       confidenceLevel: "medium",
       createdAt: Date.now(),
@@ -3566,6 +3688,8 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
       setBusy(false);
     }
   }
+
+  const salesSignalBullets = buildSalesSignalSourceBullets(lead, locale);
 
   return (
     <div className="space-y-3 rounded-xl border border-cyan-400/15 bg-cyan-500/[0.04] p-4">
@@ -3679,7 +3803,9 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
             <div className="text-[10px] uppercase tracking-wider text-cyan-200/90">
               {t("ai_sales_commentary_section", locale)}
             </div>
-            <span className="inline-flex items-center rounded-full border border-cyan-400/25 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-cyan-100">
+            <span
+              className={aiInterpretationConfidenceBadgeClass(interpretation.confidenceLevel)}
+            >
               {t("ai_confidence_label", locale)} · {interpretation.confidenceLevel}
             </span>
           </div>
@@ -3697,19 +3823,35 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
               )}
             </span>
           </div>
+          {salesSignalBullets.length > 0 ? (
+            <div className="mb-3 border-b border-white/5 pb-3">
+              <div className="mb-1.5 text-[10px] uppercase tracking-wider text-zinc-500">
+                {t("ai_signal_sources_header", locale)}
+              </div>
+              <ul className="space-y-1 text-xs text-zinc-300">
+                {salesSignalBullets.map((line) => (
+                  <li key={line} className="flex gap-2">
+                    <span className="text-cyan-400/90" aria-hidden>
+                      •
+                    </span>
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <div className="space-y-2 text-xs leading-relaxed text-zinc-200">
-            <p>{interpretation.summary}</p>
             <p>
-              <span className="text-zinc-400">{t("ai_recommended_approach_label", locale)}:</span>{" "}
-              {interpretation.recommendedApproach}
+              <span className="text-zinc-400">{t("ai_sales_interp_durum", locale)}:</span>{" "}
+              {interpretation.summary}
             </p>
             <p>
-              <span className="text-zinc-400">{t("ai_sales_angle_label", locale)}:</span>{" "}
+              <span className="text-zinc-400">{t("ai_sales_interp_firsat", locale)}:</span>{" "}
               {interpretation.salesAngle}
             </p>
             <p>
-              <span className="text-zinc-400">{t("ai_acquisition_profile_label", locale)}:</span>{" "}
-              {interpretation.acquisitionProfile}
+              <span className="text-zinc-400">{t("ai_sales_interp_yaklasim", locale)}:</span>{" "}
+              {interpretation.recommendedApproach}
             </p>
           </div>
         </div>
@@ -3957,7 +4099,29 @@ function LeadDetailContactSection({
       </div>
 
       <InstagramDiscoveryPanel acquisition={lead.acquisitionIntelligence} />
-      <AcquisitionIntelligencePanel acquisition={lead.acquisitionIntelligence} />
+      <AcquisitionIntelligencePanel acquisition={lead.acquisitionIntelligence} lead={lead} />
+      {(lead.hasReservationCTA ||
+        lead.hasContactPage ||
+        (lead.extractedPhones?.length ?? 0) > 0 ||
+        (lead.extractedEmails?.length ?? 0) > 0) && (
+        <div className="flex flex-wrap gap-1.5">
+          {lead.hasReservationCTA ? (
+            <span className="inline-flex items-center rounded-full border border-emerald-400/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-200">
+              {t("detail_badge_reservation_cta", locale)}
+            </span>
+          ) : null}
+          {lead.hasContactPage ? (
+            <span className="inline-flex items-center rounded-full border border-sky-400/25 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-200">
+              {t("detail_badge_contact_page", locale)}
+            </span>
+          ) : null}
+          {(lead.extractedPhones?.length ?? 0) > 0 || (lead.extractedEmails?.length ?? 0) > 0 ? (
+            <span className="inline-flex items-center rounded-full border border-violet-400/25 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-200">
+              {t("detail_badge_contact_extracted", locale)}
+            </span>
+          ) : null}
+        </div>
+      )}
 
       {lead.website && (
         <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">

@@ -6,6 +6,7 @@ import {
   type GoogleTextResult,
   type GoogleDetailsResult,
 } from "@/app/lib/places-import";
+import { enrichLeadsWithHomepageSignalsBatched } from "@/app/lib/enrich-lead-homepage";
 
 const TEXT_SEARCH =
   "https://maps.googleapis.com/maps/api/place/textsearch/json";
@@ -258,9 +259,10 @@ export async function POST(req: Request) {
     }
   }
 
-  const leads = detailPairs.map(({ text, details }) =>
+  const mapped = detailPairs.map(({ text, details }) =>
     mapGooglePlaceToScoredLead(text, details, city, type),
   );
+  const leads = await enrichLeadsWithHomepageSignalsBatched(mapped);
 
   return NextResponse.json({ leads });
 }

@@ -12,8 +12,14 @@ import {
   LEAD_INSIGHT_SYSTEM,
   OUTREACH_PACK_SYSTEM,
   REFINE_SINGLE_COPY_SYSTEM,
+  EXTRACTED_WEBSITE_SIGNALS_INTERPRETATION_SYSTEM,
 } from "./prompts";
 import { openAiCompatibleChatCompletion, type ChatMessage } from "./openai-compat";
+import {
+  buildRuleBasedWebsiteSignalsInterpretation,
+  type ExtractedSignalsInterpretationInput,
+  type WebsiteContactSignalsInterpretation,
+} from "@/app/lib/intelligence/extracted-signals-interpretation";
 
 const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -168,6 +174,49 @@ function parseLeadInterpretationJson(raw: string): LeadInterpretation | null {
     keySignals,
     risks,
     opportunities,
+  };
+}
+
+function parseWebsiteSignalsInterpretationJson(
+  raw: string,
+): Omit<WebsiteContactSignalsInterpretation, "source"> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  const pick = (k: string): string | null => {
+    const v = parsed[k];
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    if (!t || t.length > 2000) return null;
+    return t;
+  };
+  const turkishSummary = pick("turkishSummary");
+  const websiteCredibility = pick("websiteCredibility");
+  const whatsappLikelihood = pick("whatsappLikelihood");
+  const instagramLikelihood = pick("instagramLikelihood");
+  const bookingFlowStrength = pick("bookingFlowStrength");
+  const manualCheckRecommendation = pick("manualCheckRecommendation");
+  if (
+    !turkishSummary ||
+    !websiteCredibility ||
+    !whatsappLikelihood ||
+    !instagramLikelihood ||
+    !bookingFlowStrength ||
+    !manualCheckRecommendation
+  ) {
+    return null;
+  }
+  return {
+    turkishSummary,
+    websiteCredibility,
+    whatsappLikelihood,
+    instagramLikelihood,
+    bookingFlowStrength,
+    manualCheckRecommendation,
   };
 }
 
@@ -376,6 +425,33 @@ export async function generateLLMOutreachMessage(
   if (!parsed) return null;
   return { ...parsed, weakSignals: pack.weakSignals };
 }
+
+/**
+ * LLM (DeepSeek öncelikli) ile çıkarılmış web/iletişim sinyallerini Türkçe yorumlar.
+ * Başarısızlıkta {@link buildRuleBasedWebsiteSignalsInterpretation} döner.
+ */
+export async function interpretExtractedWebsiteContactSignals(
+  input: ExtractedSignalsInterpretationInput,
+): Promise<WebsiteContactSignalsInterpretation> {
+  const rules = buildRuleBasedWebsiteSignalsInterpretation(input);
+  const messages: ChatMessage[] = [
+    { role: "system", content: EXTRACTED_WEBSITE_SIGNALS_INTERPRETATION_SYSTEM },
+    {
+      role: "user",
+      content: JSON.stringify({ signals: input }),
+    },
+  ];
+  const raw = await chatForInsight(messages, true);
+  if (!raw) return rules;
+  const parsed = parseWebsiteSignalsInterpretationJson(raw);
+  if (!parsed) return rules;
+  return { ...parsed, source: "llm" };
+}
+
+export type {
+  ExtractedSignalsInterpretationInput,
+  WebsiteContactSignalsInterpretation,
+} from "@/app/lib/intelligence/extracted-signals-interpretation";
 
 /**
  * Single-string Turkish polish (e.g. one-off copy tweaks). Returns null → keep {@link text}.

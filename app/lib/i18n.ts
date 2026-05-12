@@ -416,6 +416,22 @@ const UI = {
   confidence_likely: { en: "likely", tr: "olası" },
   confidence_weak: { en: "weak", tr: "düşük güven" },
   confidence_missing: { en: "missing", tr: "tespit edilmedi" },
+  detail_whatsapp_disabled_title: {
+    en: "No mobile WhatsApp path from this number — verify or try another channel",
+    tr: "Bu numara için WhatsApp (mobil) yolu net değil — doğrulayın veya başka kanal deneyin",
+  },
+  detail_badge_reservation_cta: {
+    en: "Reservation CTA detected",
+    tr: "Rezervasyon CTA bulundu",
+  },
+  detail_badge_contact_page: {
+    en: "Contact page signal",
+    tr: "İletişim sayfası sinyali",
+  },
+  detail_badge_contact_extracted: {
+    en: "Contact details extracted",
+    tr: "İletişim bilgileri çıkarıldı",
+  },
   maturity_low: { en: "low", tr: "düşük" },
   maturity_medium: { en: "medium", tr: "orta" },
   maturity_high: { en: "high", tr: "yüksek" },
@@ -601,6 +617,10 @@ const UI = {
   },
   ai_sales_insight_section: { en: "AI Sales Insight", tr: "AI satış içgörüsü" },
   ai_sales_commentary_section: { en: "AI Sales Commentary", tr: "AI Satış Yorumu" },
+  ai_signal_sources_header: { en: "Signal sources", tr: "Sinyal kaynakları" },
+  ai_sales_interp_durum: { en: "Status", tr: "Durum" },
+  ai_sales_interp_firsat: { en: "Opportunity", tr: "Fırsat" },
+  ai_sales_interp_yaklasim: { en: "Approach", tr: "Yaklaşım" },
   ai_confidence_label: { en: "Confidence", tr: "Güven" },
   ai_recommended_approach_label: { en: "Recommended approach", tr: "Önerilen yaklaşım" },
   ai_sales_angle_label: { en: "Outreach angle", tr: "İletişim açısı" },

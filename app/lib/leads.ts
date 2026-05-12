@@ -34,8 +34,11 @@ import {
 import type {
   MaturityLevel,
   SignalConfidence,
+  VerificationStatus,
 } from "./intelligence/confidence";
+import type { WebsiteContactSignalsInterpretation } from "./intelligence/extracted-signals-interpretation";
 
+export type { WebsiteContactSignalsInterpretation };
 export type { BusinessSignal };
 export type {
   AcquisitionIntelligence,
@@ -66,7 +69,7 @@ export {
 export type { OpportunityLevel, AiInsightSource };
 export type { OutreachIntelligenceProfile };
 export type { OpportunityProfile };
-export type { SignalConfidence, MaturityLevel };
+export type { SignalConfidence, VerificationStatus, MaturityLevel };
 
 export type OutreachPriorityBucket = "today" | "high" | "medium" | "low" | "archive";
 export type RecommendedAction =
@@ -136,6 +139,16 @@ export type Lead = {
   daysSinceLastReview: number;
   daysOnPlatform: number;
   signals: string[];
+  /** Strength of website URL / crawl signal (optional; omitted on older persisted leads). */
+  websiteConfidence?: SignalConfidence;
+  whatsappConfidence?: SignalConfidence;
+  /** Legacy numeric Instagram strength may appear alongside enum confidence. */
+  instagramConfidence?: SignalConfidence | number;
+  extractedPhones?: string[];
+  extractedEmails?: string[];
+  extractedSocialLinks?: string[];
+  hasReservationCTA?: boolean;
+  hasContactPage?: boolean;
 };
 
 export type ContactQuality = "high" | "medium" | "low";
@@ -228,9 +241,6 @@ export type ScoredLead = Lead & {
   /** Deterministic likelihood of investing in growth / conversion systems. */
   commercialReadiness?: CommercialReadiness;
   /** Confidence-based acquisition enrichment (optional for older persisted data). */
-  websiteConfidence?: SignalConfidence;
-  instagramConfidence?: SignalConfidence | number;
-  whatsappConfidence?: SignalConfidence;
   otaConfidence?: SignalConfidence;
   adsLikelihood?: SignalConfidence;
   directBookingMaturity?: MaturityLevel;
@@ -242,6 +252,8 @@ export type ScoredLead = Lead & {
   outreachPriority?: number;
   priorityBucket?: OutreachPriorityBucket;
   recommendedAction?: RecommendedAction;
+  /** DeepSeek/OpenAI veya kural tabanlı Türkçe yorum (ana sayfa sinyalleri sonrası). */
+  websiteContactSignalsInterpretation?: WebsiteContactSignalsInterpretation;
 };
 
 export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {

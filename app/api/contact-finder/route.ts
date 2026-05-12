@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   confidenceFromScore,
   maturityFromScore,
+  type SignalConfidence,
 } from "@/app/lib/intelligence/confidence";
 
 type ContactFinderType =
@@ -42,7 +43,7 @@ type ContactFinderResponse = {
     mobileViewportPresent: boolean;
     socialLinksQuality: number;
     confidence: number;
-    websiteConfidence: "confirmed" | "likely" | "weak" | "missing";
+    websiteConfidence: SignalConfidence;
     directBookingMaturity: "low" | "medium" | "high";
     conversionMaturity: "low" | "medium" | "high";
   };

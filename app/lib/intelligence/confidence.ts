@@ -1,4 +1,15 @@
-export type SignalConfidence = "confirmed" | "likely" | "weak" | "missing";
+export type SignalConfidence =
+  | "confirmed"
+  | "likely"
+  | "weak"
+  | "missing"
+  | "unknown";
+
+export type VerificationStatus =
+  | "verified"
+  | "not_verified"
+  | "failed"
+  | "needs_manual_check";
 
 export type MaturityLevel = "low" | "medium" | "high";
 
