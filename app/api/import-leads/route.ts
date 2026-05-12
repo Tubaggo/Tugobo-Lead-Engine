@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
-import { type LeadType } from "@/app/lib/leads";
+import { type LeadType, type ScoredLead } from "@/app/lib/leads";
 import {
   buildPlacesSearchQuery,
   mapGooglePlaceToScoredLead,
   type GoogleTextResult,
   type GoogleDetailsResult,
 } from "@/app/lib/places-import";
+import {
+  makePlacesImportSessionKey,
+  type PlacesImportSource,
+  PLACES_IMPORT_SESSION_WINDOW_MS,
+  PLACES_RATE_LIMIT_USER_MESSAGE,
+} from "@/app/lib/places-import-session";
 import { enrichLeadsWithHomepageSignalsBatched } from "@/app/lib/enrich-lead-homepage";
 
 const TEXT_SEARCH =
@@ -15,8 +21,7 @@ const PLACE_DETAILS =
 const DETAIL_REQUEST_DELAY_MIN_MS = 500;
 const DETAIL_REQUEST_DELAY_MAX_MS = 1000;
 const DETAILS_CACHE_TTL_MS = 10 * 60 * 1000;
-const RATE_LIMIT_FRIENDLY_TR_ERROR =
-  "Google Places kısa süreli istek limitine takıldı. Birkaç dakika bekleyip tekrar deneyin.";
+const RATE_LIMIT_FRIENDLY_TR_ERROR = PLACES_RATE_LIMIT_USER_MESSAGE;
 
 type PlacesStatus = "OK" | "ZERO_RESULTS" | "OVER_QUERY_LIMIT" | "RESOURCE_EXHAUSTED" | string;
 
@@ -39,6 +44,23 @@ const placeDetailsCache = new Map<
   { value: GoogleDetailsResult | null; expiresAt: number }
 >();
 const placeDetailsInflight = new Map<string, Promise<GoogleDetailsResult | null>>();
+
+/** Full import payload (post-enrichment) keyed by city + niche + source. */
+const placesFullImportCache = new Map<string, { leads: ScoredLead[]; storedAt: number }>();
+
+function peekPlacesFullImport(cacheKey: string): { leads: ScoredLead[]; storedAt: number } | null {
+  const row = placesFullImportCache.get(cacheKey);
+  if (!row) return null;
+  if (Date.now() - row.storedAt > PLACES_IMPORT_SESSION_WINDOW_MS) {
+    placesFullImportCache.delete(cacheKey);
+    return null;
+  }
+  return row;
+}
+
+function rememberPlacesFullImport(cacheKey: string, leads: ScoredLead[]) {
+  placesFullImportCache.set(cacheKey, { leads, storedAt: Date.now() });
+}
 
 function delay(ms: number) {
   return new Promise<void>((resolve) => {
@@ -99,7 +121,7 @@ async function fetchPlaceDetails(
   u.searchParams.set("place_id", placeId);
   u.searchParams.set(
     "fields",
-    "formatted_phone_number,international_phone_number,website,url",
+    "formatted_phone_number,international_phone_number,website,url,editorial_summary",
   );
   u.searchParams.set("key", apiKey);
   u.searchParams.set("language", "tr");
@@ -157,7 +179,12 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { city?: string; type?: LeadType };
+  let body: {
+    city?: string;
+    type?: LeadType;
+    source?: PlacesImportSource;
+    forceGoogleRefresh?: boolean;
+  };
   try {
     body = await req.json();
   } catch {
@@ -166,6 +193,8 @@ export async function POST(req: Request) {
 
   const city = typeof body.city === "string" ? body.city.trim() : "";
   const type = body.type;
+  const source: PlacesImportSource = "maps";
+  const forceGoogleRefresh = body.forceGoogleRefresh === true;
   const validTypes: LeadType[] = [
     "Hotel",
     "Boutique Hotel",
@@ -178,6 +207,24 @@ export async function POST(req: Request) {
       { error: "city and type are required", leads: [] },
       { status: 400 },
     );
+  }
+
+  const sessionKey = makePlacesImportSessionKey(city, type, source);
+  const cachedFull = peekPlacesFullImport(sessionKey);
+
+  if (!forceGoogleRefresh && cachedFull && cachedFull.leads.length > 0) {
+    return NextResponse.json({
+      leads: cachedFull.leads,
+      fromPlacesMemoryCache: true,
+    });
+  }
+
+  if (forceGoogleRefresh && cachedFull && cachedFull.leads.length > 0) {
+    return NextResponse.json({
+      leads: cachedFull.leads,
+      fromPlacesMemoryCache: true,
+      refreshCooldownActive: true,
+    });
   }
 
   const query = buildPlacesSearchQuery(city, type);
@@ -263,6 +310,10 @@ export async function POST(req: Request) {
     mapGooglePlaceToScoredLead(text, details, city, type),
   );
   const leads = await enrichLeadsWithHomepageSignalsBatched(mapped);
+
+  if (leads.length > 0) {
+    rememberPlacesFullImport(sessionKey, leads);
+  }
 
   return NextResponse.json({ leads });
 }

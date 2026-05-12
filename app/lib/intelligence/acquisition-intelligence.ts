@@ -8,6 +8,10 @@ import {
   type MaturityLevel,
   type SignalConfidence,
 } from "./confidence";
+import {
+  detectWhatsAppConfidence,
+  type WhatsAppConfidence,
+} from "./whatsapp-verification";
 
 export type AcquisitionIntentLevel = "low" | "medium" | "high" | "very_high";
 
@@ -46,6 +50,9 @@ export type WebsiteIntelForAcquisition = {
   /** Homepage enrichment booking-path quality (0–100), when available. */
   bookingFlowQuality?: number;
   hasSocialIcons?: boolean;
+  websiteCandidateMatch?: "strong" | "uncertain";
+  hasInvalidWhatsAppLinks?: boolean;
+  whatsappSurfaceMeta?: import("./whatsapp-verification").WhatsAppSurfaceMeta;
 };
 
 type Channel = "Booking" | "Airbnb" | "Direct" | "Tatilsepeti";
@@ -84,7 +91,9 @@ export type AcquisitionIntelligenceProfile = {
   instagramConfidence: SignalConfidence | number;
   /** Confidence layers for acquisition surfaces and maturity. */
   websiteConfidence: SignalConfidence;
-  whatsappConfidence: SignalConfidence;
+  whatsappConfidence: WhatsAppConfidence;
+  /** TR lines from {@link detectWhatsAppConfidence} for UI / persistence. */
+  whatsappSignals: readonly string[];
   otaConfidence: SignalConfidence;
   adsLikelihood: SignalConfidence;
   directBookingMaturity: MaturityLevel;
@@ -130,6 +139,8 @@ export type AcquisitionIntelligenceInput = {
   businessName?: string;
   city?: string;
   type?: string;
+  /** Primary listing phone for WhatsApp normalization (optional for tests). */
+  listingPhone?: string;
 };
 
 function clamp(n: number, min = 0, max = 100): number {
@@ -157,7 +168,11 @@ export function calculateAcquisitionMaturity(input: {
   websiteIntelligence?: WebsiteIntelForAcquisition;
 }): MaturityLevel {
   const wi = input.websiteIntelligence;
-  const hasSite = input.hasOwnWebsite || Boolean(input.website?.trim());
+  const hasSite =
+    input.hasOwnWebsite ||
+    Boolean(input.website?.trim()) ||
+    wi?.websiteCandidateMatch === "strong" ||
+    wi?.websiteCandidateMatch === "uncertain";
   let websiteQuality = clamp(
     input.digitalMaturity * 0.55 +
       (typeof wi?.confidence === "number" ? wi.confidence * 0.35 : hasSite ? 48 : 22) +
@@ -722,7 +737,13 @@ export function detectAcquisitionChannels(
   const igPresent = profile.hasInstagram && profile.instagramStatus !== "invalid";
   if (igPresent) add("instagram");
 
-  if (input.hasWhatsAppPath || input.websiteIntelligence?.hasWhatsAppLink) add("whatsapp");
+  if (
+    input.hasWhatsAppPath ||
+    input.websiteIntelligence?.hasWhatsAppLink ||
+    profile.whatsappConfidence !== "none"
+  ) {
+    add("whatsapp");
+  }
 
   if (input.hasOwnWebsite || Boolean(input.website?.trim())) add("website");
 
@@ -770,8 +791,12 @@ export function getAcquisitionSignals(
     push("Instagram may exist (plausible handles; verify manually)");
   }
 
-  if (input.hasWhatsAppPath || input.websiteIntelligence?.hasWhatsAppLink) {
-    push("WhatsApp available (phone or site link)");
+  if (profile.whatsappConfidence !== "none") {
+    if (profile.whatsappConfidence === "confirmed") {
+      push("WhatsApp path validated (healthy wa.me / api link or aligned GSM)");
+    } else {
+      push("WhatsApp signal present — verify before relying on outreach");
+    }
   }
 
   if (input.hasOwnWebsite || input.website?.trim()) {
@@ -816,7 +841,7 @@ export function getAcquisitionWeaknesses(
   if (profile.instagramStatus === "invalid") {
     push("Instagram surface appears invalid or broken");
   }
-  if (!input.hasWhatsAppPath && !input.websiteIntelligence?.hasWhatsAppLink) {
+  if (profile.whatsappConfidence === "none") {
     push("No clear WhatsApp path");
   }
   if (!input.hasOwnWebsite && !input.website?.trim()) {
@@ -1053,14 +1078,23 @@ export function buildAcquisitionIntelligence(
   if (socialDemandIntent === "high" && socialConversionGap !== "low") adDrivenLeadPotential += 12;
   adDrivenLeadPotential = Math.round(clamp(adDrivenLeadPotential));
 
-  const websiteConfidence: SignalConfidence =
-    input.hasOwnWebsite || Boolean(input.website?.trim())
-      ? confidenceFromScore(input.websiteIntelligence?.confidence ?? 70, {
-          confirmed: 80,
-          likely: 55,
-          weak: 30,
-        })
-      : "missing";
+  const wiForWeb = input.websiteIntelligence;
+  const hasListingWebsite = input.hasOwnWebsite || Boolean(input.website?.trim());
+  const candidateStrong = wiForWeb?.websiteCandidateMatch === "strong";
+  const candidateUncertain = wiForWeb?.websiteCandidateMatch === "uncertain";
+
+  let websiteConfidence: SignalConfidence;
+  if (candidateUncertain) {
+    websiteConfidence = "weak";
+  } else if (hasListingWebsite || candidateStrong) {
+    websiteConfidence = confidenceFromScore(input.websiteIntelligence?.confidence ?? 70, {
+      confirmed: 80,
+      likely: 55,
+      weak: 30,
+    });
+  } else {
+    websiteConfidence = "missing";
+  }
   const hasMobileLikeContact =
     input.hasWhatsAppPath || input.contactQuality === "high" || input.contactQuality === "medium";
   const hasContactCta =
@@ -1082,13 +1116,41 @@ export function buildAcquisitionIntelligence(
     input.websiteIntelligence?.hasInquiryForm === true;
   const isStrictMissingWhatsapp =
     !hasMobileLikeContact && !hasReachableChannel && onlyLandlineExists;
-  const whatsappConfidence: SignalConfidence = isStrictMissingWhatsapp
-    ? "missing"
-    : input.hasWhatsAppPath
-      ? "confirmed"
-      : hasMobileLikeContact && hasContactCta
-        ? "likely"
-        : "weak";
+
+  const meta = wiForWeb?.whatsappSurfaceMeta;
+  const validatedWaLinkCount = meta?.validatedLinkCount ?? 0;
+  const waAllLinksInvalid = Boolean(
+    meta?.allLinksInvalid ||
+      (wiForWeb?.hasWhatsAppLink === true &&
+        wiForWeb?.hasInvalidWhatsAppLinks === true &&
+        validatedWaLinkCount === 0),
+  );
+  const waMixedValidation = meta?.mixedValidation ?? false;
+  const bestValidLinkDigitsTr90 = meta?.bestValidTr90Digits ?? null;
+  const socialScanImpliesWhatsApp = /(whatsapp|wa\.me)/i.test(scanText);
+
+  let whatsappConfidence: WhatsAppConfidence;
+  let whatsappSignals: string[];
+
+  if (isStrictMissingWhatsapp) {
+    whatsappConfidence = "none";
+    whatsappSignals = [];
+  } else {
+    const waDetect = detectWhatsAppConfidence({
+      listingPhoneRaw: input.listingPhone ?? "",
+      hasWhatsAppPath: input.hasWhatsAppPath,
+      websiteHasWhatsAppLink: wiForWeb?.hasWhatsAppLink === true,
+      websiteHasInvalidWhatsAppLinks: wiForWeb?.hasInvalidWhatsAppLinks === true,
+      validatedWaLinkCount,
+      waAllLinksInvalid,
+      waMixedValidation,
+      bestValidLinkDigitsTr90,
+      htmlHints: meta?.htmlHints ?? null,
+      socialScanImpliesWhatsApp,
+    });
+    whatsappConfidence = waDetect.confidence;
+    whatsappSignals = [...waDetect.signals];
+  }
   const otaConfidence: SignalConfidence =
     input.channels.some((c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti")
       ? confidenceFromScore(input.otaDependencyLikelihood, {
@@ -1142,6 +1204,7 @@ export function buildAcquisitionIntelligence(
     instagramConfidence,
     websiteConfidence,
     whatsappConfidence,
+    whatsappSignals,
     otaConfidence,
     adsLikelihood,
     directBookingMaturity,

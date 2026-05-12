@@ -54,14 +54,18 @@ function whatsappFromSignals(input: ExtractedSignalsInterpretationInput): string
   const gsm = input.turkishGsmNumbers?.length ?? 0;
   const waInSocial =
     input.socialLinks?.some((u) => /wa\.me|whatsapp\.com/i.test(u)) ?? false;
-  if (conf === "confirmed")
-    return "WhatsApp erişimi kayıtlı numara üzerinden muhtemelen güçlü; yine de wa.me bağlantısı doğrulanmalı.";
-  if (gsm > 0 || waInSocial)
-    return "GSM veya wa.me benzeri bağlantılar bulundu; WhatsApp üzerinden ulaşım olası ancak numara doğrulanmalı.";
-  if (conf === "likely")
-    return "WhatsApp olasılığı orta-yüksek görünüyor; kesin kanıt için manuel test önerilir.";
-  if (conf === "weak" || conf === "unknown")
-    return "WhatsApp sinyali zayıf veya belirsiz; doğrulanmalı.";
+  if (conf === "confirmed") {
+    return "WhatsApp bağlantısı wa.me / site üzerinden doğrulanmış görünüyor; yine de canlı mesaj testi önerilir.";
+  }
+  if (conf === "likely" || gsm > 0 || waInSocial) {
+    return "WhatsApp erişimi olası; numara veya bağlantı manuel doğrulanmalı.";
+  }
+  if (conf === "weak") {
+    return "WhatsApp sinyali zayıf veya link sorunlu; doğrulama gerekli.";
+  }
+  if (conf === "none" || conf === "missing" || conf === "unknown") {
+    return "Kayıtlarda net bir WhatsApp kanalı görünmüyor; varsa manuel kontrol önerilir.";
+  }
   return "WhatsApp durumu özetlenemedi; manuel kontrol önerilir.";
 }
 

@@ -27,6 +27,8 @@ export type EnrichmentV2Input = {
   contactQuality: ContactQuality;
   hasWhatsAppPath: boolean;
   phoneMissing: boolean;
+  /** Listing phone for WhatsApp confidence normalization. */
+  listingPhone?: string;
   websiteIntelligence?: WebsiteIntelligenceSummary;
   businessTier?: BusinessTierLike;
   /** Optional listing fields used to discover plausible Instagram handles when none is on file. */
@@ -80,6 +82,7 @@ export function detectBookingFlowStrength(input: EnrichmentV2Input): number {
   const hasWebsitePresence =
     input.hasOwnWebsite ||
     Boolean(input.website?.trim()) ||
+    input.websiteIntelligence?.websiteCandidateMatch === "strong" ||
     typeof input.websiteIntelligence?.bookingFlowQuality === "number";
   const hasCta = input.websiteIntelligence?.hasBookingCtaText === true;
   const hasEngine = input.websiteIntelligence?.hasBookingEngine === true;
@@ -219,6 +222,7 @@ export function buildEnrichmentV2Profile(input: EnrichmentV2Input): EnrichmentV2
     businessName: input.businessName,
     city: input.city,
     type: input.type,
+    listingPhone: input.listingPhone,
   });
   const commercialReadiness = calculateCommercialReadiness({
     businessTier: input.businessTier,

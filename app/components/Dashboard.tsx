@@ -35,6 +35,11 @@ import {
   whatsappLink,
   whatsappLinkWithText,
 } from "@/app/lib/leads";
+import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
+import {
+  makePlacesImportSessionKey,
+  PLACES_RATE_LIMIT_USER_MESSAGE,
+} from "@/app/lib/places-import-session";
 import {
   leadDedupeKey,
 } from "@/app/lib/generate";
@@ -58,6 +63,7 @@ import {
   type WhyThisLeadReason,
 } from "@/app/lib/intelligence/why-this-lead";
 import { buildSalesSignalSourceBullets } from "@/app/lib/intelligence/signal-source-bullets";
+import { hasNewVerifiableEnrichmentSince } from "@/app/lib/lead-enrichment-fingerprint";
 import ImportPanel, {
   type ImportRequest,
   type ImportResult,
@@ -100,6 +106,7 @@ import {
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
 const IMPORTED_LEADS_V2_KEY = "tugobo-lead-engine:imported-leads-v2";
+const LEAD_ENRICHMENT_OVERRIDES_KEY = "tugobo-lead-engine:lead-enrichment-overrides-v1";
 const LAST_IMPORT_KEY = "tugobo-lead-engine:last-import-v1";
 const IMPORT_CACHE_KEY = "tugobo-lead-engine:import-cache-v1";
 const CONTACT_FINDER_MAP_KEY = "tugobo-lead-engine:contact-finder-map-v1";
@@ -732,6 +739,55 @@ function sanitizeScoredLeadForUi(lead: ScoredLead): ScoredLead {
     channels: normalizeChannelList(lead.channels),
   };
   return enrichScoredLeadIntelligence(cleaned);
+}
+
+function loadLeadEnrichmentOverrides(): Record<string, ScoredLead> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(LEAD_ENRICHMENT_OVERRIDES_KEY);
+    if (!raw) return {};
+    const p = JSON.parse(raw) as unknown;
+    if (typeof p !== "object" || p === null || Array.isArray(p)) return {};
+    const out: Record<string, ScoredLead> = {};
+    for (const [id, val] of Object.entries(p as Record<string, unknown>)) {
+      if (!id.trim() || typeof val !== "object" || val === null) continue;
+      out[id] = sanitizeScoredLeadForUi(val as ScoredLead);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveLeadEnrichmentOverrides(map: Record<string, ScoredLead>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LEAD_ENRICHMENT_OVERRIDES_KEY, JSON.stringify(map));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function leadTableRowToScoredLead(row: LeadTableRow): ScoredLead {
+  const { _s, ...rest } = row;
+  return rest as ScoredLead;
+}
+
+function mergeReEnrichedLeadPreserveImportMeta(
+  prev: ScoredLead,
+  apiLead: ScoredLead,
+): ScoredLead {
+  return {
+    ...apiLead,
+    id: prev.id,
+    firstImportedAt: prev.firstImportedAt,
+    lastImportedAt: prev.lastImportedAt,
+    importSessionId: prev.importSessionId,
+    createdAt: prev.createdAt,
+    doNotContact: prev.doNotContact,
+    whatsappInvalid: prev.whatsappInvalid,
+    pipelineStage: prev.pipelineStage,
+  };
 }
 
 function sanitizeContactFinderResult(r: ContactFinderResult): ContactFinderResult {
@@ -2417,26 +2473,21 @@ function websiteConfidenceDisplayLabel(
 
 function whatsappConfidenceDisplayLabel(
   raw: string | undefined,
-  lead: LeadDetailConfidenceContext | undefined,
+  _lead: LeadDetailConfidenceContext | undefined,
   locale: Locale,
 ): string {
-  const hasPath =
-    Boolean(lead?.phone?.trim()) &&
-    normalizePhoneForWhatsApp(lead?.phone ?? "") !== null;
-  const hasWaUrl = (lead?.extractedSocialLinks ?? []).some((u) =>
-    /wa\.me|whatsapp\.com/i.test(u),
-  );
-  const c = raw ?? "missing";
+  const c =
+    raw === "missing" || raw === "unknown" ? "none" : (raw ?? "none");
   if (locale === "tr") {
-    if (c === "confirmed") return "WhatsApp erişimi doğrulanmış görünüyor";
-    if (hasPath || c === "likely" || hasWaUrl) return "WhatsApp muhtemel";
-    if (c === "weak" || c === "unknown") return "WhatsApp doğrulanmalı";
-    return hasWaUrl ? "WhatsApp muhtemel" : "Mobil WhatsApp hattı net değil";
+    if (c === "confirmed") return "WhatsApp doğrulandı";
+    if (c === "likely") return "WhatsApp olası";
+    if (c === "weak") return "Kontrol gerekli";
+    return "WhatsApp yok";
   }
-  if (c === "confirmed") return "WhatsApp path looks verified";
-  if (hasPath || c === "likely" || hasWaUrl) return "WhatsApp likely";
-  if (c === "weak" || c === "unknown") return "WhatsApp should be verified";
-  return hasWaUrl ? "WhatsApp likely" : "WhatsApp path unclear";
+  if (c === "confirmed") return "WhatsApp verified";
+  if (c === "likely") return "WhatsApp likely";
+  if (c === "weak") return "Manual check";
+  return "No WhatsApp signal";
 }
 
 function instagramConfidenceDisplayLabel(
@@ -2467,6 +2518,24 @@ function instagramConfidenceDisplayLabel(
   if (c === "likely") return hasHandle || hasIgUrl ? "Likely Instagram account" : "Instagram signal probable";
   if (c === "weak" || c === "unknown") return "Manual check recommended";
   return hasHandle || hasIgUrl ? "Likely Instagram account" : "Limited Instagram info";
+}
+
+function normalizeWhatsappConfidenceUi(raw: string | undefined): string {
+  if (raw === "missing" || raw === "unknown") return "none";
+  return raw ?? "none";
+}
+
+function whatsappChipToneClass(c: string): string {
+  switch (c) {
+    case "confirmed":
+      return "border-emerald-400/30 bg-emerald-500/12 text-emerald-100";
+    case "likely":
+      return "border-amber-300/40 bg-amber-500/14 text-amber-100";
+    case "weak":
+      return "border-orange-400/35 bg-orange-500/12 text-orange-100";
+    default:
+      return "border-zinc-500/25 bg-zinc-500/10 text-zinc-400";
+  }
 }
 
 /**
@@ -2509,7 +2578,7 @@ function AcquisitionIntelligencePanel({
     if (v === "confirmed") return t("confidence_confirmed", locale);
     if (v === "likely") return t("confidence_likely", locale);
     if (v === "weak") return t("confidence_weak", locale);
-    if (v === "missing") return t("confidence_missing", locale);
+    if (v === "missing" || v === "none") return t("confidence_missing", locale);
     if (typeof v === "number") {
       if (v >= 80) return t("confidence_confirmed", locale);
       if (v >= 50) return t("confidence_likely", locale);
@@ -2540,7 +2609,7 @@ function AcquisitionIntelligencePanel({
     {
       key: "whatsapp",
       label: t("chip_conf_whatsapp", locale),
-      value: String(acquisition.whatsappConfidence ?? "missing"),
+      value: normalizeWhatsappConfidenceUi(acquisition.whatsappConfidence),
     },
     {
       key: "ota",
@@ -2584,10 +2653,16 @@ function AcquisitionIntelligencePanel({
                           locale,
                         )
                       : confidenceLabel(item.value);
+              const chipClass =
+                item.key === "whatsapp"
+                  ? whatsappChipToneClass(
+                      normalizeWhatsappConfidenceUi(acquisition.whatsappConfidence),
+                    )
+                  : confidenceToneClass(item.value);
               return (
                 <span
                   key={item.key}
-                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${confidenceToneClass(item.value)}`}
+                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${chipClass}`}
                 >
                   {item.label}: {chipText}
                 </span>
@@ -4010,6 +4085,96 @@ function LeadDetailMetrics({ lead }: { lead: LeadTableRow }) {
   );
 }
 
+function LeadDetailWhatsAppStatus({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const acq = lead.acquisitionIntelligence;
+  const conf = normalizeWhatsappConfidenceUi(acq?.whatsappConfidence ?? lead.whatsappConfidence);
+  const signals: string[] =
+    lead.whatsappSignals?.length
+      ? [...lead.whatsappSignals]
+      : acq?.whatsappSignals
+        ? [...acq.whatsappSignals]
+        : [];
+  const tr = normalizePhoneNumber(lead.phone);
+  const wi = lead.websiteIntelligence;
+  const meta = wi?.whatsappSurfaceMeta;
+  const sourceTr =
+    (meta?.validatedLinkCount ?? 0) > 0
+      ? "Web sitesi wa.me / api bağlantısı"
+      : wi?.hasWhatsAppLink
+        ? "Web sitesi bağlantısı"
+        : tr
+          ? "Kayıtlı GSM"
+          : (lead.extractedSocialLinks ?? []).some((u) => /wa\.me|whatsapp/i.test(u))
+            ? "Çıkarılmış bağlantı"
+            : "Genel sinyal";
+  const sourceEn =
+    (meta?.validatedLinkCount ?? 0) > 0
+      ? "Website wa.me / API link"
+      : wi?.hasWhatsAppLink
+        ? "Website link"
+        : tr
+          ? "Listed mobile"
+          : (lead.extractedSocialLinks ?? []).some((u) => /wa\.me|whatsapp/i.test(u))
+            ? "Extracted link hint"
+            : "Listing / scan signal";
+  const statusTr =
+    conf === "confirmed"
+      ? "Bağlantı katmanı doğrulandı"
+      : conf === "likely" || conf === "weak"
+        ? "Manuel kontrol önerilir"
+        : "Kayıtlı kanal yok";
+  const statusEn =
+    conf === "confirmed"
+      ? "Validated link layer"
+      : conf === "likely" || conf === "weak"
+        ? "Manual check suggested"
+        : "No WhatsApp channel on record";
+  const trustTR =
+    conf === "confirmed" ? "Yüksek" : conf === "likely" ? "Orta" : conf === "weak" ? "Düşük" : "Yok";
+  const trustEN =
+    conf === "confirmed" ? "High" : conf === "likely" ? "Medium" : conf === "weak" ? "Low" : "None";
+
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.02] px-3 py-2 text-[11px] text-zinc-200">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+        {locale === "tr" ? "WhatsApp Durumu" : "WhatsApp status"}
+      </div>
+      <ul className="space-y-0.5 text-zinc-300">
+        <li>
+          <span className="text-zinc-500">{locale === "tr" ? "Güven:" : "Confidence:"}</span>{" "}
+          {locale === "tr" ? trustTR : trustEN}{" "}
+          <span className="text-zinc-500">({conf})</span>
+        </li>
+        <li>
+          <span className="text-zinc-500">{locale === "tr" ? "Kaynak:" : "Source:"}</span>{" "}
+          {locale === "tr" ? sourceTr : sourceEn}
+        </li>
+        <li>
+          <span className="text-zinc-500">{locale === "tr" ? "Numara:" : "Number:"}</span>{" "}
+          {tr ?? "—"}
+        </li>
+        <li>
+          <span className="text-zinc-500">{locale === "tr" ? "Durum:" : "Status:"}</span>{" "}
+          {locale === "tr" ? statusTr : statusEn}
+        </li>
+      </ul>
+      {signals.length > 0 ? (
+        <div className="mt-1.5 border-t border-white/5 pt-1.5 text-zinc-400">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+            {locale === "tr" ? "Sinyaller" : "Signals"}
+          </div>
+          <ul className="mt-0.5 list-inside list-disc text-zinc-400">
+            {signals.map((s) => (
+              <li key={s}>{s}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LeadDetailContactSection({
   lead,
   finderPersisted,
@@ -4074,6 +4239,12 @@ function LeadDetailContactSection({
           </p>
         </div>
       )}
+      {lead.websiteCandidateUrl?.trim() ? (
+        <div className="text-[11px] leading-relaxed text-amber-200/85">
+          {t("detail_website_candidate_label", locale)}:{" "}
+          <span className="font-mono text-amber-100/90">{lead.websiteCandidateUrl}</span>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {lead.instagram && (
@@ -4099,6 +4270,7 @@ function LeadDetailContactSection({
       </div>
 
       <InstagramDiscoveryPanel acquisition={lead.acquisitionIntelligence} />
+      <LeadDetailWhatsAppStatus lead={lead} />
       <AcquisitionIntelligencePanel acquisition={lead.acquisitionIntelligence} lead={lead} />
       {(lead.hasReservationCTA ||
         lead.hasContactPage ||
@@ -4531,6 +4703,9 @@ function LeadDetailPanel({
   outreachActivityLabel,
   importIntelligenceLabels,
   now,
+  onManualReEnrich,
+  manualReEnrichBusy,
+  manualReEnrichMessage,
 }: {
   selectedLead: LeadTableRow;
   onClose: () => void;
@@ -4555,12 +4730,33 @@ function LeadDetailPanel({
   outreachActivityLabel: string;
   importIntelligenceLabels: string[];
   now: number;
+  onManualReEnrich: () => void;
+  manualReEnrichBusy: boolean;
+  manualReEnrichMessage: string | null;
 }) {
+  const { locale } = useLocale();
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <LeadDetailHeader lead={selectedLead} onClose={onClose} />
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
         <LeadDetailScoreSummary lead={selectedLead} />
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            disabled={manualReEnrichBusy}
+            onClick={() => onManualReEnrich()}
+            className="self-start rounded-md border border-violet-400/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-100 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {manualReEnrichBusy
+              ? t("detail_reenrich_loading", locale)
+              : t("detail_reenrich_button", locale)}
+          </button>
+          {manualReEnrichMessage ? (
+            <p className="max-w-full text-[11px] leading-snug text-zinc-500">
+              {manualReEnrichMessage}
+            </p>
+          ) : null}
+        </div>
         <LeadDetailIntelligenceSection
           lead={selectedLead}
           finderPersisted={finderPersisted}
@@ -4673,6 +4869,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [contactFinderMap, setContactFinderMap] = useState<
     Record<string, ContactFinderResult>
   >({});
+  const [leadEnrichmentOverrides, setLeadEnrichmentOverrides] = useState<
+    Record<string, ScoredLead>
+  >({});
+  const [reenrichBusyLeadId, setReenrichBusyLeadId] = useState<string | null>(null);
+  const [reenrichMessage, setReenrichMessage] = useState<string | null>(null);
   const [airtableConnected, setAirtableConnected] = useState<boolean | null>(null);
   const [airtableWarning, setAirtableWarning] = useState("");
   const [airtableSyncStatus, setAirtableSyncStatus] = useState("");
@@ -4693,6 +4894,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     setContactFinderMap(loadContactFinderMap());
     setDailyOutreach(loadDailyOutreachState());
     setOutreachEventsByLead(loadOutreachEvents());
+    setLeadEnrichmentOverrides(loadLeadEnrichmentOverrides());
     const meta = loadImportMeta();
     setHasImportRun(
       meta.hasRun ||
@@ -4783,8 +4985,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const hasCachedImportResults = useCallback(
     (req: Omit<ImportRequest, "forceGoogleRefresh">) => {
-      const cityNorm = req.city.trim().toLowerCase();
-      const cacheKey = `${cityNorm}|${req.type}|${req.source}`;
+      const cacheKey = makePlacesImportSessionKey(req.city, req.type, req.source);
       const cache = loadImportCache();
       const hit = cache[cacheKey];
       if (!hit || !Array.isArray(hit.leads) || hit.leads.length === 0) return false;
@@ -4795,10 +4996,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   );
 
   const handleImport = async (req: ImportRequest): Promise<ImportResult> => {
-    const cityNorm = req.city.trim().toLowerCase();
-    const cacheKey = `${cityNorm}|${req.type}|${req.source}`;
+    const cacheKey = makePlacesImportSessionKey(req.city, req.type, req.source);
     let batch: ScoredLead[] = [];
     let source: "cached" | "google" = "google";
+    let importNoticeKey: "import_places_recent_cache_note" | undefined;
+    let importRateLimitHintKey: "import_places_rate_limit_user" | undefined;
     const cache = loadImportCache();
 
     if (!req.forceGoogleRefresh) {
@@ -4819,31 +5021,63 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       const res = await fetch("/api/import-leads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ city: req.city, type: req.type }),
+        body: JSON.stringify({
+          city: req.city,
+          type: req.type,
+          source: req.source,
+          forceGoogleRefresh: Boolean(req.forceGoogleRefresh),
+        }),
       });
       const data = (await res.json()) as {
         leads?: ScoredLead[];
         error?: string;
+        fromPlacesMemoryCache?: boolean;
+        refreshCooldownActive?: boolean;
       };
-      if (!res.ok) {
+
+      if (!res.ok && res.status === 429) {
+        const staleHit = cache[cacheKey];
+        if (
+          staleHit &&
+          Array.isArray(staleHit.leads) &&
+          staleHit.leads.length > 0
+        ) {
+          batch = staleHit.leads;
+          source = "cached";
+          importNoticeKey = "import_places_recent_cache_note";
+          importRateLimitHintKey = "import_places_rate_limit_user";
+        } else {
+          throw new Error(
+            typeof data.error === "string" && data.error.trim()
+              ? data.error
+              : PLACES_RATE_LIMIT_USER_MESSAGE,
+          );
+        }
+      } else if (!res.ok) {
         throw new Error(data.error || `Import failed (${res.status})`);
+      } else {
+        batch = data.leads ?? [];
+        if (data.fromPlacesMemoryCache && batch.length > 0) {
+          importNoticeKey = "import_places_recent_cache_note";
+          source = "cached";
+        } else {
+          source = "google";
+        }
+        if (batch.length > 0) {
+          const now = Date.now();
+          saveImportCache({
+            ...cache,
+            [cacheKey]: {
+              importSessionId:
+                typeof crypto !== "undefined" && "randomUUID" in crypto
+                  ? crypto.randomUUID()
+                  : `cache-${now}`,
+              importedAt: now,
+              leads: batch,
+            },
+          });
+        }
       }
-      batch = data.leads ?? [];
-      if (batch.length > 0) {
-        const now = Date.now();
-        saveImportCache({
-          ...cache,
-          [cacheKey]: {
-            importSessionId:
-              typeof crypto !== "undefined" && "randomUUID" in crypto
-                ? crypto.randomUUID()
-                : `cache-${now}`,
-            importedAt: now,
-            leads: batch,
-          },
-        });
-      }
-      source = "google";
     }
 
     const importTs = Date.now();
@@ -4886,6 +5120,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       hot,
       skipped,
       source,
+      importNoticeKey,
+      importRateLimitHintKey,
     };
   };
 
@@ -5104,9 +5340,35 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const getLeadState = (id: string): LeadStatusUpdate =>
     stateMap[id] ?? DEFAULT_STATE;
 
+  const applyEnrichedLeadToStore = useCallback((enriched: ScoredLead) => {
+    const id = enriched.id;
+    const prevImported = importedLeadsRef.current;
+    const idx = prevImported.findIndex((l) => l.id === id);
+    if (idx >= 0) {
+      const next = [...prevImported];
+      next[idx] = enriched;
+      importedLeadsRef.current = next;
+      setImportedLeads(next);
+      saveImportedLeadsV2(next);
+      setLeadEnrichmentOverrides((prev) => {
+        if (!(id in prev)) return prev;
+        const { [id]: _removed, ...rest } = prev;
+        saveLeadEnrichmentOverrides(rest);
+        return rest;
+      });
+      return;
+    }
+    setLeadEnrichmentOverrides((prev) => {
+      const next = { ...prev, [id]: enriched };
+      saveLeadEnrichmentOverrides(next);
+      return next;
+    });
+  }, []);
+
   const allRows = useMemo(() => {
-    const base = [...leads];
-    const dedupeSet = buildDedupeKeySet(leads);
+    const seedLayer = leads.map((l) => leadEnrichmentOverrides[l.id] ?? l);
+    const base = [...seedLayer];
+    const dedupeSet = buildDedupeKeySet(seedLayer);
     for (const l of importedLeads) {
       if (isDuplicateAgainstSet(l, dedupeSet)) continue;
       base.push(l);
@@ -5121,7 +5383,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       }),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, importedLeads, stateMap]);
+  }, [leads, importedLeads, stateMap, leadEnrichmentOverrides]);
 
   const allRowsById = useMemo(() => {
     return new Map(allRows.map((r) => [r.id, r]));
@@ -5331,7 +5593,44 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const openLead = openId ? allRowsById.get(openId) ?? null : null;
 
+  const manualReEnrichOpenLead = useCallback(async () => {
+    if (!openLead) return;
+    const before = leadTableRowToScoredLead(openLead);
+    setReenrichBusyLeadId(openLead.id);
+    setReenrichMessage(null);
+    try {
+      const res = await fetch("/api/re-enrich-lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead: before }),
+      });
+      const data = (await res.json()) as { lead?: ScoredLead; error?: string };
+      if (!res.ok) {
+        setReenrichMessage(data.error ?? t("detail_reenrich_error", locale));
+        return;
+      }
+      if (!data.lead) {
+        setReenrichMessage(t("detail_reenrich_error", locale));
+        return;
+      }
+      const merged = mergeReEnrichedLeadPreserveImportMeta(before, data.lead);
+      const sanitized = sanitizeScoredLeadForUi(merged);
+      applyEnrichedLeadToStore(sanitized);
+      if (!hasNewVerifiableEnrichmentSince(before, sanitized)) {
+        setReenrichMessage(t("detail_reenrich_no_new", locale));
+      }
+    } catch {
+      setReenrichMessage(t("detail_reenrich_error", locale));
+    } finally {
+      setReenrichBusyLeadId(null);
+    }
+  }, [openLead, locale, applyEnrichedLeadToStore]);
+
   const lastLoggedDrawerLeadId = useRef<string | null>(null);
+
+  useEffect(() => {
+    setReenrichMessage(null);
+  }, [openId]);
   useEffect(() => {
     if (process.env.NODE_ENV === "production") return;
     if (!openId) {
@@ -8276,6 +8575,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     : []),
                 ]}
                 now={renderNow}
+                onManualReEnrich={() => void manualReEnrichOpenLead()}
+                manualReEnrichBusy={reenrichBusyLeadId === openLead.id}
+                manualReEnrichMessage={reenrichMessage}
               />
             </aside>
           </div>,

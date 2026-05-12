@@ -230,6 +230,14 @@ const UI = {
   import_word_leads: { en: "leads", tr: "lead" },
   import_word_hot_lead: { en: "hot lead", tr: "sıcak lead" },
   import_word_hot_leads: { en: "hot leads", tr: "sıcak lead" },
+  import_places_recent_cache_note: {
+    en: "The same search ran recently. Showing saved results to protect API quota.",
+    tr: "Yakın zamanda aynı arama yapıldı. API kotasını korumak için kayıtlı sonuçlar gösteriliyor.",
+  },
+  import_places_rate_limit_user: {
+    en: "Google Places hit a short-term request limit. Wait a few minutes and try again.",
+    tr: "Google Places kısa süreli istek limitine takıldı. Birkaç dakika bekleyip tekrar deneyin.",
+  },
 
   // Follow-ups page
   follow_ups_today_title: { en: "🔥 Follow-ups Today", tr: "🔥 Bugünün takipleri" },
@@ -969,6 +977,15 @@ const UI = {
   },
   detail_notes_reset: { en: "Reset", tr: "Sıfırla" },
   detail_notes_save: { en: "Save note", tr: "Notu kaydet" },
+
+  detail_reenrich_button: { en: "Re-enrich", tr: "Yeniden zenginleştir" },
+  detail_reenrich_loading: { en: "Enriching…", tr: "Zenginleştiriliyor…" },
+  detail_reenrich_no_new: {
+    en: "No new verifiable signals found.",
+    tr: "Yeni doğrulanabilir sinyal bulunamadı.",
+  },
+  detail_reenrich_error: { en: "Re-enrich failed.", tr: "Zenginleştirme başarısız." },
+  detail_website_candidate_label: { en: "Website candidate", tr: "Web sitesi adayı" },
 
   // Drawer chrome
   drawer_close_aria: { en: "Close panel", tr: "Paneli kapat" },

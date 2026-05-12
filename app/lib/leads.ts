@@ -36,6 +36,11 @@ import type {
   SignalConfidence,
   VerificationStatus,
 } from "./intelligence/confidence";
+import type {
+  WhatsAppConfidence,
+  WhatsAppSurfaceMeta,
+} from "./intelligence/whatsapp-verification";
+import { turkishGsmDigitsForWaMe } from "./intelligence/whatsapp-verification";
 import type { WebsiteContactSignalsInterpretation } from "./intelligence/extracted-signals-interpretation";
 
 export type { WebsiteContactSignalsInterpretation };
@@ -70,6 +75,7 @@ export type { OpportunityLevel, AiInsightSource };
 export type { OutreachIntelligenceProfile };
 export type { OpportunityProfile };
 export type { SignalConfidence, VerificationStatus, MaturityLevel };
+export type { WhatsAppConfidence, WhatsAppSurfaceMeta } from "./intelligence/whatsapp-verification";
 
 export type OutreachPriorityBucket = "today" | "high" | "medium" | "low" | "archive";
 export type RecommendedAction =
@@ -128,6 +134,15 @@ export type Lead = {
   phone: string;
   instagram?: string;
   website?: string;
+  /**
+   * Probable official hostname (or URL normalized to hostname) when Places omitted `website`,
+   * discovered via bounded homepage checks. Does not replace {@link website} from Google.
+   */
+  websiteCandidateUrl?: string;
+  /** Present when a guessed homepage matched weakly and should be human-verified. */
+  websiteVerificationStatus?: VerificationStatus;
+  /** Optional non-Places hint (imports / future fields) used only for domain guessing. */
+  googleWebsiteSearchHint?: string;
   units: number;
   pricePerNight: number;
   occupancy30d: number;
@@ -141,7 +156,9 @@ export type Lead = {
   signals: string[];
   /** Strength of website URL / crawl signal (optional; omitted on older persisted leads). */
   websiteConfidence?: SignalConfidence;
-  whatsappConfidence?: SignalConfidence;
+  whatsappConfidence?: WhatsAppConfidence;
+  /** TR reasoning lines from {@link detectWhatsAppConfidence} (homepage + listing rules). */
+  whatsappSignals?: string[];
   /** Legacy numeric Instagram strength may appear alongside enum confidence. */
   instagramConfidence?: SignalConfidence | number;
   extractedPhones?: string[];
@@ -192,6 +209,12 @@ export type WebsiteIntelligenceSummary = {
   errors?: string[];
   /** Present when homepage enrichment estimates outbound social link depth (0–100). */
   socialLinksQuality?: number;
+  /** When set, homepage was matched to the listing without an official Places website URL. */
+  websiteCandidateMatch?: "strong" | "uncertain";
+  /** WhatsApp links were present in HTML but failed basic digit validation. */
+  hasInvalidWhatsAppLinks?: boolean;
+  /** Optional bounded summary from homepage HTML (not persisted to Airtable). */
+  whatsappSurfaceMeta?: WhatsAppSurfaceMeta;
 };
 
 export type ScoredLead = Lead & {
@@ -1154,6 +1177,7 @@ export function calculateLeadScoreV3(l: Lead): LeadScoreV3Breakdown {
     contactQuality,
     hasWhatsAppPath,
     phoneMissing: !l.phone?.trim(),
+    listingPhone: l.phone,
     businessTier: tier,
     businessName: l.name,
     city: l.city,
@@ -1427,6 +1451,7 @@ export function toLeadForAiInsight(s: ScoredLead): LeadForAiInsight {
     hasOwnWebsite: Boolean(s.hasOwnWebsite),
     channels: s.channels ?? [],
     outreachIntelligence: s.outreachIntelligence,
+    whatsappConfidence: s.whatsappConfidence,
   };
 }
 
@@ -1447,6 +1472,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     contactQuality: s.contactQuality,
     hasWhatsAppPath,
     phoneMissing: !s.phone?.trim(),
+    listingPhone: s.phone,
     websiteIntelligence: s.websiteIntelligence,
     businessTier: tier,
     businessName: s.name,
@@ -1485,6 +1511,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     websiteConfidence: enrichment.acquisitionIntelligence.websiteConfidence,
     instagramConfidence: enrichment.acquisitionIntelligence.instagramConfidence,
     whatsappConfidence: enrichment.acquisitionIntelligence.whatsappConfidence,
+    whatsappSignals: [...(enrichment.acquisitionIntelligence.whatsappSignals ?? [])],
     otaConfidence: enrichment.acquisitionIntelligence.otaConfidence,
     adsLikelihood: enrichment.acquisitionIntelligence.adsLikelihood,
     directBookingMaturity: enrichment.acquisitionIntelligence.directBookingMaturity,
@@ -1842,6 +1869,7 @@ export function scoreAll(leads: Lead[] = LEADS): ScoredLead[] {
       contactQuality,
       hasWhatsAppPath: normalizePhoneForWhatsApp(l.phone) !== null,
       phoneMissing: !l.phone?.trim(),
+      listingPhone: l.phone,
       businessTier: v3.businessTier,
       businessName: l.name,
       city: l.city,
@@ -1896,6 +1924,9 @@ export const WHATSAPP_OUTREACH_MESSAGE =
 
 /** Strips spaces, +, parentheses, etc.; normalizes Turkish numbers to international 90…. */
 export function normalizePhoneForWhatsApp(phone: string): string | null {
+  const tr = turkishGsmDigitsForWaMe(phone);
+  if (tr) return tr;
+
   const trimmed = phone.trim();
   if (!trimmed) return null;
 

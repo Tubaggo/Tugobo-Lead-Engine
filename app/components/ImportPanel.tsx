@@ -22,6 +22,8 @@ export type ImportResult = {
   skipped: number;
   updated: number;
   source: "cached" | "google";
+  importNoticeKey?: "import_places_recent_cache_note";
+  importRateLimitHintKey?: "import_places_rate_limit_user";
 };
 
 const NICHES: { value: LeadType; label: string }[] = [
@@ -102,14 +104,12 @@ export default function ImportPanel({
       return;
     }
     setError("");
-    setResult(null);
     setShowCacheChoice(false);
     setLoading(true);
     try {
       const r = await onImport({ city: trimmed, type, source, forceGoogleRefresh });
       setResult(r);
     } catch (err) {
-      setResult(null);
       setError(err instanceof Error ? err.message : t("import_failed", locale));
     } finally {
       setLoading(false);
@@ -336,6 +336,12 @@ export default function ImportPanel({
             >
               {summary.text}
             </p>
+          )}
+          {result?.importRateLimitHintKey && !loading && (
+            <p className="text-xs text-amber-300">{t(result.importRateLimitHintKey, locale)}</p>
+          )}
+          {result?.importNoticeKey && !loading && (
+            <p className="text-xs text-indigo-300">{t(result.importNoticeKey, locale)}</p>
           )}
           {showCacheChoice && !loading && (
             <p className="text-xs text-indigo-300">{t("cached_results_found", locale)}</p>

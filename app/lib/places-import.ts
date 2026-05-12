@@ -60,6 +60,7 @@ export type GoogleDetailsResult = {
   formatted_phone_number?: string;
   website?: string;
   url?: string;
+  editorial_summary?: { overview?: string; language?: string };
 };
 
 const OTA_HOST_HINTS = ["booking.com", "airbnb.", "hotels.com", "expedia."] as const;
@@ -77,6 +78,14 @@ function parseHostname(raw?: string): string | null {
 function hostIncludesAny(hostname: string | null, hints: readonly string[]): boolean {
   if (!hostname) return false;
   return hints.some((h) => hostname.includes(h));
+}
+
+function websiteSearchHintFromEditorial(details: GoogleDetailsResult | null): string | undefined {
+  const o = details?.editorial_summary?.overview?.trim();
+  if (!o) return undefined;
+  const m = o.match(/https?:\/\/[^\s)\]>]+/i);
+  if (!m?.[0]) return undefined;
+  return normalizeWebsiteUrl(m[0]);
 }
 
 export function mapGooglePlaceToScoredLead(
@@ -103,6 +112,7 @@ export function mapGooglePlaceToScoredLead(
   const phone = phoneRaw.trim() || "";
 
   const website = normalizeWebsiteUrl(details?.website);
+  const googleWebsiteSearchHint = !website ? websiteSearchHintFromEditorial(details) : undefined;
   const websiteHost = parseHostname(details?.website ?? website);
   const hasInstagram = hostIncludesAny(websiteHost, ["instagram.com"]);
   const hasOwnWebsite =
@@ -175,6 +185,7 @@ export function mapGooglePlaceToScoredLead(
     contactName: "İşletme",
     phone: phone || "",
     website,
+    googleWebsiteSearchHint,
     units,
     pricePerNight,
     occupancy30d,

@@ -1,13 +1,30 @@
 import type { SignalConfidence } from "@/app/lib/intelligence/confidence";
-import type { ScoredLead } from "@/app/lib/leads";
-import { enrichScoredLeadIntelligence } from "@/app/lib/leads";
+import {
+  enrichScoredLeadIntelligence,
+  type ScoredLead,
+} from "@/app/lib/leads";
 import { fetchHomepageHtml } from "@/app/lib/fetch-homepage-html";
 import { extractContactSignalsFromHtml } from "@/app/lib/extract-contact-signals-from-html";
 import { interpretExtractedWebsiteContactSignals } from "@/app/lib/llm/provider";
+import {
+  generateWebsiteDomainCandidates,
+  isAllowedDiscoveryHostname,
+  scoreBusinessNamePageMatch,
+} from "@/app/lib/website-candidate-discovery";
+import { buildWhatsappSurfaceMeta } from "@/app/lib/intelligence/whatsapp-verification";
+import { inferWebsiteIntelligenceFromHomepageHtml } from "@/app/lib/website-html-intelligence";
 
 export type EnrichLeadHomepageOptions = {
   fetchTimeoutMs?: number;
 };
+
+const SIGNAL_WEBSITE_CANDIDATE = "Web sitesi adayı bulundu";
+const SIGNAL_WEBSITE_GOOGLE_MISSING = "Web sitesi Google kaydında yok, arama ile aday bulundu";
+const SIGNAL_WA_INVALID = "WhatsApp linki var ancak numara doğrulanamadı";
+const SIGNAL_WA_VERIFY = "WhatsApp linki var ancak doğrulama gerekli";
+
+const MAX_WEBSITE_CANDIDATE_FETCHES = 3;
+const DEFAULT_CANDIDATE_TIMEOUT_MS = 10_000;
 
 function uniqStrings(items: string[]): string[] {
   const out: string[] = [];
@@ -19,6 +36,11 @@ function uniqStrings(items: string[]): string[] {
     out.push(v);
   }
   return out;
+}
+
+function appendBizSignal(signals: readonly string[], extra: string): string[] {
+  if (signals.some((s) => s === extra)) return [...signals];
+  return [...signals, extra];
 }
 
 function confidenceRank(c: SignalConfidence): number {
@@ -44,13 +66,142 @@ function instagramUrlMatchesHandle(url: string, handle: string): boolean {
     const seg = u.pathname.split("/").filter(Boolean)[0]?.toLowerCase();
     return seg === h;
   } catch {
-    return url.toLowerCase().includes(`instagram.com/${h}`) && !url.toLowerCase().includes(`instagram.com/${h}/p/`);
+    return (
+      url.toLowerCase().includes(`instagram.com/${h}`) &&
+      !url.toLowerCase().includes(`instagram.com/${h}/p/`)
+    );
   }
+}
+
+async function enrichFromDiscoveredWebsiteCandidate(
+  base: ScoredLead,
+  options?: EnrichLeadHomepageOptions,
+): Promise<ScoredLead> {
+  const candidates = generateWebsiteDomainCandidates({
+    businessName: base.name,
+    city: base.city,
+    knownWebsiteHint: base.googleWebsiteSearchHint?.trim(),
+  }).filter(isAllowedDiscoveryHostname);
+
+  const timeoutMs = Math.min(
+    options?.fetchTimeoutMs ?? DEFAULT_CANDIDATE_TIMEOUT_MS,
+    12_000,
+  );
+
+  let bestStrong: { host: string; html: string; url: string } | null = null;
+  let bestUncertain: { host: string; html: string; url: string } | null = null;
+
+  for (const host of candidates.slice(0, MAX_WEBSITE_CANDIDATE_FETCHES)) {
+    const fetchResult = await fetchHomepageHtml(host, { timeoutMs });
+    if (!fetchResult.ok || !fetchResult.html) continue;
+    const match = scoreBusinessNamePageMatch(base.name, fetchResult.html);
+    if (match.strength === "strong") {
+      bestStrong = { host, html: fetchResult.html, url: fetchResult.url };
+      break;
+    }
+    if (match.strength === "uncertain" && !bestUncertain) {
+      bestUncertain = { host, html: fetchResult.html, url: fetchResult.url };
+    }
+  }
+
+  const pick = bestStrong ?? bestUncertain;
+  if (!pick) return base;
+
+  const candidateMatch: "strong" | "uncertain" = bestStrong ? "strong" : "uncertain";
+
+  const extracted = extractContactSignalsFromHtml(pick.html, { pageUrl: pick.url });
+  const waMeta = buildWhatsappSurfaceMeta(pick.html, extracted.whatsappLinks);
+
+  const inferred = {
+    ...inferWebsiteIntelligenceFromHomepageHtml(pick.html, {
+      hasWhatsAppLink: extracted.whatsappLinks.length > 0,
+      hasInvalidWhatsAppLinks: waMeta.allLinksInvalid,
+      websiteCandidateMatch: candidateMatch,
+    }),
+    whatsappSurfaceMeta: waMeta,
+  };
+
+  let nextSignals = appendBizSignal(base.signals ?? [], SIGNAL_WEBSITE_CANDIDATE);
+  nextSignals = appendBizSignal(nextSignals, SIGNAL_WEBSITE_GOOGLE_MISSING);
+  if (waMeta.allLinksInvalid) {
+    nextSignals = appendBizSignal(nextSignals, SIGNAL_WA_INVALID);
+  } else if (waMeta.mixedValidation) {
+    nextSignals = appendBizSignal(nextSignals, SIGNAL_WA_VERIFY);
+  }
+
+  const igHandle = normalizeIgHandle(base.instagram);
+  let finalInstagram = base.instagramConfidence;
+  if (typeof base.instagramConfidence !== "number") {
+    const cur = (base.instagramConfidence ?? "missing") as SignalConfidence;
+    if (igHandle && extracted.instagramLinks.some((u) => instagramUrlMatchesHandle(u, igHandle))) {
+      finalInstagram = maxSignal(cur, "confirmed");
+    } else if (extracted.instagramLinks.length > 0) {
+      finalInstagram = maxSignal(cur, "likely");
+    }
+  }
+
+  const extractedPhones = uniqStrings([
+    ...(base.extractedPhones ?? []),
+    ...extracted.phones,
+    ...extracted.turkishGsmNumbers,
+  ]);
+  const extractedEmails = uniqStrings([...(base.extractedEmails ?? []), ...extracted.emails]);
+  const extractedSocialLinks = uniqStrings([
+    ...(base.extractedSocialLinks ?? []),
+    ...extracted.instagramLinks,
+    ...extracted.facebookLinks,
+    ...extracted.whatsappLinks,
+  ]);
+  const hasReservationCTA =
+    Boolean(base.hasReservationCTA) || extracted.reservationBookingCtaSnippets.length > 0;
+  const hasContactPage = Boolean(base.hasContactPage) || extracted.contactPageLinks.length > 0;
+  const turkishGsmExtracted = [...extracted.turkishGsmNumbers];
+
+  const preMerged: ScoredLead = {
+    ...base,
+    websiteCandidateUrl: pick.host,
+    websiteVerificationStatus: candidateMatch === "uncertain" ? "needs_manual_check" : undefined,
+    websiteIntelligence: inferred,
+    extractedPhones,
+    extractedEmails,
+    extractedSocialLinks,
+    hasReservationCTA,
+    hasContactPage,
+    signals: nextSignals,
+  };
+
+  let enriched = enrichScoredLeadIntelligence(preMerged);
+  const acq = enriched.acquisitionIntelligence;
+  if (acq) {
+    enriched = {
+      ...enriched,
+      instagramConfidence: finalInstagram ?? enriched.instagramConfidence,
+      acquisitionIntelligence: {
+        ...acq,
+        instagramConfidence: (finalInstagram ?? acq.instagramConfidence) as SignalConfidence,
+      },
+    };
+  }
+
+  const websiteContactSignalsInterpretation = await interpretExtractedWebsiteContactSignals({
+    websiteConfidence: (enriched.websiteConfidence ?? "missing") as SignalConfidence,
+    extractedPhones: enriched.extractedPhones ?? [],
+    turkishGsmNumbers: turkishGsmExtracted,
+    emails: enriched.extractedEmails ?? [],
+    socialLinks: enriched.extractedSocialLinks ?? [],
+    hasReservationCTA: Boolean(enriched.hasReservationCTA),
+    hasContactPage: Boolean(enriched.hasContactPage),
+    whatsappConfidence: enriched.whatsappConfidence ?? null,
+    instagramConfidence: enriched.instagramConfidence ?? null,
+  });
+
+  return { ...enriched, websiteContactSignalsInterpretation };
 }
 
 /**
  * Runs synchronous lead enrichment, then (when `website` is set) fetches the homepage once,
  * extracts contact signals, and updates confidence / extracted fields without re-running scoring.
+ * When `website` is missing, tries a small bounded set of guessed domains (single GET each).
  */
 export async function enrichLeadWithHomepageSignals(
   lead: ScoredLead,
@@ -59,7 +210,7 @@ export async function enrichLeadWithHomepageSignals(
   const base = enrichScoredLeadIntelligence(lead);
   const websiteRaw = base.website?.trim();
   if (!websiteRaw) {
-    return base;
+    return enrichFromDiscoveredWebsiteCandidate(base, options);
   }
 
   const fetchResult = await fetchHomepageHtml(websiteRaw, {
@@ -67,10 +218,6 @@ export async function enrichLeadWithHomepageSignals(
   });
 
   const baseWeb = (base.websiteConfidence ?? "missing") as SignalConfidence;
-  const baseWa = (base.whatsappConfidence ?? "missing") as SignalConfidence;
-
-  let finalWebsite: SignalConfidence;
-  let finalWhatsapp = base.whatsappConfidence;
   let finalInstagram = base.instagramConfidence;
 
   let extractedPhones: string[] | undefined;
@@ -79,11 +226,22 @@ export async function enrichLeadWithHomepageSignals(
   let hasReservationCTA: boolean | undefined;
   let hasContactPage: boolean | undefined;
   let turkishGsmExtracted: string[] = [];
+  let websiteIntelligence = base.websiteIntelligence;
+  let finalWebsite: SignalConfidence = (base.websiteConfidence ?? "missing") as SignalConfidence;
 
   if (fetchResult.ok && fetchResult.html) {
     const signals = extractContactSignalsFromHtml(fetchResult.html, {
       pageUrl: fetchResult.url,
     });
+    const waMeta = buildWhatsappSurfaceMeta(fetchResult.html, signals.whatsappLinks);
+    const inferred = {
+      ...inferWebsiteIntelligenceFromHomepageHtml(fetchResult.html, {
+        hasWhatsAppLink: signals.whatsappLinks.length > 0,
+        hasInvalidWhatsAppLinks: waMeta.allLinksInvalid,
+      }),
+      whatsappSurfaceMeta: waMeta,
+    };
+    websiteIntelligence = inferred;
 
     const strong =
       signals.whatsappLinks.length > 0 ||
@@ -96,10 +254,6 @@ export async function enrichLeadWithHomepageSignals(
     const tier: SignalConfidence = strong ? "confirmed" : "likely";
     finalWebsite = maxSignal(tier, baseWeb === "missing" ? tier : baseWeb);
     if (finalWebsite === "missing") finalWebsite = tier;
-
-    if (signals.turkishGsmNumbers.length > 0 || signals.whatsappLinks.length > 0) {
-      finalWhatsapp = maxSignal(baseWa, "likely");
-    }
 
     const igHandle = normalizeIgHandle(base.instagram);
     if (typeof base.instagramConfidence !== "number") {
@@ -129,44 +283,56 @@ export async function enrichLeadWithHomepageSignals(
     turkishGsmExtracted = [...signals.turkishGsmNumbers];
   } else {
     finalWebsite = "weak";
+    websiteIntelligence = {
+      ...base.websiteIntelligence,
+      websiteConfidence: "weak",
+    };
   }
 
-  const acq = base.acquisitionIntelligence;
-  const nextAcq = acq
-    ? {
-        ...acq,
-        websiteConfidence: finalWebsite,
-        whatsappConfidence: (finalWhatsapp ?? acq.whatsappConfidence) as SignalConfidence,
-        instagramConfidence: finalInstagram ?? acq.instagramConfidence,
-      }
-    : acq;
-
-  const merged: ScoredLead = {
+  const preMerged: ScoredLead = {
     ...base,
-    websiteConfidence: finalWebsite,
-    whatsappConfidence: finalWhatsapp ?? base.whatsappConfidence,
-    instagramConfidence: finalInstagram ?? base.instagramConfidence,
+    websiteIntelligence,
     extractedPhones,
     extractedEmails,
     extractedSocialLinks,
     hasReservationCTA,
     hasContactPage,
-    acquisitionIntelligence: nextAcq ?? base.acquisitionIntelligence,
   };
 
+  let enriched = enrichScoredLeadIntelligence(preMerged);
+  if (enriched.acquisitionIntelligence) {
+    enriched = {
+      ...enriched,
+      websiteConfidence: finalWebsite,
+      instagramConfidence: finalInstagram ?? enriched.instagramConfidence,
+      acquisitionIntelligence: {
+        ...enriched.acquisitionIntelligence,
+        websiteConfidence: finalWebsite,
+        instagramConfidence: (finalInstagram ??
+          enriched.acquisitionIntelligence.instagramConfidence) as SignalConfidence,
+      },
+    };
+  } else {
+    enriched = {
+      ...enriched,
+      websiteConfidence: finalWebsite,
+      instagramConfidence: finalInstagram ?? enriched.instagramConfidence,
+    };
+  }
+
   const websiteContactSignalsInterpretation = await interpretExtractedWebsiteContactSignals({
-    websiteConfidence: finalWebsite,
-    extractedPhones: merged.extractedPhones ?? [],
+    websiteConfidence: (enriched.websiteConfidence ?? "missing") as SignalConfidence,
+    extractedPhones: enriched.extractedPhones ?? [],
     turkishGsmNumbers: turkishGsmExtracted,
-    emails: merged.extractedEmails ?? [],
-    socialLinks: merged.extractedSocialLinks ?? [],
-    hasReservationCTA: Boolean(merged.hasReservationCTA),
-    hasContactPage: Boolean(merged.hasContactPage),
-    whatsappConfidence: merged.whatsappConfidence ?? null,
-    instagramConfidence: merged.instagramConfidence ?? null,
+    emails: enriched.extractedEmails ?? [],
+    socialLinks: enriched.extractedSocialLinks ?? [],
+    hasReservationCTA: Boolean(enriched.hasReservationCTA),
+    hasContactPage: Boolean(enriched.hasContactPage),
+    whatsappConfidence: enriched.whatsappConfidence ?? null,
+    instagramConfidence: enriched.instagramConfidence ?? null,
   });
 
-  return { ...merged, websiteContactSignalsInterpretation };
+  return { ...enriched, websiteContactSignalsInterpretation };
 }
 
 /** Bounded parallel map for homepage enrichment (import batches). */

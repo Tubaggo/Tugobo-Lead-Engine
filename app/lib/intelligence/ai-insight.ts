@@ -35,6 +35,11 @@ export type LeadForAiInsight = {
    * conversion-focused, etc.) instead of always defaulting to soft.
    */
   outreachIntelligence?: OutreachIntelligenceProfile;
+  /**
+   * WhatsApp verification layer from homepage + listing rules.
+   * When omitted, messaging stays conservative (not treated as confirmed).
+   */
+  whatsappConfidence?: "confirmed" | "likely" | "weak" | "none";
 };
 
 export type LeadAiInsight = {
@@ -76,6 +81,21 @@ const SEVERITY_RANK: Record<"low" | "medium" | "high", number> = {
   medium: 2,
   high: 3,
 };
+
+function waChannelUsable(lead: LeadForAiInsight): boolean {
+  if (!lead.hasWhatsAppPath || lead.contactQuality === "low") return false;
+  const w = lead.whatsappConfidence;
+  if (w === "none" || w === "weak") return false;
+  return true;
+}
+
+function waVerifiedNarrative(lead: LeadForAiInsight): boolean {
+  return (
+    lead.whatsappConfidence === "confirmed" &&
+    lead.hasWhatsAppPath &&
+    lead.contactQuality !== "low"
+  );
+}
 
 function uniqStrings(items: string[], max: number): string[] {
   const seen = new Set<string>();
@@ -202,8 +222,10 @@ export function getPainPointSummary(
     collected.push("Owned site present but booking path looks thin");
   }
 
-  if (lead.hasWhatsAppPath && lead.contactQuality === "high") {
-    collected.push("Direct outreach available (WhatsApp-ready)");
+  if (waVerifiedNarrative(lead)) {
+    collected.push("Direct outreach available (WhatsApp path validated)");
+  } else if (waChannelUsable(lead)) {
+    collected.push("WhatsApp signal present — verify before relying on outreach");
   } else if (lead.hasInstagram) {
     collected.push("Instagram available as a contact surface");
   }
@@ -255,8 +277,7 @@ export function getOutreachAngle(lead: LeadForAiInsight): string {
       p.toLowerCase().includes("booking flow"),
   );
   const hasOta = (lead.businessSignals ?? []).includes("ota_dependency");
-  const hasWhatsapp =
-    lead.hasWhatsAppPath && lead.contactQuality !== "low";
+  const hasWhatsapp = waChannelUsable(lead);
 
   if (hasCommDelay && hasWhatsapp) {
     return "Prevent lost reservations from late or missed WhatsApp replies.";
@@ -316,7 +337,7 @@ function approachToTheme(
     case "guest-experience":
       return "communication_risk";
     case "operational-efficiency":
-      if (lead.hasWhatsAppPath && lead.contactQuality !== "low") {
+      if (waChannelUsable(lead)) {
         return "whatsapp_flow";
       }
       return "general_hospitality";
@@ -359,7 +380,7 @@ function pickMessageSignalTheme(lead: LeadForAiInsight): MessageSignalTheme {
     angle.includes("instagram");
   if (hasInstagramDemand) return "instagram_demand";
 
-  if (lead.hasWhatsAppPath && lead.contactQuality !== "low") return "whatsapp_flow";
+  if (waChannelUsable(lead)) return "whatsapp_flow";
 
   if (signals.has("ota_dependency") || signals.has("single_channel_risk")) {
     return "direct_booking_opportunity";
@@ -378,7 +399,7 @@ function buildObservationLine(theme: MessageSignalTheme, lead: LeadForAiInsight)
   const sig = new Set(lead.businessSignals ?? []);
   const ota = listSurfaceFromChannels(lead.channels);
   const hasOta = Boolean(ota) || sig.has("ota_dependency") || sig.has("single_channel_risk");
-  const hasWhatsapp = lead.hasWhatsAppPath && lead.contactQuality !== "low";
+  const hasWhatsappSurface = waChannelUsable(lead);
   const hasInsta = lead.hasInstagram || sig.has("instagram_presence_gap");
   const hasWeakBooking =
     sig.has("conversion_gap") ||
@@ -400,7 +421,12 @@ function buildObservationLine(theme: MessageSignalTheme, lead: LeadForAiInsight)
       return "Sosyal tarafta bir ilgi sinyali var gibi görünüyor.";
     }
     case "whatsapp_flow": {
-      if (hasWhatsapp) return "İşletmenizde WhatsApp hattının erişilebilir olduğu görünüyor.";
+      if (waVerifiedNarrative(lead)) {
+        return "İşletmenizde WhatsApp bağlantısı doğrulanmış görünüyor.";
+      }
+      if (hasWhatsappSurface) {
+        return "İşletmenizde WhatsApp erişimi olası görünüyor.";
+      }
       return "İletişim tarafında misafirlerin hızlı dönüş beklediği bir yüzey var gibi.";
     }
     case "booking_flow_gap": {
@@ -408,7 +434,12 @@ function buildObservationLine(theme: MessageSignalTheme, lead: LeadForAiInsight)
       return "İşletmenizi incelerken ilgi var ama rezervasyona giden yol her zaman net olmayabiliyor.";
     }
     case "communication_risk": {
-      if (hasWhatsapp) return "İşletmenizde WhatsApp üzerinden talep almak mümkün görünüyor.";
+      if (waVerifiedNarrative(lead)) {
+        return "İşletmenizde WhatsApp üzerinden talep alınması muhtemel görünüyor.";
+      }
+      if (hasWhatsappSurface) {
+        return "İşletmenizde WhatsApp sinyali mevcut; doğrulama önerilir.";
+      }
       return "İşletmenizi incelerken iletişim tarafında hızın kritik olduğu bir tablo var gibi.";
     }
     case "general_hospitality":
@@ -476,7 +507,7 @@ function buildRationaleSignalClause(lead: LeadForAiInsight): string {
   if (lead.hasInstagram || sig.has("instagram_presence_gap")) {
     pieces.push("Instagram talebini rezervasyona çevirme");
   }
-  if (lead.hasWhatsAppPath && lead.contactQuality !== "low") {
+  if (waChannelUsable(lead)) {
     pieces.push("WhatsApp dönüş hızını artırma");
   }
   return pieces.slice(0, 2).join(" / ");
@@ -767,8 +798,10 @@ function buildAiInsightParagraph(lead: LeadForAiInsight): string {
     parts.push(`Notable themes include ${pains[0].toLowerCase()}.`);
   }
 
-  if (lead.hasWhatsAppPath && lead.contactQuality !== "low") {
-    parts.push("WhatsApp availability makes consultative outreach practical.");
+  if (waVerifiedNarrative(lead)) {
+    parts.push("WhatsApp path is validated — consultative outreach is practical.");
+  } else if (waChannelUsable(lead)) {
+    parts.push("A WhatsApp signal exists — quick verification is recommended before outreach.");
   } else if (lead.hasInstagram) {
     parts.push("Instagram offers a workable surface for a light-touch conversation.");
   }
