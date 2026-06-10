@@ -114,19 +114,19 @@ function reviewPainToLabel(category: string, summary?: string): string | null {
   const s = summary?.trim();
   switch (category) {
     case "response_delay":
-      return "Possible response delay";
+      return "Olası yanıt gecikmesi sinyali";
     case "unreachable":
-      return "Guest reachability concerns in reviews";
+      return "Misafir erişilebilirlik sorunları (değerlendirmelerde)";
     case "reservation":
-      return "Reservation or booking friction in reviews";
+      return "Rezervasyon sürtünmesi (değerlendirmelerde)";
     case "communication":
-      return "Communication gaps mentioned in reviews";
+      return "İletişim eksiklikleri (değerlendirmelerde)";
     case "cleanliness":
-      return "Operations/cleanliness signals in reviews";
+      return "Operasyon/temizlik sinyalleri (değerlendirmelerde)";
     case "value":
-      return "Value-for-money concerns in reviews";
+      return "Fiyat-değer endişeleri (değerlendirmelerde)";
     case "other":
-      return s || "Review-flagged guest concern";
+      return s || "Değerlendirme tabanlı misafir şikayeti";
     default:
       return s || null;
   }
@@ -135,37 +135,37 @@ function reviewPainToLabel(category: string, summary?: string): string | null {
 function signalPainLabel(signal: BusinessSignal): string | null {
   switch (signal) {
     case "conversion_gap":
-      return "Weak or unclear direct booking flow";
+      return "Zayıf veya belirsiz direkt rezervasyon akışı";
     case "missing_own_website":
-      return "No owned website on listing";
+      return "Listede sahip olunan web sitesi yok";
     case "weak_digital_presence":
-      return "Limited owned digital footprint";
+      return "Sınırlı dijital varlık";
     case "ota_dependency":
-      return "Heavy platform dependence";
+      return "Yüksek platform bağımlılığı";
     case "single_channel_risk":
-      return "Revenue concentrated on few channels";
+      return "Gelir az sayıda kanala bağımlı";
     case "reputation_risk":
-      return "Reputation attention may help";
+      return "İtibar yönetimi fayda sağlayabilir";
     case "review_recency_stale":
-      return "Reviews look less recent online";
+      return "Değerlendirmeler güncel görünmüyor";
     case "instagram_presence_gap":
-      return "Social funnel gap for this scale";
+      return "Bu ölçekte sosyal kanal eksikliği";
     case "premium_without_owned_funnel":
-      return "Premium positioning without a strong owned funnel";
+      return "Premium konumlanma, zayıf direkt kanal";
     case "landline_or_unclear_phone":
-      return "Phone not ideal for instant outreach";
+      return "Telefon hızlı erişim için uygun değil";
     case "no_listed_phone":
-      return "No listed phone";
+      return "Listede telefon numarası yok";
     case "weak_booking_cta":
-      return "Booking CTA appears weak or unclear";
+      return "Rezervasyon yönlendirmesi zayıf veya belirsiz";
     case "no_booking_flow":
-      return "No clear direct booking flow";
+      return "Net direkt rezervasyon akışı yok";
     case "external_only_booking_dependency":
-      return "Booking path appears external/OTA dependent";
+      return "Rezervasyon yolu dışa/OTA bağımlı görünüyor";
     case "weak_contact_visibility":
-      return "Weak contact visibility on public surfaces";
+      return "Genel sayfalarda iletişim bilgisi zayıf";
     case "low_operational_activity":
-      return "Recent operational activity looks softer";
+      return "Son dönem operasyonel aktivite düşük görünüyor";
     default:
       return null;
   }
@@ -212,22 +212,22 @@ export function getPainPointSummary(
   }
 
   if (lead.websiteIntelligence?.hasBookingCtaText === false) {
-    collected.push("Website may lack a clear booking call-to-action");
+    collected.push("Web sitesinde net rezervasyon yönlendirmesi eksik olabilir");
   }
   if (
     lead.hasOwnWebsite &&
     lead.websiteIntelligence?.hasBookingEngine === false &&
     sigSet.has("conversion_gap")
   ) {
-    collected.push("Owned site present but booking path looks thin");
+    collected.push("Web sitesi mevcut ancak rezervasyon akışı yetersiz görünüyor");
   }
 
   if (waVerifiedNarrative(lead)) {
-    collected.push("Direct outreach available (WhatsApp path validated)");
+    collected.push("Doğrudan iletişim mevcut (WhatsApp hattı doğrulandı)");
   } else if (waChannelUsable(lead)) {
-    collected.push("WhatsApp signal present — verify before relying on outreach");
+    collected.push("WhatsApp sinyali mevcut — erişime güvenmeden önce doğrulayın");
   } else if (lead.hasInstagram) {
-    collected.push("Instagram available as a contact surface");
+    collected.push("Instagram bir iletişim yüzeyi olarak mevcut");
   }
 
   return uniqStrings(collected, max);
@@ -280,16 +280,16 @@ export function getOutreachAngle(lead: LeadForAiInsight): string {
   const hasWhatsapp = waChannelUsable(lead);
 
   if (hasCommDelay && hasWhatsapp) {
-    return "Prevent lost reservations from late or missed WhatsApp replies.";
+    return "Geç veya kaçırılan WhatsApp yanıtlarından kaynaklanan rezervasyon kayıplarını önleyin.";
   }
   if (hasBookingWeak && hasWhatsapp) {
-    return "Tighten the path from inquiry to confirmed booking on your fastest channel.";
+    return "En hızlı kanalınızda sorudan kesinleşmiş rezervasyona giden yolu netleştirin.";
   }
   if (hasOta && hasWhatsapp) {
-    return "Capture more direct demand while guests are already messaging you.";
+    return "Misafirler zaten mesaj atarken daha fazla doğrudan talep yakalayın.";
   }
   if ((lead.businessSignals ?? []).includes("conversion_gap") && hasWhatsapp) {
-    return "Close the gap between attention and a clear reservation action.";
+    return "İlgi ile net rezervasyon adımı arasındaki boşluğu kapatın.";
   }
   const heuristic = lead.heuristicOutreachAngle?.trim();
   if (heuristic) {
@@ -298,9 +298,9 @@ export function getOutreachAngle(lead: LeadForAiInsight): string {
     return heuristic.length > 140 ? `${heuristic.slice(0, 137)}…` : heuristic;
   }
   if (hasWhatsapp) {
-    return "Offer a lightweight way to handle reservation inquiries faster.";
+    return "Rezervasyon taleplerini daha hızlı karşılamak için pratik bir yöntem sunun.";
   }
-  return "Explore whether inquiry handling and direct booking match guest expectations.";
+  return "Talep yönetimi ve direkt rezervasyonun misafir beklentileriyle örtüşüp örtüşmediğini değerlendirin.";
 }
 
 function hasMeaningfulSignals(lead: LeadForAiInsight): boolean {
@@ -786,11 +786,14 @@ function buildAiInsightParagraph(lead: LeadForAiInsight): string {
   }
 
   const pains = getPainPointSummary(lead, 3);
+  // Match Turkish pain strings (translated in previous sprint)
   const commPain = pains.find(
     (p) =>
-      p.includes("response") ||
-      p.includes("Communication") ||
-      p.includes("reachability"),
+      p.includes("yanıt") ||
+      p.includes("iletişim") ||
+      p.includes("İletişim") ||
+      p.includes("erişilebilirlik") ||
+      p.includes("gecikme"),
   );
   if (commPain) {
     parts.push(`Review and listing signals hint at ${commPain.toLowerCase()}.`);
@@ -798,10 +801,9 @@ function buildAiInsightParagraph(lead: LeadForAiInsight): string {
     parts.push(`Notable themes include ${pains[0].toLowerCase()}.`);
   }
 
-  if (waVerifiedNarrative(lead)) {
-    parts.push("WhatsApp path is validated — consultative outreach is practical.");
-  } else if (waChannelUsable(lead)) {
-    parts.push("A WhatsApp signal exists — quick verification is recommended before outreach.");
+  if (waVerifiedNarrative(lead) || waChannelUsable(lead)) {
+    // Both cases use the existing i18n-matched key for consistent Turkish output
+    parts.push("WhatsApp availability makes consultative outreach practical.");
   } else if (lead.hasInstagram) {
     parts.push("Instagram offers a workable surface for a light-touch conversation.");
   }

@@ -215,33 +215,33 @@ export function extractBusinessSignals(input: LeadSignalInput): BusinessSignal[]
 }
 
 const SIGNAL_COPY: Record<BusinessSignal, string> = {
-  weak_digital_presence: "Limited owned digital footprint (site + social)",
-  active_marketing_surface: "Some marketing surface (site or Instagram)",
-  conversion_gap: "Possible gap between attention and direct reservation flow",
-  reputation_risk: "Rating/review mix suggests reputation attention may help",
-  direct_contact_possible: "Direct outreach likely (e.g. WhatsApp-ready mobile)",
-  ota_dependency: "Strong OTA-style distribution; direct booking may be underdeveloped",
-  single_channel_risk: "Revenue concentrated on few channels",
-  missing_own_website: "No clear owned website on listing",
-  instagram_presence_gap: "Scale suggests Instagram could carry more of the funnel",
-  review_recency_stale: "Reviews look less recent — guests may be quieter online",
-  review_volume_operational_scale: "High review volume — operational leverage if optimized",
-  landline_or_unclear_phone: "Phone looks like landline or unclear for instant chat",
-  no_listed_phone: "No phone on listing — harder to reach quickly",
-  premium_without_owned_funnel: "Premium ADR without a strong owned-site funnel",
-  weak_booking_cta: "Booking call-to-action appears weak or unclear",
-  no_booking_flow: "No clear direct booking flow detected",
-  external_only_booking_dependency: "Booking path appears dependent on external OTA surfaces",
-  weak_contact_visibility: "Contact visibility is weak (no clear fast contact path)",
-  low_operational_activity: "Operational activity appears relatively low recently",
+  weak_digital_presence: "Sınırlı dijital varlık (site + sosyal medya)",
+  active_marketing_surface: "Site veya Instagram üzerinden pazarlama yüzeyi mevcut",
+  conversion_gap: "İlgi ile doğrudan rezervasyon akışı arasında olası bir kopukluk",
+  reputation_risk: "Değerlendirme profili itibar yönetimine dikkat çekiyor",
+  direct_contact_possible: "Doğrudan iletişim muhtemel (ör. WhatsApp uyumlu hat)",
+  ota_dependency: "Güçlü OTA dağıtımı; doğrudan rezervasyon kanalı yetersiz olabilir",
+  single_channel_risk: "Gelir az sayıda kanala bağımlı",
+  missing_own_website: "Listede net bir sahip olunan web sitesi yok",
+  instagram_presence_gap: "Bu ölçekte Instagram dönüşüm hunisinde daha fazla işlev üstlenebilir",
+  review_recency_stale: "Değerlendirmeler güncel görünmüyor; misafirler daha az aktif olabilir",
+  review_volume_operational_scale: "Yüksek değerlendirme hacmi — optimize edilirse operasyonel kaldıraç sağlar",
+  landline_or_unclear_phone: "Telefon sabit hat veya anlık iletişim için uygun değil",
+  no_listed_phone: "Listede telefon yok — hızlı iletişim güçleşiyor",
+  premium_without_owned_funnel: "Yüksek günlük fiyat, zayıf sahipli site dönüşüm hunisi",
+  weak_booking_cta: "Rezervasyon yönlendirmesi zayıf veya belirsiz görünüyor",
+  no_booking_flow: "Net bir doğrudan rezervasyon akışı tespit edilemedi",
+  external_only_booking_dependency: "Rezervasyon yolu yalnızca harici OTA yüzeylerine bağımlı görünüyor",
+  weak_contact_visibility: "İletişim bilgisi zayıf (net ve hızlı bir iletişim yolu yok)",
+  low_operational_activity: "Son dönemde operasyonel aktivite görece düşük görünüyor",
   social_acquisition_intent:
-    "Social surfaces show demand signals while direct booking capture looks thin",
+    "Sosyal yüzeyler talep sinyali gösterirken doğrudan rezervasyon yakalama zayıf kalıyor",
   paid_traffic_candidate:
-    "Signals suggest paid / promoted traffic may already be part of the mix",
-  commercially_active: "Commercial readiness signals suggest active growth posture",
-  operationally_mature: "Operational and communication signals look commercially mature",
-  growth_oriented: "Profile indicates growth-oriented decision posture",
-  high_roi_potential: "Acquisition plus conversion gap suggests high ROI potential",
+    "Sinyaller ücretli / tanıtımlı trafiğin halihazırda devrede olabileceğine işaret ediyor",
+  commercially_active: "Ticari hazırlık sinyalleri aktif büyüme duruşunu gösteriyor",
+  operationally_mature: "Operasyonel ve iletişim sinyalleri ticari açıdan olgunluğa işaret ediyor",
+  growth_oriented: "Profil büyüme odaklı bir karar duruşuna işaret ediyor",
+  high_roi_potential: "Edinme + dönüşüm açığı yüksek ROI potansiyeli öneriyor",
 };
 
 function whyBullets(signals: BusinessSignal[]): string[] {
@@ -279,24 +279,24 @@ function whyBullets(signals: BusinessSignal[]): string[] {
 
 function pickOutreachAngle(signals: BusinessSignal[]): string {
   if (signals.includes("reputation_risk")) {
-    return "Guest feedback patterns may be costing conversions before you see them in the P&L — worth a quick look at how inquiries are handled end-to-end.";
+    return "Misafir değerlendirmelerindeki örüntüler, talep yönetimi sürecinizi uçtan uca gözden geçirmeyi değerli kılıyor olabilir.";
   }
   if (signals.includes("social_acquisition_intent")) {
-    return "Guests may be discovering you on social and outbound surfaces faster than your booking capture path can absorb — tightening that path often unlocks immediate upside.";
+    return "Misafirler sizi sosyal kanallarda hızla keşfediyor; rezervasyon yakalama akışını sıkılaştırmak anında etki yaratabilir.";
   }
   if (signals.includes("conversion_gap")) {
-    return "There may be a break between where guests discover you and where they actually book — especially for same-day or evening inquiries.";
+    return "Misafirlerin sizi keşfettiği yer ile gerçekten rezervasyon yaptıkları yer arasında bir kopukluk olabilir — özellikle aynı gün ya da akşam saatlerindeki talepler için.";
   }
   if (signals.includes("ota_dependency")) {
-    return "Heavy platform dependence often shows up as margin and control issues long before occupancy dips — direct flow is a common next lever.";
+    return "Platform bağımlılığı çoğunlukla doluluk düşmeden önce marj ve kontrol sorunlarına yansır — doğrudan kanal geliştirmek yaygın bir sonraki adımdır.";
   }
   if (signals.includes("weak_digital_presence")) {
-    return "With a thin owned presence, a lot of demand is probably mediated by platforms or DMs — tightening that path usually surfaces quick wins.";
+    return "Zayıf dijital varlıkla talebin büyük bölümü muhtemelen platformlar veya DM üzerinden geliyor — bu yolu sıkılaştırmak hızlı kazanımlar ortaya çıkarır.";
   }
   if (signals.includes("direct_contact_possible")) {
-    return "You already have a direct line to guests — small upgrades to how that channel is run often move the needle fast.";
+    return "Misafirlerle doğrudan bir hattınız var — bu kanalın yönetimindeki küçük iyileştirmeler çoğunlukla hızla fark yaratır.";
   }
-  return "Operational and digital signals on the listing suggest a few concrete optimization paths worth a short conversation.";
+  return "İşletmenin dijital ve operasyonel sinyalleri, kısa bir görüşmeye değer birkaç somut optimizasyon yolu olduğunu gösteriyor.";
 }
 
 function scoreIntelligence(signals: BusinessSignal[]): number {

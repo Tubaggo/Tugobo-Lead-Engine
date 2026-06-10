@@ -34,6 +34,7 @@ import {
   conversionLeakUiChipHints,
   whatsappLink,
   whatsappLinkWithText,
+  type IcpAlignmentProfile,
 } from "@/app/lib/leads";
 import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
 import {
@@ -3356,8 +3357,9 @@ function LeadDetailScoreSummary({ lead }: { lead: LeadTableRow }) {
 
 const OUTREACH_ANGLE_FALLBACK = "No strong outreach angle detected yet.";
 const WEAK_OUTREACH_ANGLES = new Set([
-  "Offer a lightweight way to handle reservation inquiries faster.",
-  "Explore whether inquiry handling and direct booking match guest expectations.",
+  // Turkish equivalents after localization sprint (previous English keys are stale)
+  "Rezervasyon taleplerini daha hızlı karşılamak için pratik bir yöntem sunun.",
+  "Talep yönetimi ve direkt rezervasyonun misafir beklentileriyle örtüşüp örtüşmediğini değerlendirin.",
 ]);
 
 function pickOutreachAngleText(
@@ -3369,10 +3371,11 @@ function pickOutreachAngleText(
     return normalized;
   }
   const topPain = (painPointSummary ?? [])[0]?.toLowerCase() ?? "";
-  if (topPain.includes("response") || topPain.includes("communication")) {
+  // Match Turkish pain strings (localized in previous sprint)
+  if (topPain.includes("yanıt") || topPain.includes("iletişim") || topPain.includes("gecikme")) {
     return "Reduce response delays during peak inquiry hours.";
   }
-  if (topPain.includes("booking") || topPain.includes("reservation")) {
+  if (topPain.includes("rezervasyon") || topPain.includes("akış") || topPain.includes("rezerv")) {
     return "Improve direct booking conversion flow.";
   }
   if (topPain.includes("instagram")) {
@@ -4063,6 +4066,91 @@ function LeadDetailIntelligenceSection({
           </span>
           {angle}
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+function tugoboFitColor(score: number): string {
+  if (score >= 72) return "text-emerald-300";
+  if (score >= 52) return "text-amber-300";
+  return "text-zinc-400";
+}
+
+function demandVolumePill(vol: IcpAlignmentProfile["estimatedDemandVolume"], locale: Locale): { label: string; cls: string } {
+  const labels: Record<string, { tr: string; en: string }> = {
+    high:    { tr: "Talep: Yüksek",  en: "Demand: High" },
+    medium:  { tr: "Talep: Orta",    en: "Demand: Med" },
+    low:     { tr: "Talep: Düşük",   en: "Demand: Low" },
+    unknown: { tr: "Talep: ?",       en: "Demand: ?" },
+  };
+  const cls: Record<string, string> = {
+    high:    "rounded-full bg-emerald-500/12 px-2 py-0.5 text-[10px] font-medium text-emerald-300 ring-1 ring-inset ring-emerald-400/20",
+    medium:  "rounded-full bg-amber-500/12 px-2 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-inset ring-amber-400/20",
+    low:     "rounded-full bg-zinc-500/12 px-2 py-0.5 text-[10px] text-zinc-400 ring-1 ring-inset ring-white/10",
+    unknown: "rounded-full bg-zinc-500/12 px-2 py-0.5 text-[10px] text-zinc-500 ring-1 ring-inset ring-white/8",
+  };
+  const l = labels[vol] ?? labels.unknown;
+  return { label: locale === "tr" ? l.tr : l.en, cls: cls[vol] ?? cls.unknown };
+}
+
+/** Compact ICP indicators for the lead detail drawer. */
+function LeadIcpSection({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const icp: IcpAlignmentProfile | undefined = lead.icpAlignment;
+  if (!icp) return null;
+
+  const fitScore = icp.tugoboFitScore;
+  const dem = demandVolumePill(icp.estimatedDemandVolume, locale);
+  const digitalMaturity = lead.digitalMaturity ?? 0;
+  const operationalComplexity = icp.operationalComplexityScore;
+
+  const headerTr = "TUGOBO Uyum";
+  const headerEn = "TUGOBO Fit";
+  const fitLabelTr = "Operasyonel Uyum Skoru";
+  const fitLabelEn = "Operational Fit Score";
+  const opFitLabelTr = "Yüksek Operasyonel Uyum";
+  const opFitLabelEn = "High Operational Fit";
+  const digitalLabelTr = "Dijital Olgunluk";
+  const digitalLabelEn = "Digital Maturity";
+  const complexityLabelTr = "Operasyonel Karmaşıklık";
+  const complexityLabelEn = "Op. Complexity";
+
+  return (
+    <div className="space-y-2 rounded-xl border border-emerald-400/15 bg-emerald-500/[0.03] p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-emerald-200/80">
+          {locale === "tr" ? headerTr : headerEn}
+        </div>
+        <div className={`text-sm font-bold tabular-nums ${tugoboFitColor(fitScore)}`} title={locale === "tr" ? fitLabelTr : fitLabelEn}>
+          {fitScore}
+          <span className="text-[9px] font-normal text-zinc-500 ml-0.5">/100</span>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {icp.operationalFit && (
+          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-200 ring-1 ring-inset ring-emerald-400/30">
+            ✓ {locale === "tr" ? opFitLabelTr : opFitLabelEn}
+          </span>
+        )}
+        <span className={dem.cls}>{dem.label}</span>
+        <span
+          className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-300 ring-1 ring-inset ring-sky-400/20"
+          title={locale === "tr" ? digitalLabelTr : digitalLabelEn}
+        >
+          {locale === "tr" ? "Dijital" : "Digital"} {digitalMaturity}
+        </span>
+        <span
+          className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] text-violet-300 ring-1 ring-inset ring-violet-400/20"
+          title={locale === "tr" ? complexityLabelTr : complexityLabelEn}
+        >
+          {locale === "tr" ? "Op. Karmaşa" : "Op. Complexity"} {operationalComplexity}
+        </span>
+      </div>
+
+      {icp.operationalValueSummary ? (
+        <p className="text-[10px] leading-snug text-zinc-400">{icp.operationalValueSummary}</p>
       ) : null}
     </div>
   );
@@ -4762,6 +4850,7 @@ function LeadDetailPanel({
           finderPersisted={finderPersisted}
         />
         <LeadDetailAiInsightSection lead={selectedLead} />
+        <LeadIcpSection lead={selectedLead} />
         <LeadDetailMetrics lead={selectedLead} />
         <LeadDetailContactSection
           lead={selectedLead}

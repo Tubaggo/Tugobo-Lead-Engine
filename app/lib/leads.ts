@@ -42,8 +42,23 @@ import type {
 } from "./intelligence/whatsapp-verification";
 import { turkishGsmDigitsForWaMe } from "./intelligence/whatsapp-verification";
 import type { WebsiteContactSignalsInterpretation } from "./intelligence/extracted-signals-interpretation";
+import {
+  calculateIcpAlignment,
+  type IcpAlignmentProfile,
+  type EstimatedPropertySize,
+  type EstimatedDemandVolume,
+  type DirectBookingReadiness,
+  type OtaDependencyLevel,
+} from "./intelligence/icp-alignment";
 
 export type { WebsiteContactSignalsInterpretation };
+export type {
+  IcpAlignmentProfile,
+  EstimatedPropertySize,
+  EstimatedDemandVolume,
+  DirectBookingReadiness,
+  OtaDependencyLevel,
+};
 export type { BusinessSignal };
 export type {
   AcquisitionIntelligence,
@@ -277,6 +292,8 @@ export type ScoredLead = Lead & {
   recommendedAction?: RecommendedAction;
   /** DeepSeek/OpenAI veya kural tabanlı Türkçe yorum (ana sayfa sinyalleri sonrası). */
   websiteContactSignalsInterpretation?: WebsiteContactSignalsInterpretation;
+  /** ICP alignment — operational value estimate for TUGOBO AI. */
+  icpAlignment?: IcpAlignmentProfile;
 };
 
 export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {
@@ -1060,8 +1077,11 @@ function scoreOutreachFit(l: Lead, contactQuality: ContactQuality): { score: num
   } else if (contactQuality !== "low") {
     s += 18;
   }
-  if (hasInstagram) s += 20;
+  // Instagram is a primary TUGOBO entry channel — weighted higher than generic social presence.
+  if (hasInstagram) s += 26;
   if (hasWebsite) s += 12;
+  // Both Instagram + WhatsApp = centralized multi-channel inbound, highest TUGOBO value.
+  if (hasInstagram && hasWhatsapp) { s += 6; notes.push("Instagram + WhatsApp aktif"); }
 
   if (contactQuality === "low") {
     s -= 28;
@@ -1119,6 +1139,13 @@ function scoreOpportunityFromSignals(
   if (set.has("paid_traffic_candidate")) {
     raw += 10;
     notes.push("Paid traffic candidate");
+  }
+
+  // ICP alignment: Instagram + high social demand = strong TUGOBO operational fit.
+  // A hotel actively managing DMs is exactly the pilot profile.
+  if (set.has("social_acquisition_intent") && outreachFit >= 60) {
+    raw += 6;
+    notes.push("High-demand social inbound — TUGOBO fit");
   }
 
   // Digital weakness creates consultative upside, but only if the lead is reachable.
@@ -1616,6 +1643,24 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     },
   };
 
+  const icpAlignment = calculateIcpAlignment({
+    units: scored.units,
+    reviewsCount: scored.reviewsCount,
+    daysSinceLastReview: scored.daysSinceLastReview,
+    occupancy30d: scored.occupancy30d,
+    pricePerNight: scored.pricePerNight,
+    hasInstagram: scored.hasInstagram || Boolean(scored.instagram?.trim()),
+    hasOwnWebsite: scored.hasOwnWebsite || Boolean(scored.website?.trim()),
+    hasWhatsAppPath,
+    channels: scored.channels ?? [],
+    bookingFlowStrength: enrichment.bookingFlowStrength,
+    otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
+    digitalMaturity: enrichment.digitalMaturity,
+    socialDemandStrength: enrichment.socialDemandStrength,
+    operationalActivity: enrichment.operationalActivity,
+    acquisitionIntelligence: enrichment.acquisitionIntelligence,
+  });
+
   const outreachIntelligence = deriveOutreachIntelligence({
     businessTier: scored.businessTier,
     hasWhatsAppPath,
@@ -1672,6 +1717,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     outreachPriority,
     priorityBucket,
     recommendedAction,
+    icpAlignment,
   };
 }
 
