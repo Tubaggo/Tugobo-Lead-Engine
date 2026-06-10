@@ -103,6 +103,7 @@ import {
   t,
   type Locale,
 } from "@/app/lib/i18n";
+import Image from "next/image";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
@@ -4891,6 +4892,33 @@ function LeadDetailPanel({
   );
 }
 
+/**
+ * Header brand logo.
+ * Renders the Tugobo Lead Engine PNG at 36 px height.
+ * Falls back to the original gradient "T" mark if the asset fails to load.
+ */
+function BrandLogo() {
+  const [imgError, setImgError] = useState(false);
+  if (imgError) {
+    return (
+      <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500 to-orange-500 text-xs font-bold text-white shadow-lg shadow-indigo-500/20">
+        T
+      </div>
+    );
+  }
+  return (
+    <Image
+      src="/assets/logos/tugobo-lead-engine-icon.png"
+      alt="Tugobo Lead Engine"
+      width={40}
+      height={40}
+      className="h-10 w-auto object-contain"
+      priority
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const { locale } = useLocale();
   const [mounted, setMounted] = useState(false);
@@ -7224,9 +7252,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       <header className="flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500 to-orange-500 text-xs font-bold text-white shadow-lg shadow-indigo-500/20">
-              T
-            </div>
+            <BrandLogo />
             <h1 className="text-lg font-semibold tracking-tight text-zinc-50">
               Tugobo <span className="text-zinc-400">Lead Engine</span>
             </h1>
