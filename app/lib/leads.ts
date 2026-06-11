@@ -294,6 +294,10 @@ export type ScoredLead = Lead & {
   websiteContactSignalsInterpretation?: WebsiteContactSignalsInterpretation;
   /** ICP alignment — operational value estimate for TUGOBO AI. */
   icpAlignment?: IcpAlignmentProfile;
+  /** ISO datetime of the most recent manual re-enrichment run. */
+  lastEnrichedAt?: string;
+  /** Source that triggered the last enrichment refresh (e.g. "manual"). */
+  lastEnrichmentSource?: string;
 };
 
 export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {

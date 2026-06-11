@@ -985,6 +985,8 @@ const UI = {
     tr: "Yeni doğrulanabilir sinyal bulunamadı.",
   },
   detail_reenrich_error: { en: "Re-enrich failed.", tr: "Zenginleştirme başarısız." },
+  detail_last_enrichment_title: { en: "Last Enrichment", tr: "Son Zenginleştirme" },
+  detail_last_enrichment_source_manual: { en: "Manual", tr: "Manuel" },
   detail_website_candidate_label: { en: "Website candidate", tr: "Web sitesi adayı" },
 
   // Drawer chrome

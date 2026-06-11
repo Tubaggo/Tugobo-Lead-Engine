@@ -4095,6 +4095,38 @@ function demandVolumePill(vol: IcpAlignmentProfile["estimatedDemandVolume"], loc
   return { label: locale === "tr" ? l.tr : l.en, cls: cls[vol] ?? cls.unknown };
 }
 
+/** Compact enrichment metadata block for the lead detail drawer. */
+function LeadEnrichmentMetaBlock({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const enrichedAt = lead.lastEnrichedAt;
+  if (!enrichedAt) return null;
+
+  const dateLabel = new Date(enrichedAt).toLocaleDateString(
+    locale === "tr" ? "tr-TR" : "en-US",
+    { day: "numeric", month: "long", year: "numeric" },
+  );
+  const sourceLabel =
+    lead.lastEnrichmentSource === "manual"
+      ? t("detail_last_enrichment_source_manual", locale)
+      : (lead.lastEnrichmentSource ?? "");
+
+  return (
+    <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-zinc-400">
+        {t("detail_last_enrichment_title", locale)}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-zinc-200">{dateLabel}</span>
+        {sourceLabel ? (
+          <span className="rounded-full bg-zinc-700/60 px-1.5 py-0.5 text-[10px] text-zinc-400 ring-1 ring-inset ring-zinc-600/40">
+            {sourceLabel}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /** Compact ICP indicators for the lead detail drawer. */
 function LeadIcpSection({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
@@ -4846,6 +4878,7 @@ function LeadDetailPanel({
             </p>
           ) : null}
         </div>
+        <LeadEnrichmentMetaBlock lead={selectedLead} />
         <LeadDetailIntelligenceSection
           lead={selectedLead}
           finderPersisted={finderPersisted}
