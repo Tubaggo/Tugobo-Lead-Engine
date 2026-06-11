@@ -996,6 +996,13 @@ const UI = {
   detail_memory_last_action: { en: "Last action", tr: "Son işlem" },
   detail_action_enriched: { en: "Enriched", tr: "Zenginleştirildi" },
   detail_action_ai_reviewed: { en: "AI Reviewed", tr: "AI İncelendi" },
+  detail_activity_timeline_title: { en: "Activity Timeline", tr: "Aktivite Geçmişi" },
+  detail_activity_empty: { en: "No activity yet", tr: "Henüz aktivite yok" },
+  detail_activity_lead_imported: { en: "Lead Imported", tr: "Lead içe aktarıldı" },
+  detail_activity_lead_enriched: { en: "Lead Re-Enriched", tr: "Lead yeniden zenginleştirildi" },
+  detail_activity_ai_reviewed: { en: "AI Re-Reviewed", tr: "AI yeniden yorumladı" },
+  detail_activity_contact_started: { en: "Contact Started", tr: "İletişim başlatıldı" },
+  detail_activity_followup_scheduled: { en: "Follow-up Scheduled", tr: "Takip planlandı" },
   detail_website_candidate_label: { en: "Website candidate", tr: "Web sitesi adayı" },
 
   // Drawer chrome

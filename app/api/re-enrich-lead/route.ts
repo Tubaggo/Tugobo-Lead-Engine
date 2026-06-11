@@ -5,7 +5,7 @@ import {
   getLlmProviderStatus,
 } from "@/app/lib/llm/provider";
 import { generateLeadInsight } from "@/app/lib/intelligence/ai-insight";
-import { toLeadForAiInsight, type ScoredLead } from "@/app/lib/leads";
+import { toLeadForAiInsight, appendLeadActivity, type ScoredLead } from "@/app/lib/leads";
 
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
@@ -97,8 +97,18 @@ export async function POST(req: Request) {
       }
     }
 
-    // Phase 4: Enrichment metadata + memory counters
+    // Phase 4: Enrichment metadata + memory counters + activity timeline
     const now = new Date().toISOString();
+    const timelineAfterEnrich = appendLeadActivity(
+      lead.activityTimeline,
+      "lead_enriched",
+      "Lead yeniden zenginleştirildi",
+    );
+    const timelineAfterReview = appendLeadActivity(
+      timelineAfterEnrich,
+      "ai_reviewed",
+      "AI yeniden yorumladı",
+    );
     enriched = {
       ...enriched,
       lastEnrichedAt: now,
@@ -107,6 +117,7 @@ export async function POST(req: Request) {
       enrichmentCount: (lead.enrichmentCount ?? 0) + 1,
       reviewCount: (lead.reviewCount ?? 0) + 1,
       lastActionType: "enriched",
+      activityTimeline: timelineAfterReview,
     };
 
     return NextResponse.json({ lead: enriched });

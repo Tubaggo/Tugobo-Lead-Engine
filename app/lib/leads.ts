@@ -93,6 +93,13 @@ export type { SignalConfidence, VerificationStatus, MaturityLevel };
 export type { WhatsAppConfidence, WhatsAppSurfaceMeta } from "./intelligence/whatsapp-verification";
 
 export type OutreachPriorityBucket = "today" | "high" | "medium" | "low" | "archive";
+
+export type LeadActivity = {
+  id: string;
+  type: string;
+  timestamp: string;
+  label: string;
+};
 export type RecommendedAction =
   | "send_whatsapp"
   | "follow_up"
@@ -306,6 +313,8 @@ export type ScoredLead = Lead & {
   reviewCount?: number;
   /** Most recent high-level action performed on this lead ("enriched" | "ai_reviewed"). */
   lastActionType?: string;
+  /** Persistent activity log (max 20 entries, newest first). */
+  activityTimeline?: LeadActivity[];
 };
 
 export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {
@@ -1901,6 +1910,23 @@ export function getRecommendedAction(
   if (readiness < 45 || lead.contactQuality === "low") return "research_more";
   if (outreachPriority >= 55) return "follow_up";
   return "wait";
+}
+
+const ACTIVITY_MAX = 20;
+
+/** Prepend one event to the timeline; caps at 20 entries and dedupes rapid repeats within 3 s. */
+export function appendLeadActivity(
+  timeline: LeadActivity[] | undefined,
+  type: string,
+  label: string,
+): LeadActivity[] {
+  const now = new Date().toISOString();
+  const existing = timeline ?? [];
+  const head = existing[0];
+  if (head && head.type === type && Date.now() - Date.parse(head.timestamp) < 3000) {
+    return existing;
+  }
+  return [{ id: `${type}-${now}`, type, timestamp: now, label }, ...existing].slice(0, ACTIVITY_MAX);
 }
 
 /** Attach or refresh structured intelligence fields (safe to call after merges). */

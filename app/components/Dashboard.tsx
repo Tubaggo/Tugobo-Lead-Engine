@@ -35,6 +35,8 @@ import {
   whatsappLink,
   whatsappLinkWithText,
   type IcpAlignmentProfile,
+  appendLeadActivity,
+  type LeadActivity,
 } from "@/app/lib/leads";
 import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
 import {
@@ -1070,6 +1072,7 @@ function mergeImportBatchMaster(
       importSessionId,
       createdAt:
         typeof inc.createdAt === "number" && Number.isFinite(inc.createdAt) ? inc.createdAt : importTs,
+      activityTimeline: appendLeadActivity(inc.activityTimeline, "lead_imported", "Lead içe aktarıldı"),
     };
     imported = [novel, ...imported];
     newIds.push(novel.id);
@@ -4212,6 +4215,49 @@ function LeadEnrichmentMetaBlock({ lead }: { lead: LeadTableRow }) {
   );
 }
 
+const ACTIVITY_LABELS: Record<string, { tr: string; en: string }> = {
+  lead_imported: { tr: "Lead içe aktarıldı", en: "Lead Imported" },
+  lead_enriched: { tr: "Lead yeniden zenginleştirildi", en: "Lead Re-Enriched" },
+  ai_reviewed: { tr: "AI yeniden yorumladı", en: "AI Re-Reviewed" },
+  contact_started: { tr: "İletişim başlatıldı", en: "Contact Started" },
+  followup_scheduled: { tr: "Takip planlandı", en: "Follow-up Scheduled" },
+};
+
+function activityEntryLabel(entry: LeadActivity, locale: string): string {
+  const map = ACTIVITY_LABELS[entry.type];
+  if (!map) return entry.label;
+  return locale === "en" ? map.en : map.tr;
+}
+
+function LeadActivityTimelineBlock({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const timeline: LeadActivity[] | undefined = lead.activityTimeline;
+
+  return (
+    <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+      <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-zinc-400">
+        {t("detail_activity_timeline_title", locale)}
+      </div>
+      {!timeline || timeline.length === 0 ? (
+        <p className="text-[11px] text-zinc-500">{t("detail_activity_empty", locale)}</p>
+      ) : (
+        <div className="space-y-1.5">
+          {timeline.map((entry) => (
+            <div key={entry.id} className="flex items-start gap-2">
+              <span className="shrink-0 text-[10px] tabular-nums text-zinc-500 pt-px">
+                {fmtMemoryDate(entry.timestamp, locale)}
+              </span>
+              <span className="text-[11px] leading-snug text-zinc-200">
+                {activityEntryLabel(entry, locale)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Compact ICP indicators for the lead detail drawer. */
 function LeadIcpSection({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
@@ -4966,6 +5012,7 @@ function LeadDetailPanel({
           ) : null}
         </div>
         <LeadEnrichmentMetaBlock lead={selectedLead} />
+        <LeadActivityTimelineBlock lead={selectedLead} />
         <LeadDetailIntelligenceSection
           lead={selectedLead}
           finderPersisted={finderPersisted}
@@ -5874,6 +5921,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       lastAiReviewAt: new Date().toISOString(),
       reviewCount: (base.reviewCount ?? 0) + 1,
       lastActionType: "ai_reviewed",
+      activityTimeline: appendLeadActivity(base.activityTimeline, "ai_reviewed", "AI yeniden yorumladı"),
     };
     applyEnrichedLeadToStore(sanitizeScoredLeadForUi(updated));
   }, [openLead, applyEnrichedLeadToStore]);
@@ -6051,6 +6099,24 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     [allRowsById, appendOutreachEvent, syncContactedToAirtable],
   );
 
+  const recordContactActivity = useCallback(
+    (id: string, newAttempts: number) => {
+      const leadRow = allRowsById.get(id);
+      if (!leadRow) return;
+      const base = leadTableRowToScoredLead(leadRow);
+      let updatedTimeline = appendLeadActivity(
+        base.activityTimeline,
+        "contact_started",
+        "İletişim başlatıldı",
+      );
+      if (newAttempts <= 2) {
+        updatedTimeline = appendLeadActivity(updatedTimeline, "followup_scheduled", "Takip planlandı");
+      }
+      applyEnrichedLeadToStore({ ...base, activityTimeline: updatedTimeline });
+    },
+    [allRowsById, applyEnrichedLeadToStore],
+  );
+
   const recordWhatsAppOutreach = useCallback(
     (id: string) => {
       const outcome = applyOutreachConfirmed(id);
@@ -6058,9 +6124,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         showQueueNotice(
           outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
         );
+        recordContactActivity(id, outcome.newAttempts);
       }
     },
-    [applyOutreachConfirmed],
+    [applyOutreachConfirmed, recordContactActivity],
   );
 
   useEffect(() => {
@@ -6115,6 +6182,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         showQueueNotice(
           outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
         );
+        recordContactActivity(id, outcome.newAttempts);
       }
       return;
     }
@@ -7207,6 +7275,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       showQueueNotice(
         outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
       );
+      recordContactActivity(id, outcome.newAttempts);
     }
     updateQueueItem(id, { queueStatus: "contacted" });
     setDailyOutreach((dprev) => {
@@ -7379,6 +7448,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       showQueueNotice(
         outreachConfirmationCopy(outcome.newAttempts, outcome.doNotContact),
       );
+      recordContactActivity(leadId, outcome.newAttempts);
     }
   };
 
