@@ -298,6 +298,14 @@ export type ScoredLead = Lead & {
   lastEnrichedAt?: string;
   /** Source that triggered the last enrichment refresh (e.g. "manual"). */
   lastEnrichmentSource?: string;
+  /** ISO datetime of the most recent AI analysis run (LLM or rules). */
+  lastAiReviewAt?: string;
+  /** Number of times homepage/signal enrichment has been executed. */
+  enrichmentCount?: number;
+  /** Number of times AI analysis has been run (including re-enrich). */
+  reviewCount?: number;
+  /** Most recent high-level action performed on this lead ("enriched" | "ai_reviewed"). */
+  lastActionType?: string;
 };
 
 export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {

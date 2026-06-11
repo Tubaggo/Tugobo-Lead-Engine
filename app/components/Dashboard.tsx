@@ -3622,7 +3622,13 @@ function saveAiInterpretationCache(cache: Record<string, AiInterpretationCacheVa
   }
 }
 
-function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
+function LeadDetailAiInsightSection({
+  lead,
+  onAiReviewCompleted,
+}: {
+  lead: LeadTableRow;
+  onAiReviewCompleted?: () => void;
+}) {
   const { locale } = useLocale();
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [refined, setRefined] = useState<LeadAiInsight | null>(null);
@@ -3752,6 +3758,7 @@ function LeadDetailAiInsightSection({ lead }: { lead: LeadTableRow }) {
         cache[cacheKey] = next;
         saveAiInterpretationCache(cache);
       }
+      onAiReviewCompleted?.();
     } catch (e) {
       if (previous) {
         setInterpretation(previous);
@@ -4095,33 +4102,111 @@ function demandVolumePill(vol: IcpAlignmentProfile["estimatedDemandVolume"], loc
   return { label: locale === "tr" ? l.tr : l.en, cls: cls[vol] ?? cls.unknown };
 }
 
-/** Compact enrichment metadata block for the lead detail drawer. */
+function fmtMemoryDate(iso: string, locale: string): string {
+  return new Date(iso).toLocaleDateString(locale === "tr" ? "tr-TR" : "en-US", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function fmtEpochDate(epoch: number, locale: string): string {
+  return new Date(epoch).toLocaleDateString(locale === "tr" ? "tr-TR" : "en-US", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+/** Operational memory block — shows import, enrichment, AI review and contact history. */
 function LeadEnrichmentMetaBlock({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
-  const enrichedAt = lead.lastEnrichedAt;
-  if (!enrichedAt) return null;
 
-  const dateLabel = new Date(enrichedAt).toLocaleDateString(
-    locale === "tr" ? "tr-TR" : "en-US",
-    { day: "numeric", month: "long", year: "numeric" },
-  );
+  const firstImport =
+    typeof lead.firstImportedAt === "number" && lead.firstImportedAt > 0
+      ? fmtEpochDate(lead.firstImportedAt, locale)
+      : null;
+  const lastEnriched = lead.lastEnrichedAt ? fmtMemoryDate(lead.lastEnrichedAt, locale) : null;
+  const lastAiReview = lead.lastAiReviewAt ? fmtMemoryDate(lead.lastAiReviewAt, locale) : null;
+  const lastContact =
+    typeof lead._s.lastContactedAt === "number" && lead._s.lastContactedAt > 0
+      ? fmtEpochDate(lead._s.lastContactedAt, locale)
+      : typeof lead.lastContactedAt === "number" && lead.lastContactedAt > 0
+        ? fmtEpochDate(lead.lastContactedAt, locale)
+        : null;
+
+  const hasAnyData =
+    firstImport || lastEnriched || lastAiReview || lastContact ||
+    (lead.enrichmentCount ?? 0) > 0 || (lead.reviewCount ?? 0) > 0;
+
+  if (!hasAnyData) return null;
+
   const sourceLabel =
     lead.lastEnrichmentSource === "manual"
       ? t("detail_last_enrichment_source_manual", locale)
       : (lead.lastEnrichmentSource ?? "");
 
+  const actionLabel =
+    lead.lastActionType === "enriched"
+      ? t("detail_action_enriched", locale)
+      : lead.lastActionType === "ai_reviewed"
+        ? t("detail_action_ai_reviewed", locale)
+        : (lead.lastActionType ?? "");
+
+  type MemRow = { label: string; value: string; chip?: string };
+  const rows: MemRow[] = [];
+
+  if (firstImport) {
+    rows.push({ label: t("detail_memory_first_imported", locale), value: firstImport });
+  }
+  if (lastEnriched) {
+    rows.push({
+      label: t("detail_last_enrichment_title", locale),
+      value: lastEnriched,
+      chip: sourceLabel || undefined,
+    });
+  }
+  if ((lead.enrichmentCount ?? 0) > 0) {
+    rows.push({
+      label: t("detail_memory_enrichment_count", locale),
+      value: String(lead.enrichmentCount),
+    });
+  }
+  if (lastAiReview) {
+    rows.push({ label: t("detail_memory_last_ai_review", locale), value: lastAiReview });
+  }
+  if ((lead.reviewCount ?? 0) > 0) {
+    rows.push({
+      label: t("detail_memory_review_count", locale),
+      value: String(lead.reviewCount),
+    });
+  }
+  if (lastContact) {
+    rows.push({ label: t("detail_memory_last_contact", locale), value: lastContact });
+  }
+  if (actionLabel) {
+    rows.push({ label: t("detail_memory_last_action", locale), value: actionLabel });
+  }
+
   return (
     <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
-      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-zinc-400">
-        {t("detail_last_enrichment_title", locale)}
+      <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-zinc-400">
+        {t("detail_lead_memory_title", locale)}
       </div>
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] text-zinc-200">{dateLabel}</span>
-        {sourceLabel ? (
-          <span className="rounded-full bg-zinc-700/60 px-1.5 py-0.5 text-[10px] text-zinc-400 ring-1 ring-inset ring-zinc-600/40">
-            {sourceLabel}
-          </span>
-        ) : null}
+      <div className="space-y-1">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-zinc-500">{row.label}</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] tabular-nums text-zinc-200">{row.value}</span>
+              {row.chip ? (
+                <span className="rounded-full bg-zinc-700/60 px-1.5 py-0.5 text-[10px] text-zinc-400 ring-1 ring-inset ring-zinc-600/40">
+                  {row.chip}
+                </span>
+              ) : null}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -4827,6 +4912,7 @@ function LeadDetailPanel({
   onManualReEnrich,
   manualReEnrichBusy,
   manualReEnrichMessage,
+  onAiReviewCompleted,
 }: {
   selectedLead: LeadTableRow;
   onClose: () => void;
@@ -4854,6 +4940,7 @@ function LeadDetailPanel({
   onManualReEnrich: () => void;
   manualReEnrichBusy: boolean;
   manualReEnrichMessage: string | null;
+  onAiReviewCompleted?: () => void;
 }) {
   const { locale } = useLocale();
   return (
@@ -4883,7 +4970,10 @@ function LeadDetailPanel({
           lead={selectedLead}
           finderPersisted={finderPersisted}
         />
-        <LeadDetailAiInsightSection lead={selectedLead} />
+        <LeadDetailAiInsightSection
+          lead={selectedLead}
+          onAiReviewCompleted={onAiReviewCompleted}
+        />
         <LeadIcpSection lead={selectedLead} />
         <LeadDetailMetrics lead={selectedLead} />
         <LeadDetailContactSection
@@ -5775,6 +5865,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       setReenrichBusyLeadId(null);
     }
   }, [openLead, locale, applyEnrichedLeadToStore]);
+
+  const recordAiReviewForOpenLead = useCallback(() => {
+    if (!openLead) return;
+    const base = leadTableRowToScoredLead(openLead);
+    const updated: ScoredLead = {
+      ...base,
+      lastAiReviewAt: new Date().toISOString(),
+      reviewCount: (base.reviewCount ?? 0) + 1,
+      lastActionType: "ai_reviewed",
+    };
+    applyEnrichedLeadToStore(sanitizeScoredLeadForUi(updated));
+  }, [openLead, applyEnrichedLeadToStore]);
 
   const lastLoggedDrawerLeadId = useRef<string | null>(null);
 
@@ -8726,6 +8828,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 onManualReEnrich={() => void manualReEnrichOpenLead()}
                 manualReEnrichBusy={reenrichBusyLeadId === openLead.id}
                 manualReEnrichMessage={reenrichMessage}
+                onAiReviewCompleted={recordAiReviewForOpenLead}
               />
             </aside>
           </div>,

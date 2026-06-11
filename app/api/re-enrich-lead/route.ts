@@ -97,11 +97,16 @@ export async function POST(req: Request) {
       }
     }
 
-    // Phase 4: Enrichment metadata
+    // Phase 4: Enrichment metadata + memory counters
+    const now = new Date().toISOString();
     enriched = {
       ...enriched,
-      lastEnrichedAt: new Date().toISOString(),
+      lastEnrichedAt: now,
       lastEnrichmentSource: "manual",
+      lastAiReviewAt: now,
+      enrichmentCount: (lead.enrichmentCount ?? 0) + 1,
+      reviewCount: (lead.reviewCount ?? 0) + 1,
+      lastActionType: "enriched",
     };
 
     return NextResponse.json({ lead: enriched });

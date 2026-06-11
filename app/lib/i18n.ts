@@ -987,6 +987,15 @@ const UI = {
   detail_reenrich_error: { en: "Re-enrich failed.", tr: "Zenginleştirme başarısız." },
   detail_last_enrichment_title: { en: "Last Enrichment", tr: "Son Zenginleştirme" },
   detail_last_enrichment_source_manual: { en: "Manual", tr: "Manuel" },
+  detail_lead_memory_title: { en: "Lead Memory", tr: "Lead Hafızası" },
+  detail_memory_first_imported: { en: "First imported", tr: "İlk içe aktarma" },
+  detail_memory_last_ai_review: { en: "Last AI review", tr: "Son AI inceleme" },
+  detail_memory_enrichment_count: { en: "Enrichments", tr: "Zenginleştirme" },
+  detail_memory_review_count: { en: "AI reviews", tr: "AI analiz" },
+  detail_memory_last_contact: { en: "Last contact", tr: "Son temas" },
+  detail_memory_last_action: { en: "Last action", tr: "Son işlem" },
+  detail_action_enriched: { en: "Enriched", tr: "Zenginleştirildi" },
+  detail_action_ai_reviewed: { en: "AI Reviewed", tr: "AI İncelendi" },
   detail_website_candidate_label: { en: "Website candidate", tr: "Web sitesi adayı" },
 
   // Drawer chrome
