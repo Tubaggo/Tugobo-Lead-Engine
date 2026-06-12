@@ -43,6 +43,7 @@ import {
 } from "@/app/lib/leads";
 import type { SignalSourceKey } from "@/app/lib/signal-verification";
 import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
+import { extractDigitsFromWhatsAppUrl } from "@/app/lib/whatsapp-link-validation";
 import {
   makePlacesImportSessionKey,
   PLACES_RATE_LIMIT_USER_MESSAGE,
@@ -4708,6 +4709,395 @@ function LeadDetailWhatsAppStatus({ lead }: { lead: LeadTableRow }) {
   );
 }
 
+/** v1.5 Verified Contact Center — single source of truth for all outreach actions. */
+function LeadContactCenter({
+  lead,
+  finderPersisted,
+}: {
+  lead: LeadTableRow;
+  finderPersisted: ContactFinderResult | undefined;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const v = lead.signalVerification;
+
+  // ── WhatsApp ─────────────────────────────────────────────────────────
+  // Source URL priority: verified wa.me link from site > finder result > listing phone
+  const waSourceUrl = v?.whatsappSourceUrl ?? null;
+  const isWaDirectLink =
+    !!waSourceUrl && /^https?:\/\/(wa\.me|api\.whatsapp\.com|[^/]*whatsapp\.com)/i.test(waSourceUrl);
+
+  const waFromFinder =
+    finderPersisted &&
+    (finderPersisted.bestContactType === "VERIFIED_WHATSAPP" ||
+      finderPersisted.bestContactType === "whatsapp" ||
+      finderPersisted.bestContactType === "GENERATED_WHATSAPP")
+      ? finderPersisted.bestContactValue
+      : null;
+
+  const waUrl = (() => {
+    if (isWaDirectLink) return waSourceUrl!;
+    if (waFromFinder) {
+      const digits = normalizePhoneForWhatsApp(waFromFinder);
+      if (digits) return `https://wa.me/${digits}`;
+    }
+    if (lead.phone) {
+      const digits = normalizePhoneForWhatsApp(lead.phone);
+      if (digits) return `https://wa.me/${digits}`;
+    }
+    return null;
+  })();
+
+  // Human-readable phone number for display
+  const waDisplayNumber = (() => {
+    // Try to extract from the wa.me URL first (most reliable)
+    const urlToCheck = waUrl ?? waSourceUrl ?? null;
+    if (urlToCheck) {
+      const d = extractDigitsFromWhatsAppUrl(urlToCheck);
+      if (d && d.length === 12 && d.startsWith("90")) {
+        return `+90 ${d.slice(2, 5)} ${d.slice(5, 8)} ${d.slice(8, 10)} ${d.slice(10, 12)}`;
+      }
+      if (d && d.length >= 8) return `+${d}`;
+    }
+    if (waFromFinder) return waFromFinder;
+    return normalizePhoneNumber(lead.phone ?? "") ?? lead.phone ?? null;
+  })();
+
+  const waState = v?.whatsappVerification ?? "not_found";
+  const waConfidence = v?.whatsappConfidence ?? 0;
+  const waSource = v?.whatsappSource;
+  const showWa = waState === "verified" || waState === "likely" || !!waUrl;
+
+  // ── Phone ─────────────────────────────────────────────────────────────
+  const showPhone = !!lead.phone;
+
+  // ── Website ───────────────────────────────────────────────────────────
+  const websiteRawUrl = (() => {
+    if (v?.websiteSourceUrl) return v.websiteSourceUrl;
+    if (lead.website) {
+      return lead.website.startsWith("http") ? lead.website : `https://${lead.website}`;
+    }
+    if (lead.websiteCandidateUrl) return lead.websiteCandidateUrl;
+    return null;
+  })();
+  const websiteDomain = websiteRawUrl
+    ? websiteRawUrl.replace(/^https?:\/\//, "").replace(/\/$/, "").split("/")[0]
+    : null;
+  const webState = v?.websiteVerification ?? (websiteRawUrl ? "reachable" : "not_found");
+  const webConfidence = v?.websiteConfidence ?? 0;
+  const showWebsite = !!websiteRawUrl && webState !== "not_found" && webState !== "broken";
+
+  // ── Instagram ─────────────────────────────────────────────────────────
+  const igRawUrl = v?.instagramSourceUrl ?? (lead.instagram ? instagramLink(lead.instagram) : null);
+  const igHandle = (() => {
+    if (igRawUrl) {
+      const seg = igRawUrl.replace(/^https?:\/\/(www\.)?instagram\.com\/?/, "").replace(/\/?$/, "");
+      return seg.replace(/^@/, "") || lead.instagram || null;
+    }
+    return lead.instagram ?? null;
+  })();
+  const igState = v?.instagramVerification ?? (lead.instagram ? "candidate" : "not_found");
+  const igConfidence = v?.instagramConfidence ?? (lead.instagram ? 55 : 0);
+  const showIg = (!!igRawUrl || !!lead.instagram) && igState !== "not_found";
+
+  // ── Best channel recommendation ───────────────────────────────────────
+  type BestChannelRec = { channel: string; tier: "high" | "medium" | "low"; reason: string };
+  const bestChannel: BestChannelRec | null = (() => {
+    // Finder result overrides everything when available
+    if (finderPersisted) {
+      const ct = finderPersisted.bestContactType;
+      const tier = finderPersisted.confidence;
+      if (ct === "VERIFIED_WHATSAPP" || ct === "whatsapp") {
+        return {
+          channel: "WhatsApp",
+          tier,
+          reason: tr
+            ? "Sitede doğrulanmış WhatsApp bağlantısı bulundu."
+            : "Verified WhatsApp link found on official website.",
+        };
+      }
+      if (ct === "GENERATED_WHATSAPP") {
+        return {
+          channel: "WhatsApp",
+          tier,
+          reason: tr
+            ? "GSM numarası üzerinden WhatsApp erişimi mümkün."
+            : "WhatsApp accessible via mobile number.",
+        };
+      }
+      if (ct === "PHONE_ONLY" || ct === "mobile" || ct === "phone") {
+        return {
+          channel: tr ? "Telefon" : "Phone",
+          tier,
+          reason: tr
+            ? "Telefon en güvenilir erişim kanalı."
+            : "Phone is the most reliable contact channel.",
+        };
+      }
+      if (ct === "website") {
+        return {
+          channel: tr ? "Web Sitesi" : "Website",
+          tier,
+          reason: tr
+            ? "İletişim sayfası üzerinden ulaşım önerilir."
+            : "Contact via website contact page.",
+        };
+      }
+    }
+    // Derive from signal verification
+    if (v?.whatsappVerification === "verified") {
+      const srcLabel = signalSourceLabel(v.whatsappSource, locale) ?? (tr ? "web sitesi" : "website");
+      return {
+        channel: "WhatsApp",
+        tier: "high",
+        reason: tr
+          ? `${srcLabel} üzerinde doğrulanmış WhatsApp bağlantısı.`
+          : `Verified WhatsApp link on ${srcLabel}.`,
+      };
+    }
+    if (v?.whatsappVerification === "likely" && waUrl) {
+      return {
+        channel: "WhatsApp",
+        tier: "medium",
+        reason: tr
+          ? "GSM numarası mevcut, WhatsApp olası."
+          : "Mobile number available, WhatsApp likely.",
+      };
+    }
+    if (waUrl) {
+      return {
+        channel: "WhatsApp",
+        tier: "medium",
+        reason: tr
+          ? "GSM numarası üzerinden iletişim denenebilir."
+          : "Can try WhatsApp via mobile number.",
+      };
+    }
+    if (showWebsite) {
+      return {
+        channel: tr ? "Web Sitesi" : "Website",
+        tier: "medium",
+        reason: tr
+          ? "Resmi web sitesi üzerinden iletişim kurulabilir."
+          : "Contact via official website.",
+      };
+    }
+    if (showIg) {
+      return {
+        channel: "Instagram",
+        tier: "low",
+        reason: tr
+          ? "Instagram DM üzerinden iletişim denenebilir."
+          : "Can try contact via Instagram DM.",
+      };
+    }
+    return null;
+  })();
+
+  if (!showWa && !showPhone && !showWebsite && !showIg) return null;
+
+  // ── Helpers ───────────────────────────────────────────────────────────
+  const confidenceLabel = (n: number) => {
+    if (n >= 80) return tr ? "YÜKSEK" : "HIGH";
+    if (n >= 50) return tr ? "ORTA" : "MEDIUM";
+    return tr ? "DÜŞÜK" : "LOW";
+  };
+  const confidenceClass = (n: number) => {
+    if (n >= 80) return "text-emerald-300";
+    if (n >= 50) return "text-amber-300";
+    return "text-zinc-400";
+  };
+  const tierLabel = (t: "high" | "medium" | "low") => {
+    if (t === "high") return tr ? "YÜKSEK" : "HIGH";
+    if (t === "medium") return tr ? "ORTA" : "MEDIUM";
+    return tr ? "DÜŞÜK" : "LOW";
+  };
+  const tierClass = (t: "high" | "medium" | "low") => {
+    if (t === "high") return "text-emerald-300";
+    if (t === "medium") return "text-amber-300";
+    return "text-zinc-400";
+  };
+
+  return (
+    <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+      <div className="mb-3 text-[10px] font-medium uppercase tracking-wider text-zinc-400">
+        {tr ? "İletişim Merkezi" : "Contact Center"}
+      </div>
+
+      <div className="space-y-2.5">
+        {/* WhatsApp */}
+        {showWa && (
+          <div className="rounded-md border border-zinc-700/40 bg-zinc-800/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={waState === "verified" ? "text-emerald-400" : "text-amber-400"}
+                  aria-hidden="true"
+                >
+                  {waState === "verified" ? "✓" : "~"}
+                </span>
+                <span className="text-[11px] font-semibold text-zinc-200">
+                  {tr
+                    ? waState === "verified"
+                      ? "WhatsApp Doğrulandı"
+                      : "WhatsApp Olası"
+                    : waState === "verified"
+                      ? "WhatsApp Verified"
+                      : "WhatsApp Likely"}
+                </span>
+              </div>
+              {waConfidence > 0 && (
+                <span className={`text-[10px] font-semibold tabular-nums ${confidenceClass(waConfidence)}`}>
+                  {confidenceLabel(waConfidence)}
+                </span>
+              )}
+            </div>
+            {waDisplayNumber && (
+              <div className="mt-1 font-mono text-[11px] text-zinc-300">{waDisplayNumber}</div>
+            )}
+            {waSource && (
+              <div className="mt-0.5 text-[10px] text-zinc-500">
+                {tr ? "Kaynak: " : "Source: "}
+                <span className="text-zinc-400">{signalSourceLabel(waSource, locale)}</span>
+              </div>
+            )}
+            {v?.verifiedAt && (
+              <div className="mt-0.5 text-[10px] text-zinc-600">
+                {fmtMemoryDate(v.verifiedAt, locale)}
+              </div>
+            )}
+            {waUrl && (
+              <button
+                type="button"
+                onClick={() => window.open(waUrl!, "_blank")}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-semibold text-emerald-300 transition hover:bg-emerald-500/20 active:scale-95"
+              >
+                {tr ? "WhatsApp Aç" : "Open WhatsApp"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Phone */}
+        {showPhone && (
+          <div className="rounded-md border border-zinc-700/40 bg-zinc-800/60 p-2.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sky-400" aria-hidden="true">✓</span>
+              <span className="text-[11px] font-semibold text-zinc-200">
+                {tr ? "Telefon" : "Phone"}
+              </span>
+            </div>
+            <div className="mt-1 font-mono text-[11px] text-zinc-300">{lead.phone}</div>
+            <div className="mt-2 flex gap-1.5">
+              <a
+                href={`tel:${(lead.phone ?? "").replace(/\s/g, "")}`}
+                className="inline-flex items-center gap-1.5 rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[11px] font-semibold text-sky-300 transition hover:bg-sky-500/20 active:scale-95"
+              >
+                {tr ? "Ara" : "Call"}
+              </a>
+              <button
+                type="button"
+                onClick={() => void navigator.clipboard.writeText(lead.phone ?? "")}
+                className="inline-flex items-center gap-1.5 rounded-md border border-zinc-600/40 bg-zinc-700/30 px-3 py-1 text-[11px] font-medium text-zinc-300 transition hover:bg-zinc-700/50 active:scale-95"
+              >
+                {tr ? "Kopyala" : "Copy"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Website */}
+        {showWebsite && (
+          <div className="rounded-md border border-zinc-700/40 bg-zinc-800/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={webState === "verified" ? "text-emerald-400" : "text-amber-400"}
+                  aria-hidden="true"
+                >
+                  {webState === "verified" ? "✓" : "~"}
+                </span>
+                <span className="text-[11px] font-semibold text-zinc-200">
+                  {tr ? "Web Sitesi" : "Website"}
+                </span>
+              </div>
+              {webConfidence > 0 && (
+                <span className={`text-[10px] font-semibold tabular-nums ${confidenceClass(webConfidence)}`}>
+                  {confidenceLabel(webConfidence)}
+                </span>
+              )}
+            </div>
+            {websiteDomain && (
+              <div className="mt-1 truncate font-mono text-[11px] text-zinc-300">
+                {websiteDomain}
+              </div>
+            )}
+            <a
+              href={websiteRawUrl!}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-zinc-600/40 bg-zinc-700/30 px-3 py-1 text-[11px] font-medium text-zinc-300 transition hover:bg-zinc-700/50 active:scale-95"
+            >
+              {tr ? "Siteyi Aç" : "Open Website"}
+            </a>
+          </div>
+        )}
+
+        {/* Instagram */}
+        {showIg && (
+          <div className="rounded-md border border-zinc-700/40 bg-zinc-800/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={igState === "verified" ? "text-emerald-400" : "text-pink-400"}
+                  aria-hidden="true"
+                >
+                  {igState === "verified" ? "✓" : "~"}
+                </span>
+                <span className="text-[11px] font-semibold text-zinc-200">Instagram</span>
+              </div>
+              {igConfidence > 0 && (
+                <span className={`text-[10px] font-semibold tabular-nums ${confidenceClass(igConfidence)}`}>
+                  {confidenceLabel(igConfidence)}
+                </span>
+              )}
+            </div>
+            {igHandle && (
+              <div className="mt-1 font-mono text-[11px] text-zinc-300">@{igHandle}</div>
+            )}
+            {igRawUrl && (
+              <a
+                href={igRawUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-pink-500/25 bg-pink-500/10 px-3 py-1 text-[11px] font-medium text-pink-300 transition hover:bg-pink-500/20 active:scale-95"
+              >
+                {tr ? "Instagram Aç" : "Open Instagram"}
+              </a>
+            )}
+          </div>
+        )}
+
+        {/* Önerilen İlk Temas */}
+        {bestChannel && (
+          <div className="rounded-md border border-indigo-500/20 bg-indigo-500/[0.06] p-2.5">
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-indigo-300/70">
+              {tr ? "Önerilen İlk Temas" : "Recommended First Contact"}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold text-indigo-200">{bestChannel.channel}</span>
+              <span className={`text-[10px] font-semibold ${tierClass(bestChannel.tier)}`}>
+                {tierLabel(bestChannel.tier)}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[10px] leading-snug text-zinc-500">{bestChannel.reason}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LeadDetailContactSection({
   lead,
   finderPersisted,
@@ -5295,6 +5685,7 @@ function LeadDetailPanel({
         <LeadEnrichmentMetaBlock lead={selectedLead} />
         <LeadOpportunityBlock lead={selectedLead} />
         <LeadSignalVerificationBlock lead={selectedLead} />
+        <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
         <LeadActivityTimelineBlock lead={selectedLead} />
         <LeadDetailIntelligenceSection
           lead={selectedLead}
