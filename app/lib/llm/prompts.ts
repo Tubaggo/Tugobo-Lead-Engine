@@ -18,6 +18,13 @@ Yanıt YALNIZCA geçerli JSON olmalı, şema:
 Kurallar:
 - leadScore, hotScore, intelligenceScore vb. sayıları "puan" diye sıralama veya yargı olarak kullanma; sadece bağlam için içsel referans.
 - opportunity seviyesini veya önceliği SEN belirleme; metinde "çok yüksek fırsat" gibi kesin skor iddiası verme.
+- DOĞRULANMIŞ SİNYAL KURALI: extra.verification alanı varsa kesin kaynaktır.
+  whatsappVerification="verified" ise ASLA "WhatsApp bulunamadı / yok" yazma; kanal doğrulanmıştır.
+  websiteVerification="verified" ise ASLA "Web sitesi yok / bulunamadı" yazma.
+  instagramVerification="verified" ise Instagram'ı eksik gösterme; "candidate" ise yalnızca aday hesap olduğunu söyle.
+  reservationSignal="verified" ise rezervasyon çağrısının bulunduğunu kabul et.
+  Yorumlar varsayım değil kanıt temelli olmalı; doğrulanmamış alanlarda ihtiyatlı dil kullan.
+- FIRSAT GEREKÇESİ: extra.opportunity varsa (score + tier + reasons), aiInsight'ın son cümlesinde fırsatın NEDEN güçlü/zayıf olduğunu reasons listesindeki kanıtlara dayanarak kısa açıkla (örn. "Doğrulanmış WhatsApp, rezervasyon CTA ve yüksek talep nedeniyle fırsat güçlü."). Ham sayıyı tek başına "puan" diye yazma; gerekçeyi sinyallerle anlat.
 ${TURKISH_TONE_BLOCK}`;
 
 export const LEAD_INTERPRETATION_SYSTEM = `Turizm/konaklama B2B satışında kullanılacak çok kısa bir kart metni yazıyorsun; rapor, whitepaper veya ürün pitch'i DEĞİL.
@@ -48,6 +55,17 @@ language=en ise aynı üçlü: Status / Opportunity / Approach — one short sen
 --- Şema için ek alanlar ---
 - acquisitionProfile: en fazla 1 kısa cümle; önceki üçüyle tekrar etme; ikincil bir veri boşluğu veya elle teyit notu.
 - channelRecommendation: en fazla 1 kısa cümle; hangi kanaldan/ ne zaman dokunulacağı (salesAngle ile aynı cümle olmasın).
+
+--- Doğrulanmış sinyaller (extra.verification) ---
+extra.verification varsa kesin kaynaktır; varsayımın önüne geçer.
+whatsappVerification="verified" → WhatsApp kanalı KESİNLİKLE mevcut; "bulunamadı/yok" yazma.
+websiteVerification="verified" → web sitesi KESİNLİKLE mevcut ve erişilebilir; "yok/eksik" yazma.
+instagramVerification="verified" → hesap doğrulanmış; "candidate" → yalnızca ad bazlı aday hesap de.
+reservationSignal="verified" → rezervasyon CTA mevcut kabul et.
+Bu doğrulanmış alanlar için high-confidence dil kullanabilirsin; diğer alanlarda ihtiyat sürer.
+
+--- Fırsat gerekçesi (extra.opportunity) ---
+extra.opportunity varsa (score + tier + reasons): salesAngle (Fırsat) cümlesini reasons listesindeki kanıtlarla destekle; fırsatın neden bu seviyede olduğunu sinyallere dayandır. Ham skoru "puan" diye sıralama; tier'ı abartılı kesinlik için kullanma.
 
 --- Güven ve üslup (confidenceLevel ile tutarlı ol) ---
 confidenceLevel önce veriye göre seç; sonra tüm cümlelerdeki kesinlik buna uygun olsun.
@@ -110,7 +128,8 @@ Yanıt YALNIZCA geçerli JSON ve şu anahtarlar (Türkçe metin, kısa ve net):
 }
 
 Kurallar:
-- Kesin iddia kurma; belirsizlik için "muhtemelen", "olası", "doğrulanmalı" ifadelerini kullan.
+- signals.verification alanı varsa kesin kaynaktır: whatsappVerification="verified" ise WhatsApp için ASLA "bulunamadı/yok" yazma; websiteVerification="verified" ise web sitesi için ASLA "yok" yazma; reservationSignal="verified" ise CTA'nın bulunduğunu söyle; instagramVerification="candidate" ise ad bazlı aday hesap olduğunu belirt. Doğrulanmış alanlarda kesin dil serbesttir.
+- Doğrulanmamış alanlarda kesin iddia kurma; belirsizlik için "muhtemelen", "olası", "doğrulanmalı" ifadelerini kullan.
 - Sayısal lead skoru veya skorlama motoru hakkında yorum yapma.
 - Sosyal hesabın gerçek sahibi, mesajlaşma geçmişi veya gelir gibi veri listelenmediyse yazma.
 - JSON dışında metin yazma.

@@ -11,8 +11,16 @@ import {
   isAllowedDiscoveryHostname,
   scoreBusinessNamePageMatch,
 } from "@/app/lib/website-candidate-discovery";
-import { buildWhatsappSurfaceMeta } from "@/app/lib/intelligence/whatsapp-verification";
+import {
+  buildWhatsappSurfaceMeta,
+  turkishGsmDigitsForWaMe,
+} from "@/app/lib/intelligence/whatsapp-verification";
 import { inferWebsiteIntelligenceFromHomepageHtml } from "@/app/lib/website-html-intelligence";
+import {
+  buildSignalVerificationProfile,
+  scanLeadPagesForSignals,
+  type MultiPageSignalScan,
+} from "@/app/lib/signal-verification";
 
 export type EnrichLeadHomepageOptions = {
   fetchTimeoutMs?: number;
@@ -73,6 +81,26 @@ function instagramUrlMatchesHandle(url: string, handle: string): boolean {
   }
 }
 
+function buildLeadVerification(
+  base: ScoredLead,
+  websiteUrl: string | null,
+  websiteFetchOk: boolean | null,
+  websiteFetchError: string | null,
+  scan: MultiPageSignalScan | null,
+  websiteOrigin: "google" | "candidate" | null,
+) {
+  return buildSignalVerificationProfile({
+    businessName: base.name,
+    websiteUrl,
+    websiteFetchOk,
+    websiteFetchError,
+    instagramHandle: base.instagram ?? null,
+    listingPhoneIsMobile: turkishGsmDigitsForWaMe(base.phone ?? "") !== null,
+    websiteOrigin,
+    scan,
+  });
+}
+
 async function enrichFromDiscoveredWebsiteCandidate(
   base: ScoredLead,
   options?: EnrichLeadHomepageOptions,
@@ -105,12 +133,19 @@ async function enrichFromDiscoveredWebsiteCandidate(
   }
 
   const pick = bestStrong ?? bestUncertain;
-  if (!pick) return base;
+  if (!pick) {
+    // No website at all — still record verified-absence + ownership classification.
+    const verification = buildLeadVerification(base, null, null, null, null, null);
+    return enrichScoredLeadIntelligence({ ...base, signalVerification: verification });
+  }
 
   const candidateMatch: "strong" | "uncertain" = bestStrong ? "strong" : "uncertain";
 
-  const extracted = extractContactSignalsFromHtml(pick.html, { pageUrl: pick.url });
-  const waMeta = buildWhatsappSurfaceMeta(pick.html, extracted.whatsappLinks);
+  // Multi-page signal discovery (contact / reservation / about pages, max 5 total).
+  const scan = await scanLeadPagesForSignals(pick.host, { url: pick.url, html: pick.html });
+  const extracted = scan?.merged ?? extractContactSignalsFromHtml(pick.html, { pageUrl: pick.url });
+  const waMeta = scan?.waMeta ?? buildWhatsappSurfaceMeta(pick.html, extracted.whatsappLinks);
+  const verification = buildLeadVerification(base, pick.host, true, null, scan, "candidate");
 
   const inferred = {
     ...inferWebsiteIntelligenceFromHomepageHtml(pick.html, {
@@ -168,6 +203,7 @@ async function enrichFromDiscoveredWebsiteCandidate(
     hasReservationCTA,
     hasContactPage,
     signals: nextSignals,
+    signalVerification: verification,
   };
 
   let enriched = enrichScoredLeadIntelligence(preMerged);
@@ -193,6 +229,7 @@ async function enrichFromDiscoveredWebsiteCandidate(
     hasContactPage: Boolean(enriched.hasContactPage),
     whatsappConfidence: enriched.whatsappConfidence ?? null,
     instagramConfidence: enriched.instagramConfidence ?? null,
+    verification: enriched.signalVerification ?? null,
   });
 
   return { ...enriched, websiteContactSignalsInterpretation };
@@ -228,12 +265,20 @@ export async function enrichLeadWithHomepageSignals(
   let turkishGsmExtracted: string[] = [];
   let websiteIntelligence = base.websiteIntelligence;
   let finalWebsite: SignalConfidence = (base.websiteConfidence ?? "missing") as SignalConfidence;
+  let verification = base.signalVerification;
 
   if (fetchResult.ok && fetchResult.html) {
-    const signals = extractContactSignalsFromHtml(fetchResult.html, {
-      pageUrl: fetchResult.url,
+    // Multi-page signal discovery (contact / reservation / about pages, max 5 total).
+    const scan = await scanLeadPagesForSignals(websiteRaw, {
+      url: fetchResult.url,
+      html: fetchResult.html,
     });
-    const waMeta = buildWhatsappSurfaceMeta(fetchResult.html, signals.whatsappLinks);
+    const signals =
+      scan?.merged ??
+      extractContactSignalsFromHtml(fetchResult.html, { pageUrl: fetchResult.url });
+    const waMeta =
+      scan?.waMeta ?? buildWhatsappSurfaceMeta(fetchResult.html, signals.whatsappLinks);
+    verification = buildLeadVerification(base, websiteRaw, true, null, scan, "google");
     const inferred = {
       ...inferWebsiteIntelligenceFromHomepageHtml(fetchResult.html, {
         hasWhatsAppLink: signals.whatsappLinks.length > 0,
@@ -287,6 +332,14 @@ export async function enrichLeadWithHomepageSignals(
       ...base.websiteIntelligence,
       websiteConfidence: "weak",
     };
+    verification = buildLeadVerification(
+      base,
+      websiteRaw,
+      false,
+      fetchResult.error ?? null,
+      null,
+      "google",
+    );
   }
 
   const preMerged: ScoredLead = {
@@ -297,6 +350,7 @@ export async function enrichLeadWithHomepageSignals(
     extractedSocialLinks,
     hasReservationCTA,
     hasContactPage,
+    signalVerification: verification,
   };
 
   let enriched = enrichScoredLeadIntelligence(preMerged);
@@ -330,6 +384,7 @@ export async function enrichLeadWithHomepageSignals(
     hasContactPage: Boolean(enriched.hasContactPage),
     whatsappConfidence: enriched.whatsappConfidence ?? null,
     instagramConfidence: enriched.instagramConfidence ?? null,
+    verification: enriched.signalVerification ?? null,
   });
 
   return { ...enriched, websiteContactSignalsInterpretation };

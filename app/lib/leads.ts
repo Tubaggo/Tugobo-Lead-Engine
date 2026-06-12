@@ -50,6 +50,20 @@ import {
   type DirectBookingReadiness,
   type OtaDependencyLevel,
 } from "./intelligence/icp-alignment";
+import {
+  calculateIcpFitScore,
+  detectBusinessOwnership,
+  type BusinessOwnershipType,
+  type SignalVerificationProfile,
+  type WhatsappVerificationState,
+  type WebsiteVerificationState,
+  type InstagramVerificationState,
+  type ReservationSignalState,
+} from "./signal-verification";
+import {
+  calculateVerifiedOpportunityScore,
+  type OpportunityTier,
+} from "./opportunity-scoring";
 
 export type { WebsiteContactSignalsInterpretation };
 export type {
@@ -90,6 +104,20 @@ export type { OpportunityLevel, AiInsightSource };
 export type { OutreachIntelligenceProfile };
 export type { OpportunityProfile };
 export type { SignalConfidence, VerificationStatus, MaturityLevel };
+export type {
+  BusinessOwnershipType,
+  SignalVerificationProfile,
+  WhatsappVerificationState,
+  WebsiteVerificationState,
+  InstagramVerificationState,
+  ReservationSignalState,
+};
+export type { OpportunityTier } from "./opportunity-scoring";
+export {
+  OPPORTUNITY_REASON_LABELS,
+  OPPORTUNITY_TIER_LABELS,
+  opportunityTierRank,
+} from "./opportunity-scoring";
 export type { WhatsAppConfidence, WhatsAppSurfaceMeta } from "./intelligence/whatsapp-verification";
 
 export type OutreachPriorityBucket = "today" | "high" | "medium" | "low" | "archive";
@@ -315,6 +343,34 @@ export type ScoredLead = Lead & {
   lastActionType?: string;
   /** Persistent activity log (max 20 entries, newest first). */
   activityTimeline?: LeadActivity[];
+  /** Signal Verification Engine v1.3 — multi-page verified states + 0–100 confidences. */
+  signalVerification?: SignalVerificationProfile;
+  /** Chain vs. independent classification; informational only, never reduces scores. */
+  businessOwnershipType?: BusinessOwnershipType;
+  /** TUGOBO ICP fit (0–100). Separate metric — does not replace leadScore/hotScore. */
+  icpFitScore?: number;
+  /** ISO datetime of the most recent signal verification run (lead memory). */
+  lastVerificationAt?: string;
+  /** Number of signal verification runs executed (lead memory). */
+  verificationCount?: number;
+  /** Short Turkish summary of the latest verification outcome (lead memory). */
+  lastVerificationResult?: string;
+  /**
+   * v1.4 Verified Opportunity Score (0–100) — unified sales-prioritization layer.
+   * Additive metric; does NOT replace leadScore/hotScore/icpFitScore or the
+   * internal {@link opportunityScore} that feeds Lead Score V3.
+   */
+  verifiedOpportunityScore?: number;
+  /** Opportunity classification derived from {@link verifiedOpportunityScore}. */
+  opportunityTier?: OpportunityTier;
+  /** Stable reason keys explaining the opportunity score (see OPPORTUNITY_REASON_LABELS). */
+  opportunityReasons?: string[];
+  /** ISO datetime of the most recent opportunity evaluation (lead memory). */
+  lastOpportunityEvaluationAt?: string;
+  /** Number of opportunity evaluations executed (lead memory). */
+  opportunityEvaluationCount?: number;
+  /** Opportunity score recorded at the last evaluation (lead memory). */
+  lastOpportunityScore?: number;
 };
 
 export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {
@@ -1732,6 +1788,42 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     outreachPriority,
     Date.now(),
   );
+  // v1.3 verification layer: classification + ICP fit only — scores stay untouched.
+  const ownership = detectBusinessOwnership(
+    scored.name,
+    scored.website ?? scored.websiteCandidateUrl ?? null,
+  );
+  const icpFitScore = calculateIcpFitScore({
+    hasWebsite: Boolean(scored.hasOwnWebsite || scored.website?.trim()),
+    hasInstagram: Boolean(scored.hasInstagram || scored.instagram?.trim()),
+    hasWhatsapp: hasWhatsAppPath,
+    reviewsCount: scored.reviewsCount,
+    daysSinceLastReview: scored.daysSinceLastReview,
+    hasReservationSignal: Boolean(scored.hasReservationCTA),
+    hasDirectContactPath: hasWhatsAppPath || Boolean(scored.hasContactPage),
+    channelCount: (scored.channels ?? []).length,
+    otaPresence: (scored.channels ?? []).some(
+      (c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti",
+    ),
+    verification: scored.signalVerification ?? null,
+  });
+
+  // v1.4 Verified Opportunity Score — unified sales ranking from existing signals.
+  const opportunity = calculateVerifiedOpportunityScore({
+    leadScore: scored.leadScore,
+    hotScore: scored.hotScore,
+    icpFitScore,
+    digitalMaturity: digitalMaturityNum,
+    multiChannelScore: icpAlignment.multiChannelScore,
+    operationalComplexityScore: icpAlignment.operationalComplexityScore,
+    estimatedDemandVolume: icpAlignment.estimatedDemandVolume,
+    reviewsCount: scored.reviewsCount,
+    daysSinceLastReview: scored.daysSinceLastReview,
+    hasWhatsAppPath,
+    businessOwnershipType: ownership.type,
+    verification: scored.signalVerification ?? null,
+  });
+
   return {
     ...scored,
     outreachIntelligence,
@@ -1739,6 +1831,11 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     priorityBucket,
     recommendedAction,
     icpAlignment,
+    businessOwnershipType: ownership.type,
+    icpFitScore,
+    verifiedOpportunityScore: opportunity.score,
+    opportunityTier: opportunity.tier,
+    opportunityReasons: opportunity.reasons,
   };
 }
 

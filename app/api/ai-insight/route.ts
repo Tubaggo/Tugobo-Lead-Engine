@@ -6,7 +6,11 @@ import {
   getLlmProviderStatus,
 } from "@/app/lib/llm/provider";
 import type { Locale } from "@/app/lib/i18n";
-import { toLeadForAiInsight, type ScoredLead } from "@/app/lib/leads";
+import {
+  toLeadForAiInsight,
+  OPPORTUNITY_REASON_LABELS,
+  type ScoredLead,
+} from "@/app/lib/leads";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -46,6 +50,29 @@ function insightLlmExtraFromLead(lead: ScoredLead): Record<string, unknown> | nu
       commercialSummary: (c.commercialSummary ?? []).slice(0, 4),
       commercialSignals: (c.commercialSignals ?? []).slice(0, 8),
       commercialWeaknesses: (c.commercialWeaknesses ?? []).slice(0, 6),
+    };
+  }
+  const sv = lead.signalVerification;
+  if (sv) {
+    out.verification = {
+      whatsappVerification: sv.whatsappVerification,
+      whatsappConfidence: sv.whatsappConfidence,
+      websiteVerification: sv.websiteVerification,
+      websiteConfidence: sv.websiteConfidence,
+      instagramVerification: sv.instagramVerification,
+      instagramConfidence: sv.instagramConfidence,
+      reservationSignal: sv.reservationSignal,
+      reservationConfidence: sv.reservationConfidence,
+      businessOwnershipType: sv.businessOwnershipType,
+    };
+  }
+  if (typeof lead.verifiedOpportunityScore === "number") {
+    out.opportunity = {
+      score: lead.verifiedOpportunityScore,
+      tier: lead.opportunityTier,
+      reasons: (lead.opportunityReasons ?? []).map(
+        (k) => OPPORTUNITY_REASON_LABELS[k]?.tr ?? k,
+      ),
     };
   }
   return Object.keys(out).length > 0 ? out : null;

@@ -184,6 +184,7 @@ export async function POST(req: Request) {
     type?: LeadType;
     source?: PlacesImportSource;
     forceGoogleRefresh?: boolean;
+    icpSearchTerm?: string;
   };
   try {
     body = await req.json();
@@ -195,6 +196,7 @@ export async function POST(req: Request) {
   const type = body.type;
   const source: PlacesImportSource = "maps";
   const forceGoogleRefresh = body.forceGoogleRefresh === true;
+  const icpSearchTerm = typeof body.icpSearchTerm === "string" ? body.icpSearchTerm.trim() : null;
   const validTypes: LeadType[] = [
     "Hotel",
     "Boutique Hotel",
@@ -209,7 +211,9 @@ export async function POST(req: Request) {
     );
   }
 
-  const sessionKey = makePlacesImportSessionKey(city, type, source);
+  const sessionKey = icpSearchTerm
+    ? `${city.trim().toLowerCase()}|icp:${icpSearchTerm}|${source}`
+    : makePlacesImportSessionKey(city, type, source);
   const cachedFull = peekPlacesFullImport(sessionKey);
 
   if (!forceGoogleRefresh && cachedFull && cachedFull.leads.length > 0) {
@@ -227,7 +231,9 @@ export async function POST(req: Request) {
     });
   }
 
-  const query = buildPlacesSearchQuery(city, type);
+  const query = icpSearchTerm
+    ? `${icpSearchTerm} ${city} Türkiye`.trim()
+    : buildPlacesSearchQuery(city, type);
   let searchData: Awaited<ReturnType<typeof fetchTextSearch>>;
   try {
     searchData = await fetchTextSearch(query, apiKey);

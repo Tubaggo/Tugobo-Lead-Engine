@@ -8,9 +8,48 @@ import { TURKEY_CITIES } from "@/app/lib/generate";
 
 export type ImportSource = "maps";
 
+export type TargetAudience =
+  | "TUGOBO ICP"
+  | "WhatsApp Aktif İşletmeler"
+  | "Doğrudan Rezervasyon Potansiyeli"
+  | "Yüksek Talep İşletmeleri"
+  | "Operasyonel Karmaşıklığı Yüksek"
+  | "Bağımsız İşletmeler"
+  | "Kurumsal Zincirler"
+  // Legacy v1.2 values — persisted requests may still carry these.
+  | "Yüksek Dijital Talep"
+  | "OTA Bağımlı İşletmeler"
+  | "Çok Kanallı İşletmeler";
+
+/** v1.3 ICP search presets — opportunity-first, not category-first. */
+export const TARGET_AUDIENCES: { value: TargetAudience; label: string }[] = [
+  { value: "TUGOBO ICP", label: "TUGOBO ICP" },
+  { value: "WhatsApp Aktif İşletmeler", label: "WhatsApp Aktif İşletmeler" },
+  { value: "Doğrudan Rezervasyon Potansiyeli", label: "Doğrudan Rezervasyon Potansiyeli" },
+  { value: "Yüksek Talep İşletmeleri", label: "Yüksek Talep İşletmeleri" },
+  { value: "Operasyonel Karmaşıklığı Yüksek", label: "Operasyonel Karmaşıklığı Yüksek" },
+  { value: "Bağımsız İşletmeler", label: "Bağımsız İşletmeler" },
+  { value: "Kurumsal Zincirler", label: "Kurumsal Zincirler" },
+];
+
+const LEGACY_TARGET_AUDIENCES: TargetAudience[] = [
+  "Yüksek Dijital Talep",
+  "OTA Bağımlı İşletmeler",
+  "Çok Kanallı İşletmeler",
+];
+
+export function isIcpTargetAudience(value: string): value is TargetAudience {
+  return (
+    TARGET_AUDIENCES.some((t) => t.value === value) ||
+    LEGACY_TARGET_AUDIENCES.includes(value as TargetAudience)
+  );
+}
+
+export type ImportTargetType = LeadType | TargetAudience;
+
 export type ImportRequest = {
   city: string;
-  type: LeadType;
+  type: ImportTargetType;
   source: ImportSource;
   /** When true, calls Google Places; when false, uses cached results for same city+niche+source if available. */
   forceGoogleRefresh?: boolean;
@@ -26,13 +65,6 @@ export type ImportResult = {
   importRateLimitHintKey?: "import_places_rate_limit_user";
 };
 
-const NICHES: { value: LeadType; label: string }[] = [
-  { value: "Hotel", label: "Hotel" },
-  { value: "Boutique Hotel", label: "Boutique Hotel" },
-  { value: "Bungalow", label: "Bungalow" },
-  { value: "Villa", label: "Villa" },
-  { value: "Pension", label: "Pension" },
-];
 
 const SOURCES: { value: ImportSource; label: string; hint: string }[] = [
   {
@@ -87,7 +119,7 @@ export default function ImportPanel({
 }) {
   const { locale } = useLocale();
   const [city, setCity] = useState("");
-  const [type, setType] = useState<LeadType>("Boutique Hotel");
+  const [type, setType] = useState<ImportTargetType>("TUGOBO ICP");
   const [source, setSource] = useState<ImportSource>("maps");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -209,25 +241,25 @@ export default function ImportPanel({
             </datalist>
           </div>
 
-          <div className="flex min-w-[160px] flex-col gap-1">
+          <div className="flex min-w-[200px] flex-col gap-1">
             <label
               htmlFor="import-type"
               className="text-[10px] uppercase tracking-wider text-zinc-400"
             >
-              {t("niche_type", locale)}
+              Hedef Kitle
             </label>
             <select
               id="import-type"
               value={type}
               disabled={loading}
               onChange={(e) => {
-                setType(e.target.value as LeadType);
+                setType(e.target.value as ImportTargetType);
                 setResult(null);
                 setShowCacheChoice(false);
               }}
               className="rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {NICHES.map((n) => (
+              {TARGET_AUDIENCES.map((n) => (
                 <option key={n.value} value={n.value} className="bg-zinc-900">
                   {n.label}
                 </option>

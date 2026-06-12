@@ -5,7 +5,15 @@ import {
   getLlmProviderStatus,
 } from "@/app/lib/llm/provider";
 import { generateLeadInsight } from "@/app/lib/intelligence/ai-insight";
-import { toLeadForAiInsight, appendLeadActivity, type ScoredLead } from "@/app/lib/leads";
+import {
+  toLeadForAiInsight,
+  appendLeadActivity,
+  opportunityTierRank,
+  OPPORTUNITY_REASON_LABELS,
+  type OpportunityTier,
+  type ScoredLead,
+} from "@/app/lib/leads";
+import { summarizeVerificationResult } from "@/app/lib/signal-verification";
 
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
@@ -45,6 +53,29 @@ function insightLlmExtra(lead: ScoredLead): Record<string, unknown> | null {
       commercialSummary: (c.commercialSummary ?? []).slice(0, 4),
       commercialSignals: (c.commercialSignals ?? []).slice(0, 8),
       commercialWeaknesses: (c.commercialWeaknesses ?? []).slice(0, 6),
+    };
+  }
+  const sv = lead.signalVerification;
+  if (sv) {
+    out.verification = {
+      whatsappVerification: sv.whatsappVerification,
+      whatsappConfidence: sv.whatsappConfidence,
+      websiteVerification: sv.websiteVerification,
+      websiteConfidence: sv.websiteConfidence,
+      instagramVerification: sv.instagramVerification,
+      instagramConfidence: sv.instagramConfidence,
+      reservationSignal: sv.reservationSignal,
+      reservationConfidence: sv.reservationConfidence,
+      businessOwnershipType: sv.businessOwnershipType,
+    };
+  }
+  if (typeof lead.verifiedOpportunityScore === "number") {
+    out.opportunity = {
+      score: lead.verifiedOpportunityScore,
+      tier: lead.opportunityTier,
+      reasons: (lead.opportunityReasons ?? []).map(
+        (k) => OPPORTUNITY_REASON_LABELS[k]?.tr ?? k,
+      ),
     };
   }
   return Object.keys(out).length > 0 ? out : null;
@@ -99,16 +130,80 @@ export async function POST(req: Request) {
 
     // Phase 4: Enrichment metadata + memory counters + activity timeline
     const now = new Date().toISOString();
-    const timelineAfterEnrich = appendLeadActivity(
+    let timeline = appendLeadActivity(
       lead.activityTimeline,
       "lead_enriched",
       "Lead yeniden zenginleştirildi",
     );
-    const timelineAfterReview = appendLeadActivity(
-      timelineAfterEnrich,
-      "ai_reviewed",
-      "AI yeniden yorumladı",
-    );
+
+    // Phase 4b: Signal verification events — only newly verified states are logged.
+    const prevV = lead.signalVerification;
+    const newV = enriched.signalVerification;
+    if (newV) {
+      timeline = appendLeadActivity(
+        timeline,
+        "verification_completed",
+        "Sinyal doğrulaması tamamlandı",
+      );
+      if (newV.whatsappVerification === "verified" && prevV?.whatsappVerification !== "verified") {
+        timeline = appendLeadActivity(timeline, "whatsapp_verified", "WhatsApp doğrulandı");
+      }
+      if (newV.websiteVerification === "verified" && prevV?.websiteVerification !== "verified") {
+        timeline = appendLeadActivity(timeline, "website_verified", "Web sitesi doğrulandı");
+      }
+      if (
+        newV.instagramVerification === "verified" &&
+        prevV?.instagramVerification !== "verified"
+      ) {
+        timeline = appendLeadActivity(timeline, "instagram_verified", "Instagram hesabı doğrulandı");
+      } else if (
+        newV.instagramVerification === "candidate" &&
+        prevV?.instagramVerification !== "candidate"
+      ) {
+        timeline = appendLeadActivity(
+          timeline,
+          "instagram_candidate",
+          "Instagram aday hesabı bulundu",
+        );
+      }
+      if (newV.reservationSignal === "verified" && prevV?.reservationSignal !== "verified") {
+        timeline = appendLeadActivity(timeline, "reservation_cta_found", "Rezervasyon CTA bulundu");
+      }
+      if (
+        newV.businessOwnershipType === "chain" &&
+        prevV?.businessOwnershipType !== "chain"
+      ) {
+        timeline = appendLeadActivity(timeline, "chain_detected", "Kurumsal zincir tespit edildi");
+      }
+    }
+
+    // Phase 4c: opportunity evaluation events — score refresh + tier upgrades.
+    const newOppScore = enriched.verifiedOpportunityScore;
+    const newTier = enriched.opportunityTier;
+    const prevTier = lead.opportunityTier;
+    if (typeof newOppScore === "number") {
+      timeline = appendLeadActivity(timeline, "opportunity_updated", "Fırsat puanı güncellendi");
+      if (
+        newTier &&
+        (!prevTier || opportunityTierRank(newTier) > opportunityTierRank(prevTier))
+      ) {
+        const upgradeLabel: Record<OpportunityTier, string> = {
+          elite: "Elite fırsat seviyesine yükseldi",
+          high: "Yüksek fırsat seviyesine yükseldi",
+          medium: "Orta fırsat seviyesine yükseldi",
+          low: "Düşük fırsat seviyesi",
+        };
+        if (newTier !== "low") {
+          timeline = appendLeadActivity(
+            timeline,
+            `opportunity_tier_${newTier}`,
+            upgradeLabel[newTier],
+          );
+        }
+      }
+    }
+
+    timeline = appendLeadActivity(timeline, "ai_reviewed", "AI yeniden yorumladı");
     enriched = {
       ...enriched,
       lastEnrichedAt: now,
@@ -117,7 +212,22 @@ export async function POST(req: Request) {
       enrichmentCount: (lead.enrichmentCount ?? 0) + 1,
       reviewCount: (lead.reviewCount ?? 0) + 1,
       lastActionType: "enriched",
-      activityTimeline: timelineAfterReview,
+      activityTimeline: timeline,
+      lastVerificationAt: newV ? now : lead.lastVerificationAt,
+      verificationCount: newV
+        ? (lead.verificationCount ?? 0) + 1
+        : lead.verificationCount,
+      lastVerificationResult: newV
+        ? summarizeVerificationResult(newV)
+        : lead.lastVerificationResult,
+      lastOpportunityEvaluationAt:
+        typeof newOppScore === "number" ? now : lead.lastOpportunityEvaluationAt,
+      opportunityEvaluationCount:
+        typeof newOppScore === "number"
+          ? (lead.opportunityEvaluationCount ?? 0) + 1
+          : lead.opportunityEvaluationCount,
+      lastOpportunityScore:
+        typeof newOppScore === "number" ? newOppScore : lead.lastOpportunityScore,
     };
 
     return NextResponse.json({ lead: enriched });

@@ -37,7 +37,11 @@ import {
   type IcpAlignmentProfile,
   appendLeadActivity,
   type LeadActivity,
+  type OpportunityTier,
+  OPPORTUNITY_TIER_LABELS,
+  OPPORTUNITY_REASON_LABELS,
 } from "@/app/lib/leads";
+import type { SignalSourceKey } from "@/app/lib/signal-verification";
 import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
 import {
   makePlacesImportSessionKey,
@@ -70,7 +74,9 @@ import { hasNewVerifiableEnrichmentSince } from "@/app/lib/lead-enrichment-finge
 import ImportPanel, {
   type ImportRequest,
   type ImportResult,
+  isIcpTargetAudience,
 } from "@/app/components/ImportPanel";
+import { ICP_SEARCH_CONFIGS, filterLeadsForTargetAudience } from "@/app/lib/places-import";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 import {
   acquisitionSignalUiLine,
@@ -1065,6 +1071,10 @@ function mergeImportBatchMaster(
 
   const pushNew = (inc: ScoredLead) => {
     const first = inc.firstImportedAt ?? importTs;
+    let timeline = appendLeadActivity(inc.activityTimeline, "lead_imported", "Lead içe aktarıldı");
+    if (inc.businessOwnershipType === "chain") {
+      timeline = appendLeadActivity(timeline, "chain_detected", "Kurumsal zincir tespit edildi");
+    }
     const novel: ScoredLead = {
       ...inc,
       firstImportedAt: first,
@@ -1072,7 +1082,7 @@ function mergeImportBatchMaster(
       importSessionId,
       createdAt:
         typeof inc.createdAt === "number" && Number.isFinite(inc.createdAt) ? inc.createdAt : importTs,
-      activityTimeline: appendLeadActivity(inc.activityTimeline, "lead_imported", "Lead içe aktarıldı"),
+      activityTimeline: timeline,
     };
     imported = [novel, ...imported];
     newIds.push(novel.id);
@@ -4137,10 +4147,14 @@ function LeadEnrichmentMetaBlock({ lead }: { lead: LeadTableRow }) {
       : typeof lead.lastContactedAt === "number" && lead.lastContactedAt > 0
         ? fmtEpochDate(lead.lastContactedAt, locale)
         : null;
+  const lastVerification = lead.lastVerificationAt
+    ? fmtMemoryDate(lead.lastVerificationAt, locale)
+    : null;
 
   const hasAnyData =
-    firstImport || lastEnriched || lastAiReview || lastContact ||
-    (lead.enrichmentCount ?? 0) > 0 || (lead.reviewCount ?? 0) > 0;
+    firstImport || lastEnriched || lastAiReview || lastContact || lastVerification ||
+    (lead.enrichmentCount ?? 0) > 0 || (lead.reviewCount ?? 0) > 0 ||
+    (lead.verificationCount ?? 0) > 0;
 
   if (!hasAnyData) return null;
 
@@ -4184,6 +4198,25 @@ function LeadEnrichmentMetaBlock({ lead }: { lead: LeadTableRow }) {
       value: String(lead.reviewCount),
     });
   }
+  if (lastVerification) {
+    rows.push({
+      label: locale === "tr" ? "Son doğrulama" : "Last verification",
+      value: lastVerification,
+      chip: lead.lastVerificationResult || undefined,
+    });
+  }
+  if ((lead.verificationCount ?? 0) > 0) {
+    rows.push({
+      label: locale === "tr" ? "Doğrulama sayısı" : "Verification count",
+      value: String(lead.verificationCount),
+    });
+  }
+  if (typeof lead.lastOpportunityScore === "number") {
+    rows.push({
+      label: locale === "tr" ? "Son fırsat puanı" : "Last opportunity score",
+      value: `${lead.lastOpportunityScore}/100`,
+    });
+  }
   if (lastContact) {
     rows.push({ label: t("detail_memory_last_contact", locale), value: lastContact });
   }
@@ -4221,6 +4254,27 @@ const ACTIVITY_LABELS: Record<string, { tr: string; en: string }> = {
   ai_reviewed: { tr: "AI yeniden yorumladı", en: "AI Re-Reviewed" },
   contact_started: { tr: "İletişim başlatıldı", en: "Contact Started" },
   followup_scheduled: { tr: "Takip planlandı", en: "Follow-up Scheduled" },
+  queue_add: { tr: "Kuyruğa eklendi", en: "Added to Queue" },
+  queue_remove: { tr: "Kuyruktan çıkarıldı", en: "Removed from Queue" },
+  whatsapp_open: { tr: "WhatsApp açıldı", en: "WhatsApp Opened" },
+  whatsapp_message_generated: { tr: "WhatsApp mesajı oluşturuldu", en: "WhatsApp Message Generated" },
+  focus_add: { tr: "Odak moduna eklendi", en: "Added to Focus" },
+  focus_remove: { tr: "Odak modundan çıkarıldı", en: "Removed from Focus" },
+  status_change: { tr: "Durum değişti", en: "Status Changed" },
+  demo_booked: { tr: "Demo planlandı", en: "Demo Booked" },
+  closed_won: { tr: "Kazanıldı", en: "Won" },
+  closed_lost: { tr: "Kaybedildi", en: "Lost" },
+  verification_completed: { tr: "Sinyal doğrulaması tamamlandı", en: "Signal Verification Completed" },
+  whatsapp_verified: { tr: "WhatsApp doğrulandı", en: "WhatsApp Verified" },
+  website_verified: { tr: "Web sitesi doğrulandı", en: "Website Verified" },
+  instagram_verified: { tr: "Instagram hesabı doğrulandı", en: "Instagram Verified" },
+  instagram_candidate: { tr: "Instagram aday hesabı bulundu", en: "Instagram Candidate Found" },
+  reservation_cta_found: { tr: "Rezervasyon CTA bulundu", en: "Reservation CTA Found" },
+  chain_detected: { tr: "Kurumsal zincir tespit edildi", en: "Corporate Chain Detected" },
+  opportunity_updated: { tr: "Fırsat puanı güncellendi", en: "Opportunity Score Updated" },
+  opportunity_tier_elite: { tr: "Elite fırsat seviyesine yükseldi", en: "Upgraded to Elite Opportunity" },
+  opportunity_tier_high: { tr: "Yüksek fırsat seviyesine yükseldi", en: "Upgraded to High Opportunity" },
+  opportunity_tier_medium: { tr: "Orta fırsat seviyesine yükseldi", en: "Upgraded to Medium Opportunity" },
 };
 
 function activityEntryLabel(entry: LeadActivity, locale: string): string {
@@ -4254,6 +4308,233 @@ function LeadActivityTimelineBlock({ lead }: { lead: LeadTableRow }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function opportunityTierColor(tier: OpportunityTier): string {
+  switch (tier) {
+    case "elite":
+      return "text-fuchsia-300";
+    case "high":
+      return "text-emerald-300";
+    case "medium":
+      return "text-amber-300";
+    default:
+      return "text-zinc-400";
+  }
+}
+
+function opportunityTierChip(tier: OpportunityTier): string {
+  switch (tier) {
+    case "elite":
+      return "rounded-full bg-fuchsia-500/12 px-2 py-0.5 text-[10px] font-semibold text-fuchsia-200 ring-1 ring-inset ring-fuchsia-400/30";
+    case "high":
+      return "rounded-full bg-emerald-500/12 px-2 py-0.5 text-[10px] font-semibold text-emerald-200 ring-1 ring-inset ring-emerald-400/30";
+    case "medium":
+      return "rounded-full bg-amber-500/12 px-2 py-0.5 text-[10px] font-semibold text-amber-200 ring-1 ring-inset ring-amber-400/30";
+    default:
+      return "rounded-full bg-zinc-500/12 px-2 py-0.5 text-[10px] font-medium text-zinc-300 ring-1 ring-inset ring-white/10";
+  }
+}
+
+/** v1.4 Opportunity assessment block — unified sales opportunity score + reasoning. */
+function LeadOpportunityBlock({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const score = lead.verifiedOpportunityScore;
+  const tier = lead.opportunityTier;
+  if (typeof score !== "number" || !tier) return null;
+
+  const tr = locale === "tr";
+  const tierLabel = OPPORTUNITY_TIER_LABELS[tier]
+    ? tr
+      ? OPPORTUNITY_TIER_LABELS[tier].tr
+      : OPPORTUNITY_TIER_LABELS[tier].en
+    : tier;
+  const reasons = (lead.opportunityReasons ?? [])
+    .map((k) => {
+      const m = OPPORTUNITY_REASON_LABELS[k];
+      return m ? (tr ? m.tr : m.en) : null;
+    })
+    .filter((x): x is string => Boolean(x));
+
+  return (
+    <div className="space-y-2 rounded-xl border border-fuchsia-400/15 bg-fuchsia-500/[0.03] p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-fuchsia-200/80">
+          {tr ? "Fırsat Değerlendirmesi" : "Opportunity Assessment"}
+        </div>
+        <div className={`text-sm font-bold tabular-nums ${opportunityTierColor(tier)}`}>
+          {score}
+          <span className="text-[9px] font-normal text-zinc-500 ml-0.5">/100</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className={opportunityTierChip(tier)}>{tierLabel}</span>
+      </div>
+      {reasons.length > 0 ? (
+        <div className="space-y-1 border-t border-white/5 pt-2">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Neden?" : "Why?"}
+          </div>
+          {reasons.map((r) => (
+            <div key={r} className="flex items-start gap-1.5 text-[11px] leading-snug text-emerald-200">
+              <span className="shrink-0" aria-hidden="true">✓</span>
+              <span>{r}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type VerificationRowTone = "ok" | "warn" | "miss";
+
+const SIGNAL_SOURCE_LABELS: Record<SignalSourceKey, { tr: string; en: string }> = {
+  homepage: { tr: "Ana Sayfa", en: "Homepage" },
+  contact_page: { tr: "İletişim Sayfası", en: "Contact Page" },
+  reservation_page: { tr: "Rezervasyon Sayfası", en: "Reservation Page" },
+  about_page: { tr: "Hakkımızda Sayfası", en: "About Page" },
+  footer_link: { tr: "Footer Bağlantısı", en: "Footer Link" },
+  social_section: { tr: "Sosyal Bölüm", en: "Social Section" },
+  official_website: { tr: "Resmi Web Sitesi", en: "Official Website" },
+  google_maps: { tr: "Google Haritalar", en: "Google Maps" },
+  google_business_profile: { tr: "Google İşletme Profili", en: "Google Business Profile" },
+  detected_candidate: { tr: "Tespit Edilen Aday", en: "Detected Candidate" },
+};
+
+function signalSourceLabel(key: SignalSourceKey | undefined, locale: string): string | null {
+  if (!key) return null;
+  const m = SIGNAL_SOURCE_LABELS[key];
+  if (!m) return null;
+  return locale === "tr" ? m.tr : m.en;
+}
+
+/** v1.3/v1.4 Signal Verification panel — verified vs. assumed vs. missing, with evidence sources. */
+function LeadSignalVerificationBlock({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const v = lead.signalVerification;
+  const ownership = v?.businessOwnershipType ?? lead.businessOwnershipType;
+  if (!v && (!ownership || ownership === "unknown")) return null;
+
+  const tr = locale === "tr";
+  const rows: {
+    key: string;
+    tone: VerificationRowTone;
+    text: string;
+    source?: SignalSourceKey;
+    sourceUrl?: string;
+  }[] = [];
+  const pct = (n: number) => ` (%${n})`;
+
+  if (v) {
+    if (v.websiteVerification === "verified") {
+      rows.push({ key: "web", tone: "ok", text: (tr ? "Web sitesi doğrulandı" : "Website verified") + pct(v.websiteConfidence), source: v.websiteSource, sourceUrl: v.websiteSourceUrl });
+    } else if (v.websiteVerification === "reachable") {
+      rows.push({ key: "web", tone: "warn", text: (tr ? "Web sitesi erişilebilir, içerik belirsiz" : "Website reachable, content uncertain") + pct(v.websiteConfidence), source: v.websiteSource, sourceUrl: v.websiteSourceUrl });
+    } else if (v.websiteVerification === "broken") {
+      rows.push({ key: "web", tone: "miss", text: tr ? "Web sitesi erişilemiyor (DNS/zaman aşımı)" : "Website unreachable (DNS/timeout)" });
+    } else {
+      rows.push({ key: "web", tone: "miss", text: tr ? "Web sitesi bulunamadı" : "Website not found" });
+    }
+
+    if (v.whatsappVerification === "verified") {
+      rows.push({ key: "wa", tone: "ok", text: (tr ? "WhatsApp doğrulandı" : "WhatsApp verified") + pct(v.whatsappConfidence), source: v.whatsappSource, sourceUrl: v.whatsappSourceUrl });
+    } else if (v.whatsappVerification === "likely") {
+      rows.push({ key: "wa", tone: "warn", text: (tr ? "WhatsApp olası" : "WhatsApp likely") + pct(v.whatsappConfidence), source: v.whatsappSource, sourceUrl: v.whatsappSourceUrl });
+    } else {
+      rows.push({ key: "wa", tone: "miss", text: tr ? "WhatsApp sinyali bulunamadı" : "WhatsApp not found" });
+    }
+
+    if (v.instagramVerification === "verified") {
+      rows.push({ key: "ig", tone: "ok", text: (tr ? "Instagram hesabı doğrulandı" : "Instagram verified") + pct(v.instagramConfidence), source: v.instagramSource, sourceUrl: v.instagramSourceUrl });
+    } else if (v.instagramVerification === "likely") {
+      rows.push({ key: "ig", tone: "warn", text: (tr ? "Instagram olası" : "Instagram likely") + pct(v.instagramConfidence), source: v.instagramSource, sourceUrl: v.instagramSourceUrl });
+    } else if (v.instagramVerification === "candidate") {
+      rows.push({ key: "ig", tone: "warn", text: (tr ? "Instagram aday hesap" : "Instagram candidate account") + pct(v.instagramConfidence), source: v.instagramSource, sourceUrl: v.instagramSourceUrl });
+    } else {
+      rows.push({ key: "ig", tone: "miss", text: tr ? "Instagram sinyali yok" : "Instagram not found" });
+    }
+
+    if (v.reservationSignal === "verified") {
+      rows.push({ key: "cta", tone: "ok", text: (tr ? "Rezervasyon CTA bulundu" : "Reservation CTA found") + pct(v.reservationConfidence), source: v.reservationSource, sourceUrl: v.reservationSourceUrl });
+    } else if (v.reservationSignal === "detected") {
+      rows.push({ key: "cta", tone: "warn", text: (tr ? "Rezervasyon sinyali tespit edildi" : "Reservation intent detected") + pct(v.reservationConfidence), source: v.reservationSource, sourceUrl: v.reservationSourceUrl });
+    } else {
+      rows.push({ key: "cta", tone: "miss", text: tr ? "Rezervasyon sinyali yok" : "No reservation signal" });
+    }
+  }
+
+  const toneIcon: Record<VerificationRowTone, string> = { ok: "✅", warn: "⚠", miss: "—" };
+  const toneCls: Record<VerificationRowTone, string> = {
+    ok: "text-emerald-200",
+    warn: "text-amber-200",
+    miss: "text-zinc-500",
+  };
+
+  const prettyUrl = (u: string) => u.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+
+  return (
+    <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+      <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-zinc-400">
+        {tr ? "Sinyal Doğrulama" : "Signal Verification"}
+      </div>
+      {rows.length > 0 ? (
+        <div className="space-y-1.5">
+          {rows.map((row) => {
+            const sourceLabel = signalSourceLabel(row.source, locale);
+            return (
+              <div key={row.key} className="leading-snug">
+                <div className={`flex items-start gap-1.5 text-[11px] ${toneCls[row.tone]}`}>
+                  <span className="shrink-0" aria-hidden="true">{toneIcon[row.tone]}</span>
+                  <span>{row.text}</span>
+                </div>
+                {sourceLabel ? (
+                  <div className="ml-5 text-[10px] text-zinc-500">
+                    {tr ? "Kaynak: " : "Source: "}
+                    <span className="text-zinc-400">{sourceLabel}</span>
+                    {row.sourceUrl ? (
+                      <span className="ml-1 font-mono text-zinc-500" title={row.sourceUrl}>
+                        · {prettyUrl(row.sourceUrl).slice(0, 48)}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-[11px] text-zinc-500">
+          {tr
+            ? "Henüz doğrulama yapılmadı — yeniden zenginleştirme doğrulamayı çalıştırır."
+            : "Not verified yet — re-enrichment runs verification."}
+        </p>
+      )}
+      {ownership && ownership !== "unknown" ? (
+        <div className="mt-2 border-t border-white/5 pt-2">
+          <span
+            className={
+              ownership === "chain"
+                ? "inline-flex items-center gap-1 rounded-full bg-sky-500/12 px-2 py-0.5 text-[10px] font-medium text-sky-300 ring-1 ring-inset ring-sky-400/25"
+                : "inline-flex items-center gap-1 rounded-full bg-emerald-500/12 px-2 py-0.5 text-[10px] font-medium text-emerald-300 ring-1 ring-inset ring-emerald-400/25"
+            }
+          >
+            <span aria-hidden="true">🏢</span>
+            {ownership === "chain"
+              ? `${tr ? "Kurumsal Zincir" : "Corporate Chain"}${v?.chainBrand ? ` · ${v.chainBrand}` : ""}`
+              : tr ? "Bağımsız İşletme" : "Independent Business"}
+          </span>
+        </div>
+      ) : null}
+      {v && v.discoveredPages.length > 0 ? (
+        <p className="mt-1.5 text-[10px] text-zinc-500">
+          {tr
+            ? `${v.discoveredPages.length} sayfa tarandı · ${fmtMemoryDate(v.verifiedAt, locale)}`
+            : `${v.discoveredPages.length} pages scanned · ${fmtMemoryDate(v.verifiedAt, locale)}`}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -5012,6 +5293,8 @@ function LeadDetailPanel({
           ) : null}
         </div>
         <LeadEnrichmentMetaBlock lead={selectedLead} />
+        <LeadOpportunityBlock lead={selectedLead} />
+        <LeadSignalVerificationBlock lead={selectedLead} />
         <LeadActivityTimelineBlock lead={selectedLead} />
         <LeadDetailIntelligenceSection
           lead={selectedLead}
@@ -5105,7 +5388,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [contactChannelFilter, setContactChannelFilter] = useState<
     "all" | ContactChannelCat
   >("all");
-  const [sort, setSort] = useState<"priority" | "readiness" | "hot" | "lead" | "name">("priority");
+  const [sort, setSort] = useState<
+    "opportunity" | "priority" | "readiness" | "hot" | "lead" | "name"
+  >("opportunity");
   const [openId, setOpenId] = useState<string | null>(null);
   const [drawerSendBusy, setDrawerSendBusy] = useState(false);
   const [draftNote, setDraftNote] = useState("");
@@ -5272,7 +5557,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const hasCachedImportResults = useCallback(
     (req: Omit<ImportRequest, "forceGoogleRefresh">) => {
-      const cacheKey = makePlacesImportSessionKey(req.city, req.type, req.source);
+      if (isIcpTargetAudience(req.type as string)) return false;
+      const cacheKey = makePlacesImportSessionKey(req.city, req.type as LeadType, req.source);
       const cache = loadImportCache();
       const hit = cache[cacheKey];
       if (!hit || !Array.isArray(hit.leads) || hit.leads.length === 0) return false;
@@ -5282,87 +5568,134 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     [],
   );
 
+  const fetchIcpSubSearch = async (
+    city: string,
+    source: string,
+    searchTerm: string,
+    type: LeadType,
+    forceGoogleRefresh: boolean,
+  ): Promise<ScoredLead[]> => {
+    try {
+      const res = await fetch("/api/import-leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ city, type, source, forceGoogleRefresh, icpSearchTerm: searchTerm }),
+      });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { leads?: ScoredLead[] };
+      return data.leads ?? [];
+    } catch {
+      return [];
+    }
+  };
+
   const handleImport = async (req: ImportRequest): Promise<ImportResult> => {
-    const cacheKey = makePlacesImportSessionKey(req.city, req.type, req.source);
     let batch: ScoredLead[] = [];
     let source: "cached" | "google" = "google";
     let importNoticeKey: "import_places_recent_cache_note" | undefined;
     let importRateLimitHintKey: "import_places_rate_limit_user" | undefined;
-    const cache = loadImportCache();
 
-    if (!req.forceGoogleRefresh) {
-      const hit = cache[cacheKey];
-      if (
-        hit &&
-        Array.isArray(hit.leads) &&
-        hit.leads.length > 0 &&
-        typeof hit.importedAt === "number" &&
-        Date.now() - hit.importedAt <= IMPORT_CACHE_TTL_MS
-      ) {
-        batch = hit.leads;
-        source = "cached";
+    if (isIcpTargetAudience(req.type as string)) {
+      // ICP multi-search: execute all 6 queries, merge and deduplicate
+      const allResults: ScoredLead[] = [];
+      for (const config of ICP_SEARCH_CONFIGS) {
+        const subBatch = await fetchIcpSubSearch(
+          req.city,
+          req.source,
+          config.searchTerm,
+          config.type,
+          Boolean(req.forceGoogleRefresh),
+        );
+        allResults.push(...subBatch);
       }
-    }
+      const seenIds = new Set<string>();
+      for (const lead of allResults) {
+        if (!seenIds.has(lead.id)) {
+          seenIds.add(lead.id);
+          batch.push(lead);
+        }
+      }
+      // v1.3 ICP qualification: keep only leads matching the selected preset.
+      batch = filterLeadsForTargetAudience(req.type as string, batch);
+      source = "google";
+    } else {
+      const cacheKey = makePlacesImportSessionKey(req.city, req.type as LeadType, req.source);
+      const cache = loadImportCache();
 
-    if (batch.length === 0 || req.forceGoogleRefresh) {
-      const res = await fetch("/api/import-leads", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          city: req.city,
-          type: req.type,
-          source: req.source,
-          forceGoogleRefresh: Boolean(req.forceGoogleRefresh),
-        }),
-      });
-      const data = (await res.json()) as {
-        leads?: ScoredLead[];
-        error?: string;
-        fromPlacesMemoryCache?: boolean;
-        refreshCooldownActive?: boolean;
-      };
-
-      if (!res.ok && res.status === 429) {
-        const staleHit = cache[cacheKey];
+      if (!req.forceGoogleRefresh) {
+        const hit = cache[cacheKey];
         if (
-          staleHit &&
-          Array.isArray(staleHit.leads) &&
-          staleHit.leads.length > 0
+          hit &&
+          Array.isArray(hit.leads) &&
+          hit.leads.length > 0 &&
+          typeof hit.importedAt === "number" &&
+          Date.now() - hit.importedAt <= IMPORT_CACHE_TTL_MS
         ) {
-          batch = staleHit.leads;
+          batch = hit.leads;
           source = "cached";
-          importNoticeKey = "import_places_recent_cache_note";
-          importRateLimitHintKey = "import_places_rate_limit_user";
-        } else {
-          throw new Error(
-            typeof data.error === "string" && data.error.trim()
-              ? data.error
-              : PLACES_RATE_LIMIT_USER_MESSAGE,
-          );
         }
-      } else if (!res.ok) {
-        throw new Error(data.error || `Import failed (${res.status})`);
-      } else {
-        batch = data.leads ?? [];
-        if (data.fromPlacesMemoryCache && batch.length > 0) {
-          importNoticeKey = "import_places_recent_cache_note";
-          source = "cached";
+      }
+
+      if (batch.length === 0 || req.forceGoogleRefresh) {
+        const res = await fetch("/api/import-leads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            city: req.city,
+            type: req.type,
+            source: req.source,
+            forceGoogleRefresh: Boolean(req.forceGoogleRefresh),
+          }),
+        });
+        const data = (await res.json()) as {
+          leads?: ScoredLead[];
+          error?: string;
+          fromPlacesMemoryCache?: boolean;
+          refreshCooldownActive?: boolean;
+        };
+
+        if (!res.ok && res.status === 429) {
+          const staleHit = cache[cacheKey];
+          if (
+            staleHit &&
+            Array.isArray(staleHit.leads) &&
+            staleHit.leads.length > 0
+          ) {
+            batch = staleHit.leads;
+            source = "cached";
+            importNoticeKey = "import_places_recent_cache_note";
+            importRateLimitHintKey = "import_places_rate_limit_user";
+          } else {
+            throw new Error(
+              typeof data.error === "string" && data.error.trim()
+                ? data.error
+                : PLACES_RATE_LIMIT_USER_MESSAGE,
+            );
+          }
+        } else if (!res.ok) {
+          throw new Error(data.error || `Import failed (${res.status})`);
         } else {
-          source = "google";
-        }
-        if (batch.length > 0) {
-          const now = Date.now();
-          saveImportCache({
-            ...cache,
-            [cacheKey]: {
-              importSessionId:
-                typeof crypto !== "undefined" && "randomUUID" in crypto
-                  ? crypto.randomUUID()
-                  : `cache-${now}`,
-              importedAt: now,
-              leads: batch,
-            },
-          });
+          batch = data.leads ?? [];
+          if (data.fromPlacesMemoryCache && batch.length > 0) {
+            importNoticeKey = "import_places_recent_cache_note";
+            source = "cached";
+          } else {
+            source = "google";
+          }
+          if (batch.length > 0) {
+            const now = Date.now();
+            saveImportCache({
+              ...cache,
+              [cacheKey]: {
+                importSessionId:
+                  typeof crypto !== "undefined" && "randomUUID" in crypto
+                    ? crypto.randomUUID()
+                    : `cache-${now}`,
+                importedAt: now,
+                leads: batch,
+              },
+            });
+          }
         }
       }
     }
@@ -5712,6 +6045,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       );
     });
     list.sort((a, b) => {
+      // Opportunity ranking surfaces the strongest sales opportunities first,
+      // independent of import recency (v1.4 default sales prioritization).
+      if (sort === "opportunity") {
+        const ao = typeof a.verifiedOpportunityScore === "number" ? a.verifiedOpportunityScore : -1;
+        const bo = typeof b.verifiedOpportunityScore === "number" ? b.verifiedOpportunityScore : -1;
+        if (bo !== ao) return bo - ao;
+        return b.hotScore - a.hotScore;
+      }
       const createdDiff = (b.createdAt ?? 0) - (a.createdAt ?? 0);
       if (createdDiff !== 0) return createdDiff;
       const aIsRecent = recentlyImportedLeadIds.includes(a.id);
@@ -6194,6 +6535,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           typeof current.repliedAt === "number" ? current.repliedAt : ts,
         nextFollowUpAt: null,
       });
+      const repliedRow = allRowsById.get(id);
+      if (repliedRow) {
+        const base = leadTableRowToScoredLead(repliedRow);
+        applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "status_change", "Durum değişti: Replied") });
+      }
       return;
     }
     if (status === "meeting") {
@@ -6203,6 +6549,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           typeof current.meetingAt === "number" ? current.meetingAt : ts,
         nextFollowUpAt: null,
       });
+      const meetingRow = allRowsById.get(id);
+      if (meetingRow) {
+        const base = leadTableRowToScoredLead(meetingRow);
+        applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "demo_booked", "Demo planlandı") });
+      }
       return;
     }
     if (status === "won") {
@@ -6211,6 +6562,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         wonAt: typeof current.wonAt === "number" ? current.wonAt : ts,
         nextFollowUpAt: null,
       });
+      const wonRow = allRowsById.get(id);
+      if (wonRow) {
+        const base = leadTableRowToScoredLead(wonRow);
+        applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "closed_won", "Kazanıldı") });
+      }
       return;
     }
     if (status === "lost") {
@@ -6219,6 +6575,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         lostAt: typeof current.lostAt === "number" ? current.lostAt : ts,
         nextFollowUpAt: null,
       });
+      const lostRow = allRowsById.get(id);
+      if (lostRow) {
+        const base = leadTableRowToScoredLead(lostRow);
+        applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "closed_lost", "Kaybedildi") });
+      }
       return;
     }
     if (status === "new") {
@@ -6526,6 +6887,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         messageVariant: "soft",
         messagePreview: message,
       });
+      const msgBase = leadTableRowToScoredLead(lead);
+      applyEnrichedLeadToStore({ ...msgBase, activityTimeline: appendLeadActivity(msgBase.activityTimeline, "whatsapp_message_generated", "WhatsApp mesajı oluşturuldu") });
       setAiMessageModal({
         lead,
         phase: "ready",
@@ -6836,6 +7199,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         saveState(next);
         return next;
       });
+      for (const id of actuallyAdded) {
+        const qRow = allRowsById.get(id);
+        if (qRow) {
+          const base = leadTableRowToScoredLead(qRow);
+          applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "queue_add", "Kuyruğa eklendi") });
+        }
+      }
     }
   };
 
@@ -7164,7 +7534,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       saveDailyOutreachState(nextD);
       return nextD;
     });
-  }, []);
+    const rmRow = allRowsById.get(id);
+    if (rmRow) {
+      const base = leadTableRowToScoredLead(rmRow);
+      applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "queue_remove", "Kuyruktan çıkarıldı") });
+    }
+  }, [allRowsById, applyEnrichedLeadToStore]);
 
   const prepareQueueLeadMessage = async () => {
     if (!queueCurrentId || !queueCurrentLead) return;
@@ -7184,6 +7559,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         selectedVariant: "direct",
         queueStatus: "prepared",
       });
+      const qMsgRow = allRowsById.get(queueCurrentId);
+      if (qMsgRow) {
+        const base = leadTableRowToScoredLead(qMsgRow);
+        applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "whatsapp_message_generated", "WhatsApp mesajı oluşturuldu") });
+      }
     } catch (e) {
       setOutreachQueue((prev) => ({
         ...prev,
@@ -7226,6 +7606,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       messagePreview,
       followUpAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
     });
+    const waRow = allRowsById.get(leadId);
+    if (waRow) {
+      const base = leadTableRowToScoredLead(waRow);
+      applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "whatsapp_open", "WhatsApp açıldı") });
+    }
   };
 
   const closeOutreachQueue = () => {
@@ -8104,10 +8489,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 <select
                   value={sort}
                   onChange={(e) =>
-                    setSort(e.target.value as "priority" | "readiness" | "hot" | "lead" | "name")
+                    setSort(
+                      e.target.value as
+                        | "opportunity"
+                        | "priority"
+                        | "readiness"
+                        | "hot"
+                        | "lead"
+                        | "name",
+                    )
                   }
                   className="w-full rounded-md border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 sm:w-auto"
                 >
+                  <option value="opportunity">
+                    {locale === "tr" ? "Fırsat Puanı" : "Opportunity Score"}
+                  </option>
                   <option value="priority">{t("sort_outreach_priority", locale)}</option>
                   <option value="readiness">{t("sort_contact_readiness", locale)}</option>
                   <option value="hot">{t("sort_hot_score", locale)}</option>
@@ -8118,8 +8514,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => {
-                    setFocusMode((v) => !v);
+                    const nextFocus = !focusMode;
+                    setFocusMode(nextFocus);
                     setShowAllLeadsRows(false);
+                    if (openLead) {
+                      const fBase = leadTableRowToScoredLead(openLead);
+                      applyEnrichedLeadToStore({ ...fBase, activityTimeline: appendLeadActivity(fBase.activityTimeline, nextFocus ? "focus_add" : "focus_remove", nextFocus ? "Odak moduna eklendi" : "Odak modundan çıkarıldı") });
+                    }
                   }}
                   className={`rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset transition ${
                     focusMode

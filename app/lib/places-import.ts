@@ -5,6 +5,7 @@ import {
   type ScoredLead,
   enrichScoredLeadIntelligence,
   getContactQuality,
+  normalizePhoneForWhatsApp,
   scoreHot,
   scoreLead,
 } from "./leads";
@@ -20,6 +21,60 @@ const NICHE_QUERY: Record<LeadType, string> = {
 
 export function buildPlacesSearchQuery(city: string, type: LeadType) {
   return `${NICHE_QUERY[type]} ${city} Türkiye`.trim();
+}
+
+export type IcpSearchConfig = { searchTerm: string; type: LeadType };
+
+/** Six distinct Google Places queries executed when TUGOBO ICP target is selected. */
+export const ICP_SEARCH_CONFIGS: IcpSearchConfig[] = [
+  { searchTerm: "otel hotel", type: "Hotel" },
+  { searchTerm: "resort otel hotel tatil", type: "Hotel" },
+  { searchTerm: "boutique hotel butik otel", type: "Boutique Hotel" },
+  { searchTerm: "apart otel konaklama", type: "Hotel" },
+  { searchTerm: "konaklama lodging tatil", type: "Hotel" },
+  { searchTerm: "tatil otel holiday hotel", type: "Hotel" },
+];
+
+/**
+ * v1.3 ICP preset qualification: filters a merged ICP import batch down to the
+ * opportunity profile the operator asked for. Unknown audiences pass through.
+ */
+export function filterLeadsForTargetAudience(
+  audience: string,
+  leads: ScoredLead[],
+): ScoredLead[] {
+  switch (audience) {
+    case "WhatsApp Aktif İşletmeler":
+      return leads.filter(
+        (l) =>
+          l.signalVerification?.whatsappVerification === "verified" ||
+          l.whatsappConfidence === "confirmed" ||
+          l.whatsappConfidence === "likely" ||
+          normalizePhoneForWhatsApp(l.phone) !== null,
+      );
+    case "Doğrudan Rezervasyon Potansiyeli":
+      return leads.filter(
+        (l) =>
+          l.signalVerification?.reservationSignal === "verified" ||
+          Boolean(l.hasReservationCTA) ||
+          l.icpAlignment?.directBookingReadiness === "high" ||
+          (Boolean(l.hasOwnWebsite) && normalizePhoneForWhatsApp(l.phone) !== null),
+      );
+    case "Yüksek Talep İşletmeleri":
+      return leads.filter(
+        (l) => l.icpAlignment?.estimatedDemandVolume === "high" || l.reviewsCount >= 80,
+      );
+    case "Operasyonel Karmaşıklığı Yüksek":
+      return leads.filter(
+        (l) => (l.icpAlignment?.operationalComplexityScore ?? 0) >= 55,
+      );
+    case "Bağımsız İşletmeler":
+      return leads.filter((l) => l.businessOwnershipType !== "chain");
+    case "Kurumsal Zincirler":
+      return leads.filter((l) => l.businessOwnershipType === "chain");
+    default:
+      return leads;
+  }
 }
 
 function hashPlaceId(placeId: string) {

@@ -13,6 +13,17 @@ export type ExtractedSignalsInterpretationInput = {
   hasContactPage?: boolean;
   whatsappConfidence?: string | null;
   instagramConfidence?: string | number | null;
+  /** v1.3 verification states — verified signals override assumption-based wording. */
+  verification?: {
+    whatsappVerification?: string;
+    whatsappConfidence?: number;
+    websiteVerification?: string;
+    websiteConfidence?: number;
+    instagramVerification?: string;
+    instagramConfidence?: number;
+    reservationSignal?: string;
+    reservationConfidence?: number;
+  } | null;
 };
 
 export type WebsiteContactSignalsInterpretation = {
@@ -32,7 +43,17 @@ function listPreview(items: readonly string[] | undefined, max = 6): string {
   return items.length > max ? `${slice} … (+${items.length - max})` : slice;
 }
 
-function websiteCredibilityFromLabel(conf?: string | null): string {
+function websiteCredibilityFromLabel(
+  conf: string | null | undefined,
+  verification?: ExtractedSignalsInterpretationInput["verification"],
+): string {
+  if (verification?.websiteVerification === "verified") {
+    const pct = verification.websiteConfidence;
+    return `Web sitesi doğrulandı${typeof pct === "number" ? ` (%${pct} güven)` : ""}; sayfa erişilebilir ve anlamlı iletişim içeriği barındırıyor.`;
+  }
+  if (verification?.websiteVerification === "broken") {
+    return "Web adresi kayıtlı ancak erişilemiyor (DNS/zaman aşımı/sunucu hatası); teknik kontrol gerekli.";
+  }
   switch (conf) {
     case "confirmed":
       return "Ana sayfa sinyalleri açısından web görünürlüğü muhtemelen güçlü; yine de DNS/SSL ve güncel içerik doğrulanmalı.";
@@ -50,6 +71,11 @@ function websiteCredibilityFromLabel(conf?: string | null): string {
 }
 
 function whatsappFromSignals(input: ExtractedSignalsInterpretationInput): string {
+  const v = input.verification;
+  if (v?.whatsappVerification === "verified") {
+    const pct = v.whatsappConfidence;
+    return `WhatsApp kanalı doğrulandı${typeof pct === "number" ? ` (%${pct} güven)` : ""}; site sayfalarında resmi wa.me / WhatsApp bağlantısı bulundu.`;
+  }
   const conf = typeof input.whatsappConfidence === "string" ? input.whatsappConfidence : "";
   const gsm = input.turkishGsmNumbers?.length ?? 0;
   const waInSocial =
@@ -70,6 +96,14 @@ function whatsappFromSignals(input: ExtractedSignalsInterpretationInput): string
 }
 
 function instagramFromSignals(input: ExtractedSignalsInterpretationInput): string {
+  const v = input.verification;
+  if (v?.instagramVerification === "verified") {
+    return "Instagram hesabı doğrulandı; site üzerindeki bağlantı kayıtlı handle ile eşleşiyor.";
+  }
+  if (v?.instagramVerification === "candidate") {
+    const pct = v.instagramConfidence;
+    return `Instagram aday hesabı bulundu${typeof pct === "number" ? ` (%${pct} güven)` : ""}; ad bazlı varsayım — hesap sahipliği manuel teyit edilmeli.`;
+  }
   const ic = input.instagramConfidence;
   const igLinks =
     input.socialLinks?.filter((u) => /instagram\.com/i.test(u)) ?? [];
@@ -94,6 +128,11 @@ function instagramFromSignals(input: ExtractedSignalsInterpretationInput): strin
 }
 
 function bookingFlowFromSignals(input: ExtractedSignalsInterpretationInput): string {
+  const v = input.verification;
+  if (v?.reservationSignal === "verified") {
+    const pct = v.reservationConfidence;
+    return `Rezervasyon CTA doğrulandı${typeof pct === "number" ? ` (%${pct} güven)` : ""}; site sayfalarında net rezervasyon çağrısı mevcut.`;
+  }
   const parts: string[] = [];
   if (input.hasReservationCTA) parts.push("rezervasyon/rezervasyon çağrısı metni olası");
   if (input.hasContactPage) parts.push("iletişim sayfası bağlantısı olası");
@@ -104,15 +143,21 @@ function bookingFlowFromSignals(input: ExtractedSignalsInterpretationInput): str
 }
 
 function manualCheck(input: ExtractedSignalsInterpretationInput): string {
-  const weakWeb = input.websiteConfidence === "weak" || input.websiteConfidence === "unknown";
+  const v = input.verification;
+  const weakWeb =
+    v?.websiteVerification !== "verified" &&
+    (input.websiteConfidence === "weak" || input.websiteConfidence === "unknown");
   const weakIg =
-    input.instagramConfidence === "weak" ||
-    input.instagramConfidence === "unknown" ||
-    input.instagramConfidence === "missing";
+    v?.instagramVerification !== "verified" &&
+    (input.instagramConfidence === "weak" ||
+      input.instagramConfidence === "unknown" ||
+      input.instagramConfidence === "missing" ||
+      v?.instagramVerification === "candidate");
   const weakWa =
-    input.whatsappConfidence === "weak" ||
-    input.whatsappConfidence === "unknown" ||
-    input.whatsappConfidence === "missing";
+    v?.whatsappVerification !== "verified" &&
+    (input.whatsappConfidence === "weak" ||
+      input.whatsappConfidence === "unknown" ||
+      input.whatsappConfidence === "missing");
   const hints: string[] = [];
   if (weakWeb) hints.push("web/ana sayfa erişimi ve URL");
   if (weakWa) hints.push("WhatsApp numarası veya wa.me bağlantıları");
@@ -131,19 +176,35 @@ export function buildRuleBasedWebsiteSignalsInterpretation(
   const mails = listPreview(input.emails);
   const social = listPreview(input.socialLinks, 5);
 
+  const v = input.verification;
+  const verifiedBits: string[] = [];
+  if (v?.websiteVerification === "verified") verifiedBits.push("web sitesi");
+  if (v?.whatsappVerification === "verified") verifiedBits.push("WhatsApp");
+  if (v?.instagramVerification === "verified") verifiedBits.push("Instagram");
+  if (v?.reservationSignal === "verified") verifiedBits.push("rezervasyon CTA");
+
   const turkishSummary = [
+    verifiedBits.length > 0 ? `Doğrulanan sinyaller: ${verifiedBits.join(", ")}.` : "",
     `Web güven etiketi: ${input.websiteConfidence ?? "bilinmiyor"}.`,
     `Telefon örnekleri: ${phones}. GSM (90…): ${gsm}.`,
     `E-postalar: ${mails}. Sosyal bağlantılar (örnek): ${social}.`,
-    `Rezervasyon CTA: ${input.hasReservationCTA ? "olası" : "tespit edilmedi veya zayıf"}.`,
+    `Rezervasyon CTA: ${
+      v?.reservationSignal === "verified"
+        ? "doğrulandı"
+        : input.hasReservationCTA
+          ? "olası"
+          : "tespit edilmedi veya zayıf"
+    }.`,
     `İletişim sayfası sinyali: ${input.hasContactPage ? "olası" : "tespit edilmedi veya zayıf"}.`,
     "Bu özet yalnızca verilen çıkarımlara dayanır; dış kaynak uydurulmadı.",
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return {
     source: "rules",
     turkishSummary,
-    websiteCredibility: websiteCredibilityFromLabel(input.websiteConfidence),
+    websiteCredibility: websiteCredibilityFromLabel(input.websiteConfidence, input.verification),
     whatsappLikelihood: whatsappFromSignals(input),
     instagramLikelihood: instagramFromSignals(input),
     bookingFlowStrength: bookingFlowFromSignals(input),
