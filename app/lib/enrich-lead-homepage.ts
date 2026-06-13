@@ -31,7 +31,7 @@ const SIGNAL_WEBSITE_GOOGLE_MISSING = "Web sitesi Google kaydında yok, arama il
 const SIGNAL_WA_INVALID = "WhatsApp linki var ancak numara doğrulanamadı";
 const SIGNAL_WA_VERIFY = "WhatsApp linki var ancak doğrulama gerekli";
 
-const MAX_WEBSITE_CANDIDATE_FETCHES = 3;
+const MAX_WEBSITE_CANDIDATE_FETCHES = 5;
 const DEFAULT_CANDIDATE_TIMEOUT_MS = 10_000;
 
 function uniqStrings(items: string[]): string[] {

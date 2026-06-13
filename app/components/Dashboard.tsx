@@ -207,6 +207,12 @@ type ContactFinderType =
 
 type ContactFinderConfidence = "high" | "medium" | "low";
 
+type ContactFinderInput = {
+  website?: string;
+  phone?: string;
+  instagram?: string;
+};
+
 type ContactFinderResult = {
   bestContactType: ContactFinderType;
   bestContactValue: string;
@@ -1654,6 +1660,256 @@ function queueSessionWhatsAppDigits(
   return normalizePhoneForWhatsApp(lead.phone);
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// v1.6 — DAILY OPPORTUNITY QUEUE
+// A daily prioritization LAYER over existing scores. It does NOT replace
+// verifiedOpportunityScore and does NOT introduce a new scoring engine — it
+// reuses existing fields to answer "Bugün hangi işletmelerle iletişime
+// geçmeliyim?" and ranks today's candidates 0–100 (`dailyQueuePriority`).
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Verified-channel snapshot reused by the daily queue (no Contact Center dup). */
+type QuickChannels = {
+  waUrl: string | null;
+  phone: string | null;
+  websiteUrl: string | null;
+  bestLabel: string;
+};
+
+/**
+ * Minimal verified-channel resolver mirroring {@link LeadContactCenter}'s
+ * priority order (verified wa.me link > finder WhatsApp > listing phone, etc.)
+ * so queue shortcuts use the same single source of truth as the Contact Center.
+ */
+function resolveQuickChannels(
+  lead: ScoredLead & { whatsappInvalid?: boolean },
+  finder: ContactFinderResult | undefined,
+  locale: Locale,
+): QuickChannels {
+  const tr = locale === "tr";
+  const v = lead.signalVerification;
+
+  const waSourceUrl = v?.whatsappSourceUrl ?? null;
+  const isWaDirectLink =
+    !!waSourceUrl &&
+    /^https?:\/\/(wa\.me|api\.whatsapp\.com|[^/]*whatsapp\.com)/i.test(waSourceUrl);
+  const waFromFinder =
+    finder &&
+    (finder.bestContactType === "VERIFIED_WHATSAPP" ||
+      finder.bestContactType === "whatsapp" ||
+      finder.bestContactType === "GENERATED_WHATSAPP")
+      ? finder.bestContactValue
+      : null;
+  const waUrl = (() => {
+    if (lead.whatsappInvalid) {
+      // Manually flagged invalid; only honor an explicit verified wa.me link.
+      return isWaDirectLink ? waSourceUrl! : null;
+    }
+    if (isWaDirectLink) return waSourceUrl!;
+    if (waFromFinder) {
+      const d = normalizePhoneForWhatsApp(waFromFinder);
+      if (d) return `https://wa.me/${d}`;
+    }
+    if (lead.phone) {
+      const d = normalizePhoneForWhatsApp(lead.phone);
+      if (d) return `https://wa.me/${d}`;
+    }
+    return null;
+  })();
+
+  const phone = lead.phone?.trim() ? lead.phone : null;
+
+  const websiteUrl = (() => {
+    if (v?.websiteSourceUrl) return v.websiteSourceUrl;
+    if (lead.website) {
+      return lead.website.startsWith("http") ? lead.website : `https://${lead.website}`;
+    }
+    if (lead.websiteCandidateUrl) return lead.websiteCandidateUrl;
+    return null;
+  })();
+  const webState = v?.websiteVerification ?? (websiteUrl ? "reachable" : "not_found");
+  const showWebsite = !!websiteUrl && webState !== "not_found" && webState !== "broken";
+
+  const bestLabel =
+    waUrl !== null
+      ? v?.whatsappVerification === "verified"
+        ? tr
+          ? "WhatsApp doğrulandı"
+          : "WhatsApp verified"
+        : "WhatsApp"
+      : phone
+        ? tr
+          ? "Telefon"
+          : "Phone"
+        : showWebsite
+          ? tr
+            ? "Web Sitesi"
+            : "Website"
+          : tr
+            ? "Doğrudan kanal yok"
+            : "No direct channel";
+
+  return { waUrl, phone, websiteUrl: showWebsite ? websiteUrl : null, bestLabel };
+}
+
+/**
+ * `dailyQueuePriority` (0–100). Ranking layer only — a weighted blend of
+ * EXISTING scores/state (verifiedOpportunityScore, opportunityTier, ICP fit,
+ * verified channels, reservation CTA, freshness, follow-up urgency). Not a
+ * replacement for verifiedOpportunityScore.
+ */
+function computeDailyQueuePriority(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  now: number,
+): number {
+  const opp =
+    typeof row.verifiedOpportunityScore === "number"
+      ? row.verifiedOpportunityScore
+      : typeof row.icpFitScore === "number"
+        ? row.icpFitScore
+        : row.hotScore ?? 0;
+  const icp = typeof row.icpFitScore === "number" ? row.icpFitScore : 0;
+
+  // Anchor on existing scores (0..80).
+  let p = opp * 0.6 + icp * 0.2;
+
+  switch (row.opportunityTier) {
+    case "elite":
+      p += 10;
+      break;
+    case "high":
+      p += 7;
+      break;
+    case "medium":
+      p += 4;
+      break;
+    case "low":
+      p += 1;
+      break;
+  }
+
+  const v = row.signalVerification;
+  const ch = resolveQuickChannels(row, finder, "tr");
+  if (v?.whatsappVerification === "verified" || finder?.bestContactType === "VERIFIED_WHATSAPP") {
+    p += 8;
+  } else if (v?.whatsappVerification === "likely" || ch.waUrl) {
+    p += 4;
+  }
+  if (v?.websiteVerification === "verified") p += 4;
+  else if (ch.websiteUrl) p += 2;
+
+  if (v?.reservationSignal === "verified") p += 6;
+  else if (v?.reservationSignal === "detected") p += 3;
+
+  const freshIso = row.lastVerificationAt ?? row.lastOpportunityEvaluationAt;
+  if (freshIso) {
+    const ts = Date.parse(freshIso);
+    if (Number.isFinite(ts)) {
+      const ageDays = (now - ts) / (24 * 60 * 60 * 1000);
+      if (ageDays <= 7) p += 4;
+      else if (ageDays <= 30) p += 2;
+    }
+  }
+
+  if (isFollowUpDue(row._s, now)) p += 5;
+
+  if (p < 0) p = 0;
+  if (p > 100) p = 100;
+  return Math.round(p);
+}
+
+/** Short reason (Sebep) for a queue item — reuses opportunity reason labels. */
+function dailyQueueReasonText(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  now: number,
+  locale: Locale,
+): string {
+  const tr = locale === "tr";
+  const parts: string[] = [];
+
+  const reasons = (row.opportunityReasons ?? [])
+    .map((k) => {
+      const m = OPPORTUNITY_REASON_LABELS[k];
+      return m ? (tr ? m.tr : m.en) : null;
+    })
+    .filter((x): x is string => Boolean(x));
+  if (reasons.length > 0) parts.push(reasons[0]);
+
+  const v = row.signalVerification;
+  if (v?.reservationSignal === "verified" || v?.reservationSignal === "detected") {
+    parts.push(tr ? "doğrudan rezervasyon sinyali" : "direct reservation signal");
+  } else if (typeof row.icpFitScore === "number" && row.icpFitScore >= 70) {
+    parts.push(tr ? "yüksek ICP uyumu" : "high ICP fit");
+  }
+
+  if (isFollowUpDue(row._s, now)) {
+    parts.unshift(tr ? "takip zamanı geldi" : "follow-up due");
+  }
+
+  if (parts.length === 0) {
+    const ch = resolveQuickChannels(row, finder, locale);
+    if (ch.waUrl) parts.push(tr ? "WhatsApp erişilebilir" : "WhatsApp reachable");
+    else if (ch.phone) parts.push(tr ? "telefon mevcut" : "phone available");
+    else parts.push(tr ? "değerlendirilmeye değer" : "worth evaluating");
+  }
+
+  const text = parts.slice(0, 2).join(" + ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** A follow-up is "scheduled" when in the follow-up workflow or has a target time. */
+function hasScheduledFollowUp(s: LeadStatusUpdate): boolean {
+  if (s.doNotContact) return false;
+  if (s.status === "needs_follow_up") return true;
+  return (
+    typeof s.nextFollowUpAt === "number" &&
+    Number.isFinite(s.nextFollowUpAt) &&
+    s.nextFollowUpAt > 0
+  );
+}
+
+/** Exclusion rules: won/lost, DNC, contacted today, or no usable outbound path. */
+function isExcludedFromDailyQueue(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  now: number,
+): boolean {
+  const s = row._s;
+  if (s.status === "won" || s.status === "lost") return true;
+  if (s.doNotContact) return true;
+  if (wasContactedToday(s, now)) return true;
+  const contact = hasValidOutboundContact(row, finder);
+  if (!contact.any) return true;
+  // Invalid WhatsApp counts as excluded only when no other channel exists.
+  if (s.whatsappInvalid && !contact.whatsapp) {
+    const hasOther = Boolean(row.phone?.trim() || row.instagram?.trim() || row.website?.trim());
+    if (!hasOther) return true;
+  }
+  return false;
+}
+
+/** View-model for one daily-queue candidate (computed once, rendered as-is). */
+type QueueCandidate = {
+  row: LeadTableRow;
+  priority: number;
+  reasonText: string;
+  channels: QuickChannels;
+  inOutreachQueue: boolean;
+  followUpScheduled: boolean;
+  followUpDue: boolean;
+  dueAt: number | null;
+};
+
+type DailyQueuePartition = {
+  todays: QueueCandidate[];
+  followUps: QueueCandidate[];
+  highNoContact: QueueCandidate[];
+  lowPriority: QueueCandidate[];
+  total: number;
+};
+
 function relativeCalendarLabel(ts?: number | null, now = Date.now(), locale: Locale = "tr") {
   if (!ts || !Number.isFinite(ts) || ts <= 0) return "-";
   if (isSameLocalCalendarDay(ts, now)) return t("cal_today", locale);
@@ -2489,21 +2745,22 @@ function websiteConfidenceDisplayLabel(
 
 function whatsappConfidenceDisplayLabel(
   raw: string | undefined,
-  _lead: LeadDetailConfidenceContext | undefined,
+  lead: LeadDetailConfidenceContext | undefined,
   locale: Locale,
 ): string {
   const c =
     raw === "missing" || raw === "unknown" ? "none" : (raw ?? "none");
+  const hasWaPath = lead?.phone ? normalizePhoneForWhatsApp(lead.phone) !== null : false;
   if (locale === "tr") {
     if (c === "confirmed") return "WhatsApp doğrulandı";
     if (c === "likely") return "WhatsApp olası";
     if (c === "weak") return "Kontrol gerekli";
-    return "WhatsApp yok";
+    return hasWaPath ? "WhatsApp olası – kontrol gerekli" : "WhatsApp yok";
   }
   if (c === "confirmed") return "WhatsApp verified";
   if (c === "likely") return "WhatsApp likely";
   if (c === "weak") return "Manual check";
-  return "No WhatsApp signal";
+  return hasWaPath ? "Possible WhatsApp path – check needed" : "No WhatsApp signal";
 }
 
 function instagramConfidenceDisplayLabel(
@@ -4630,6 +4887,7 @@ function LeadDetailWhatsAppStatus({ lead }: { lead: LeadTableRow }) {
         ? [...acq.whatsappSignals]
         : [];
   const tr = normalizePhoneNumber(lead.phone);
+  const hasWaPath = normalizePhoneForWhatsApp(lead.phone) !== null;
   const wi = lead.websiteIntelligence;
   const meta = wi?.whatsappSurfaceMeta;
   const sourceTr =
@@ -4657,13 +4915,17 @@ function LeadDetailWhatsAppStatus({ lead }: { lead: LeadTableRow }) {
       ? "Bağlantı katmanı doğrulandı"
       : conf === "likely" || conf === "weak"
         ? "Manuel kontrol önerilir"
-        : "Kayıtlı kanal yok";
+        : hasWaPath
+          ? "WhatsApp olası – kontrol gerekli"
+          : "Kayıtlı kanal yok";
   const statusEn =
     conf === "confirmed"
       ? "Validated link layer"
       : conf === "likely" || conf === "weak"
         ? "Manual check suggested"
-        : "No WhatsApp channel on record";
+        : hasWaPath
+          ? "Possible WhatsApp path – check needed"
+          : "No WhatsApp channel on record";
   const trustTR =
     conf === "confirmed" ? "Yüksek" : conf === "likely" ? "Orta" : conf === "weak" ? "Düşük" : "Yok";
   const trustEN =
@@ -5109,7 +5371,7 @@ function LeadDetailContactSection({
   finderPersisted: ContactFinderResult | undefined;
   finderRequest: ContactFinderRequestState;
   updateLead: (id: string, patch: Partial<LeadStatusUpdate>) => void;
-  findBestContact: (leadId: string, website: string) => Promise<void>;
+  findBestContact: (leadId: string, input: ContactFinderInput) => Promise<void>;
 }) {
   const { locale } = useLocale();
   const s = lead._s;
@@ -5118,6 +5380,10 @@ function LeadDetailContactSection({
   const finderErrHere =
     finderRequest.status === "error" && finderRequest.leadId === lead.id;
   const nowTs = Date.now();
+  // Best URL to send to the Contact Finder API — prefer the canonical website field
+  // (which is now promoted from signalVerification.websiteSourceUrl if needed),
+  // fall back to the candidate URL discovered during enrichment.
+  const finderUrl = lead.website || lead.websiteCandidateUrl;
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 text-xs">
@@ -5182,12 +5448,12 @@ function LeadDetailContactSection({
         )}
         {lead.website && (
           <a
-            href={`https://${lead.website}`}
+            href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-white/10"
           >
-            {lead.website}
+            {lead.website.replace(/^https?:\/\//, "").replace(/\/$/, "")}
           </a>
         )}
       </div>
@@ -5218,19 +5484,27 @@ function LeadDetailContactSection({
         </div>
       )}
 
-      {lead.website && (
+      {(finderUrl || lead.phone || lead.instagram || !!finderPersisted) && (
         <div className="rounded-md border border-white/10 bg-white/[0.02] p-3 text-xs">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div className="text-[11px] uppercase tracking-wider text-zinc-500">
               {t("detail_contact_finder_header", locale)}
             </div>
-            <button
-              type="button"
-              onClick={() => void findBestContact(lead.id, lead.website!)}
-              className="inline-flex shrink-0 items-center gap-2 rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20"
-            >
-              {t("detail_find_best_contact", locale)}
-            </button>
+            {(finderUrl || lead.phone || lead.instagram) && (
+              <button
+                type="button"
+                onClick={() =>
+                  void findBestContact(lead.id, {
+                    website: finderUrl || undefined,
+                    phone: lead.phone || undefined,
+                    instagram: lead.instagram || undefined,
+                  })
+                }
+                className="inline-flex shrink-0 items-center gap-2 rounded-md border border-violet-400/25 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20"
+              >
+                {t("detail_find_best_contact", locale)}
+              </button>
+            )}
           </div>
           {!loadingHere && !finderErrHere && !finderPersisted && (
             <div className="text-zinc-500">
@@ -5639,7 +5913,7 @@ function LeadDetailPanel({
   setDraftNote: (v: string) => void;
   updateLead: (id: string, patch: Partial<LeadStatusUpdate>) => void;
   setLeadStatus: (id: string, status: LeadStatus) => void;
-  findBestContact: (leadId: string, website: string) => Promise<void>;
+  findBestContact: (leadId: string, input: ContactFinderInput) => Promise<void>;
   onSendMessage: () => void;
   sendMessageBusy: boolean;
   ownerReplyDraft: string;
@@ -5760,6 +6034,236 @@ function BrandLogo() {
       priority
       onError={() => setImgError(true)}
     />
+  );
+}
+
+/** One compact row inside a daily-queue section. */
+function DailyQueueItem({
+  candidate,
+  rank,
+  onOpenDetail,
+  onAddToQueue,
+  onContact,
+  queueLimitReached,
+}: {
+  candidate: QueueCandidate;
+  rank?: number;
+  onOpenDetail: (id: string) => void;
+  onAddToQueue: (id: string) => void;
+  onContact: (id: string, channel: "whatsapp" | "phone" | "website", url: string) => void;
+  queueLimitReached: boolean;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const { row, channels } = candidate;
+  const tier = row.opportunityTier;
+  const score = row.verifiedOpportunityScore;
+  const tierLabel =
+    tier && OPPORTUNITY_TIER_LABELS[tier]
+      ? tr
+        ? OPPORTUNITY_TIER_LABELS[tier].tr
+        : OPPORTUNITY_TIER_LABELS[tier].en
+      : tier ?? "";
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-white/8 bg-white/[0.015] px-3 py-2.5 transition hover:bg-white/[0.03] sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          {typeof rank === "number" && (
+            <span className="shrink-0 text-[11px] font-semibold tabular-nums text-zinc-500">
+              {rank}.
+            </span>
+          )}
+          <span className="truncate text-sm font-medium text-zinc-100">{row.name}</span>
+          {row.city && <span className="shrink-0 text-[11px] text-zinc-500">· {row.city}</span>}
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+          {typeof score === "number" && (
+            <span className="tabular-nums text-zinc-300">
+              {tr ? "Fırsat" : "Opportunity"}{" "}
+              <span className={`font-semibold ${tier ? opportunityTierColor(tier) : ""}`}>
+                {score}
+              </span>
+            </span>
+          )}
+          {tier && <span className={opportunityTierChip(tier)}>{tierLabel}</span>}
+          <span className="text-emerald-300/80">{channels.bestLabel}</span>
+          {candidate.inOutreachQueue && (
+            <span className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] text-indigo-200 ring-1 ring-inset ring-indigo-400/30">
+              {tr ? "Kuyrukta" : "In queue"}
+            </span>
+          )}
+        </div>
+        <p className="mt-1 truncate text-[11px] text-zinc-500">
+          <span className="text-zinc-600">{tr ? "Sebep: " : "Reason: "}</span>
+          {candidate.reasonText}
+        </p>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onOpenDetail(row.id)}
+          className="rounded-md border border-white/12 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-white/10"
+        >
+          {tr ? "Detay Aç" : "Open Detail"}
+        </button>
+        {channels.waUrl && (
+          <button
+            type="button"
+            onClick={() => onContact(row.id, "whatsapp", channels.waUrl!)}
+            className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-100 transition hover:bg-emerald-500/25"
+          >
+            {tr ? "WhatsApp Aç" : "Open WhatsApp"}
+          </button>
+        )}
+        {!channels.waUrl && channels.phone && (
+          <button
+            type="button"
+            onClick={() => onContact(row.id, "phone", `tel:${channels.phone!.replace(/\s+/g, "")}`)}
+            className="rounded-md border border-sky-400/35 bg-sky-500/15 px-2 py-1 text-[11px] font-medium text-sky-100 transition hover:bg-sky-500/25"
+          >
+            {tr ? "Ara" : "Call"}
+          </button>
+        )}
+        {!channels.waUrl && !channels.phone && channels.websiteUrl && (
+          <button
+            type="button"
+            onClick={() => onContact(row.id, "website", channels.websiteUrl!)}
+            className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] font-medium text-zinc-200 transition hover:bg-white/10"
+          >
+            {tr ? "Siteyi Aç" : "Open Site"}
+          </button>
+        )}
+        {!candidate.inOutreachQueue && !candidate.followUpScheduled && (
+          <button
+            type="button"
+            onClick={() => onAddToQueue(row.id)}
+            disabled={queueLimitReached}
+            title={queueLimitReached ? (tr ? "Günlük kuyruk dolu" : "Daily queue full") : undefined}
+            className="rounded-md border border-fuchsia-400/30 bg-fuchsia-500/10 px-2 py-1 text-[11px] font-medium text-fuchsia-200 transition hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {tr ? "Kuyruğa Al" : "Queue"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** v1.6 — "Bugünün Fırsatları" daily sales-priority queue with 4 sections. */
+function DailyOpportunityQueue({
+  partition,
+  onOpenDetail,
+  onAddToQueue,
+  onContact,
+  queueLimitReached,
+}: {
+  partition: DailyQueuePartition;
+  onOpenDetail: (id: string) => void;
+  onAddToQueue: (id: string) => void;
+  onContact: (id: string, channel: "whatsapp" | "phone" | "website", url: string) => void;
+  queueLimitReached: boolean;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const { todays, followUps, highNoContact, lowPriority } = partition;
+
+  const renderSection = (
+    title: string,
+    subtitle: string,
+    items: QueueCandidate[],
+    opts?: { ranked?: boolean; limit?: number; tone?: string },
+  ) => {
+    const limit = opts?.limit ?? items.length;
+    const shown = items.slice(0, limit);
+    const more = items.length - shown.length;
+    return (
+      <div className="rounded-lg border border-white/8 bg-black/20 p-3">
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <h3 className={`text-xs font-semibold uppercase tracking-wider ${opts?.tone ?? "text-zinc-200"}`}>
+            {title}
+            <span className="ml-1.5 text-[10px] font-normal tabular-nums text-zinc-500">
+              ({items.length})
+            </span>
+          </h3>
+        </div>
+        <p className="mb-2 text-[11px] text-zinc-500">{subtitle}</p>
+        {shown.length === 0 ? (
+          <div className="px-1 py-2 text-[11px] text-zinc-600">
+            {tr ? "Bu bölümde uygun lead yok." : "No leads in this section."}
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {shown.map((c, i) => (
+              <DailyQueueItem
+                key={c.row.id}
+                candidate={c}
+                rank={opts?.ranked ? i + 1 : undefined}
+                onOpenDetail={onOpenDetail}
+                onAddToQueue={onAddToQueue}
+                onContact={onContact}
+                queueLimitReached={queueLimitReached}
+              />
+            ))}
+            {more > 0 && (
+              <div className="px-1 pt-1 text-[11px] text-zinc-600">
+                {tr ? `+${more} daha` : `+${more} more`}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <section className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.03] p-4 backdrop-blur ring-1 ring-inset ring-fuchsia-400/10">
+      <div className="mb-3 flex items-center gap-2">
+        <div className="flex h-5 w-5 items-center justify-center rounded bg-fuchsia-500/20">
+          <IconSpark className="h-3.5 w-3.5 text-fuchsia-200" />
+        </div>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-fuchsia-200">
+          {tr ? "Bugünün Fırsatları" : "Today's Opportunities"}
+        </h2>
+        <span className="text-[11px] text-zinc-500">
+          {tr
+            ? "Bugün hangi işletmelerle iletişime geçmelisin?"
+            : "Who should you contact today?"}
+        </span>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {renderSection(
+          tr ? "Bugünün Fırsatları" : "Today's Opportunities",
+          tr
+            ? "En güçlü fırsatlar önce — günlük öncelik sırasına göre ilk 10."
+            : "Strongest opportunities first — top 10 by daily priority.",
+          todays,
+          { ranked: true, limit: 10, tone: "text-fuchsia-200" },
+        )}
+        {renderSection(
+          tr ? "Takip Bekleyenler" : "Awaiting Follow-up",
+          tr
+            ? "Takip planlanmış lead'ler — en yakın zamanı gelen önce."
+            : "Leads with a scheduled follow-up — soonest due first.",
+          followUps,
+          { limit: 12, tone: "text-orange-200" },
+        )}
+        {renderSection(
+          tr ? "Yüksek Fırsat — Henüz İletişim Yok" : "High Opportunity — Not Yet Contacted",
+          tr
+            ? "Güçlü fırsat ama hiç iletişime geçilmemiş yeni lead'ler."
+            : "Strong but never-contacted new leads.",
+          highNoContact,
+          { limit: 10, tone: "text-emerald-200" },
+        )}
+        {renderSection(
+          tr ? "Düşük Öncelik" : "Low Priority",
+          tr ? "Bugün için daha düşük öncelikli adaylar." : "Lower-priority candidates for today.",
+          lowPriority,
+          { limit: 8, tone: "text-zinc-300" },
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -7336,13 +7840,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
   };
 
-  const findBestContact = async (leadId: string, website: string) => {
+  const findBestContact = async (leadId: string, input: ContactFinderInput) => {
     setContactFinderRequest({ status: "loading", leadId });
     try {
       const res = await fetch("/api/contact-finder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ website }),
+        body: JSON.stringify(input),
       });
       const data = (await res.json()) as ContactFinderResult & { error?: string };
       if (!res.ok) {
@@ -7590,11 +8094,19 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         saveState(next);
         return next;
       });
+      const queuedAtTs = Date.now();
       for (const id of actuallyAdded) {
         const qRow = allRowsById.get(id);
         if (qRow) {
           const base = leadTableRowToScoredLead(qRow);
-          applyEnrichedLeadToStore({ ...base, activityTimeline: appendLeadActivity(base.activityTimeline, "queue_add", "Kuyruğa eklendi") });
+          // v1.6 lightweight queue memory (lead-level, survives re-enrichment).
+          applyEnrichedLeadToStore({
+            ...base,
+            lastQueuedAt: queuedAtTs,
+            queueCount: (base.queueCount ?? 0) + 1,
+            lastQueueReason: dailyQueueReasonText(qRow, contactFinderMap[id], queuedAtTs, locale),
+            activityTimeline: appendLeadActivity(base.activityTimeline, "queue_add", "Kuyruğa eklendi"),
+          });
         }
       }
     }
@@ -8004,6 +8516,80 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
   };
 
+  // ── v1.6 Daily Opportunity Queue ───────────────────────────────────────
+  const dailyQueuePartition = useMemo<DailyQueuePartition>(() => {
+    const now = renderNow || Date.now();
+    const queuedSet = new Set(dailyOutreach.todayQueue);
+    const candidates: QueueCandidate[] = [];
+    for (const row of allRows) {
+      const finder = contactFinderMap[row.id];
+      if (isExcludedFromDailyQueue(row, finder, now)) continue;
+      candidates.push({
+        row,
+        priority: computeDailyQueuePriority(row, finder, now),
+        reasonText: dailyQueueReasonText(row, finder, now, locale),
+        channels: resolveQuickChannels(row, finder, locale),
+        inOutreachQueue: queuedSet.has(row.id),
+        followUpScheduled: hasScheduledFollowUp(row._s),
+        followUpDue: isFollowUpDue(row._s, now),
+        dueAt: followUpTargetTimestamp(row._s),
+      });
+    }
+
+    const followUps = candidates
+      .filter((c) => c.followUpScheduled)
+      .sort((a, b) => {
+        const ad = a.dueAt ?? Number.MAX_SAFE_INTEGER;
+        const bd = b.dueAt ?? Number.MAX_SAFE_INTEGER;
+        if (ad !== bd) return ad - bd;
+        return b.priority - a.priority;
+      });
+
+    // Non-follow-up candidates ranked by daily priority. Follow-up leads live
+    // only in "Takip Bekleyenler" (no duplication) per spec.
+    const ranked = candidates
+      .filter((c) => !c.followUpScheduled)
+      .sort((a, b) => b.priority - a.priority || b.row.hotScore - a.row.hotScore);
+
+    const todays = ranked.slice(0, 10);
+    const todaysIds = new Set(todays.map((c) => c.row.id));
+    const rest = ranked.filter((c) => !todaysIds.has(c.row.id));
+
+    const highNoContact = rest.filter(
+      (c) =>
+        c.row._s.status === "new" &&
+        (c.row.opportunityTier === "elite" ||
+          c.row.opportunityTier === "high" ||
+          c.priority >= 65),
+    );
+    const highIds = new Set(highNoContact.map((c) => c.row.id));
+    const lowPriority = rest.filter((c) => !highIds.has(c.row.id));
+
+    return { todays, followUps, highNoContact, lowPriority, total: candidates.length };
+  }, [allRows, contactFinderMap, dailyOutreach.todayQueue, renderNow, locale]);
+
+  /** Contact a lead directly from the daily queue; logs an "İletişim başlatıldı" event. */
+  const contactFromDailyQueue = useCallback(
+    (id: string, channel: "whatsapp" | "phone" | "website", url: string) => {
+      openExternal(url);
+      const row = allRowsById.get(id);
+      if (row) {
+        const base = leadTableRowToScoredLead(row);
+        applyEnrichedLeadToStore({
+          ...base,
+          activityTimeline: appendLeadActivity(
+            base.activityTimeline,
+            "contact_started",
+            "İletişim başlatıldı",
+          ),
+        });
+      }
+      // Preserve existing WhatsApp open behavior (outreach event + follow-up timer).
+      if (channel === "whatsapp") logWhatsappOpened(id, "direct", "");
+    },
+    [allRowsById, applyEnrichedLeadToStore, logWhatsappOpened],
+  );
+
   const closeOutreachQueue = () => {
     setOutreachQueue(emptyOutreachQueueState());
   };
@@ -8355,6 +8941,17 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>
         </div>
       </section>
+
+      {/* v1.6 Daily Opportunity Queue — "Bugünün Fırsatları" */}
+      {mounted && dailyQueuePartition.total > 0 && (
+        <DailyOpportunityQueue
+          partition={dailyQueuePartition}
+          onOpenDetail={(id) => setOpenId(id)}
+          onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
+          onContact={contactFromDailyQueue}
+          queueLimitReached={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
+        />
+      )}
 
       {/* Import */}
       <ImportPanel onImport={handleImport} hasCachedResults={hasCachedImportResults} />

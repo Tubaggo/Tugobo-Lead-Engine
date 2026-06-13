@@ -119,9 +119,12 @@ function baseSlugsFromName(businessName: string): string[] {
   if (tokens.length >= 2) {
     const joined = tokens.join("");
     if (joined.length >= 3 && joined !== compact) out.push(joined);
-    const first = tokens[0] ?? "";
-    if (first.length >= 4) out.push(first);
   }
+  // Always include the first meaningful brand token regardless of token count.
+  // Without this, single-token names like "Liparis Resort Hotel & Spa" (where
+  // STOPWORDS strips "resort", "hotel", "spa") never get "liparis.com.tr" generated.
+  const first = tokens[0] ?? "";
+  if (first.length >= 4) out.push(first);
   const withoutHospitality = tokens.filter((t) => !STOPWORDS.has(t));
   if (withoutHospitality.length >= 2) {
     const core = withoutHospitality.join("");

@@ -31,16 +31,24 @@ export function buildSalesSignalSourceBullets(lead: ScoredLead, locale: Locale):
   const candidates: string[] = [];
 
   const wi = lead.websiteIntelligence;
-  const url = lead.website?.trim();
+  const sv = lead.signalVerification;
+  // Use the verified website URL as the authoritative source when it exists.
+  const url =
+    lead.website?.trim() ||
+    ((sv?.websiteVerification === "verified" || sv?.websiteVerification === "reachable")
+      ? sv?.websiteSourceUrl?.trim()
+      : undefined) ||
+    lead.websiteCandidateUrl?.trim();
   const siteConf = lead.websiteConfidence ?? wi?.websiteConfidence;
 
-  if (wi?.hasWhatsAppLink) {
+  const waVerifiedByScan = sv?.whatsappVerification === "verified";
+  if (waVerifiedByScan || wi?.hasWhatsAppLink) {
     candidates.push(tr ? "Web sitesinde WhatsApp linki bulundu" : "WhatsApp link found on website");
   }
 
   const phoneWa =
     normalizePhoneForWhatsApp(lead.phone) !== null && !lead.whatsappInvalid;
-  if (phoneWa && !wi?.hasWhatsAppLink) {
+  if (phoneWa && !waVerifiedByScan && !wi?.hasWhatsAppLink) {
     candidates.push(
       tr
         ? "Kayıtlı numara WhatsApp ile açılabilir görünüyor"
@@ -60,7 +68,12 @@ export function buildSalesSignalSourceBullets(lead: ScoredLead, locale: Locale):
     candidates.push(tr ? "Tatil Sepeti görünürlüğü mevcut" : "Listed on Tatilsepeti");
   }
 
-  if (wi?.hasBookingCtaText || lead.hasReservationCTA) {
+  if (
+    wi?.hasBookingCtaText ||
+    lead.hasReservationCTA ||
+    sv?.reservationSignal === "verified" ||
+    sv?.reservationSignal === "detected"
+  ) {
     candidates.push(
       tr
         ? "Sitede rezervasyon çağrısı metni tespit edildi"
@@ -68,17 +81,23 @@ export function buildSalesSignalSourceBullets(lead: ScoredLead, locale: Locale):
     );
   }
 
-  if (url && isStrongWebsiteConfidence(siteConf)) {
+  if (sv?.websiteVerification === "verified") {
+    candidates.push(tr ? "Web sitesi doğrulandı" : "Website verified");
+  } else if (url && isStrongWebsiteConfidence(siteConf)) {
     candidates.push(tr ? "Web sitesi erişilebilir görünüyor" : "Website looks reachable from signals");
   } else if (url && siteConf && !isStrongWebsiteConfidence(siteConf)) {
     candidates.push(tr ? "Web adresi kayıtlı; güven sinyali sınırlı" : "Website URL on file; confidence is limited");
-  } else if (url && lead.hasOwnWebsite) {
+  } else if (url) {
     candidates.push(tr ? "Web sitesi bilgisi kayıtlı" : "Website URL on record");
-  } else if (lead.hasOwnWebsite && !url) {
+  } else if (lead.hasOwnWebsite) {
     candidates.push(tr ? "Kendi sitesi olduğu işaretlenmiş" : "Marked as having own website");
   }
 
-  if (instagramMatchIsLowTrust(lead)) {
+  const igVerifiedByScan =
+    sv?.instagramVerification === "verified" || sv?.instagramVerification === "likely";
+  if (igVerifiedByScan) {
+    candidates.push(tr ? "Instagram doğrulandı" : "Instagram verified");
+  } else if (instagramMatchIsLowTrust(lead)) {
     candidates.push(tr ? "Instagram eşleşmesi düşük güven" : "Instagram match is low-confidence");
   } else if (lead.hasInstagram && lead.instagram?.trim()) {
     candidates.push(tr ? "Instagram kullanıcı adı kayıtlı" : "Instagram username on record");

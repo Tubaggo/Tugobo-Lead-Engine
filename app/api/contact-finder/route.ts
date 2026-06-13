@@ -342,16 +342,59 @@ function estimateSocialLinksQuality(data: {
 }
 
 export async function POST(req: Request) {
-  let body: { website?: string };
+  let body: { website?: string; phone?: string; instagram?: string };
   try {
-    body = (await req.json()) as { website?: string };
+    body = (await req.json()) as { website?: string; phone?: string; instagram?: string };
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
   const url = normalizeWebsite(body.website ?? "");
   if (!url) {
-    return NextResponse.json({ error: "website is required" }, { status: 400 });
+    // No website — try phone then instagram as fallback contact surfaces.
+    const phone = body.phone?.trim() ?? "";
+    const instagram = body.instagram?.trim() ?? "";
+    if (phone) {
+      const waLink = toWaMeFromPhone(phone);
+      if (waLink) {
+        return NextResponse.json({
+          bestContactType: "GENERATED_WHATSAPP",
+          bestContactValue: waLink,
+          confidence: "medium",
+          foundPhones: [phone],
+          foundEmails: [],
+          foundInstagram: [],
+          foundWhatsapp: [waLink],
+          source: "Website phone number",
+          reason: "WhatsApp path via listing phone (no website available)",
+        });
+      }
+      return NextResponse.json({
+        bestContactType: "PHONE_ONLY",
+        bestContactValue: phone,
+        confidence: "low",
+        foundPhones: [phone],
+        foundEmails: [],
+        foundInstagram: [],
+        foundWhatsapp: [],
+        source: "Website phone number",
+        reason: "Phone fallback (no website, no mobile WA path)",
+      });
+    }
+    if (instagram) {
+      return NextResponse.json({
+        bestContactType: "instagram",
+        bestContactValue: instagram,
+        confidence: "medium",
+        foundPhones: [],
+        foundEmails: [],
+        foundInstagram: [instagram],
+        foundWhatsapp: [],
+        source: "Website Instagram link",
+        reason: "Instagram fallback (no website available)",
+      });
+    }
+    return NextResponse.json({ error: "website, phone, or instagram is required" }, { status: 400 });
   }
 
   try {

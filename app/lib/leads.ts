@@ -371,6 +371,16 @@ export type ScoredLead = Lead & {
   opportunityEvaluationCount?: number;
   /** Opportunity score recorded at the last evaluation (lead memory). */
   lastOpportunityScore?: number;
+  /**
+   * v1.6 Daily Opportunity Queue — lightweight queue memory (all optional,
+   * backward compatible). Mirrors {@link LeadStatusUpdate.lastQueuedAt} at the
+   * lead level so it survives re-enrichment / AI reinterpretation.
+   */
+  lastQueuedAt?: number | null;
+  /** Number of times this lead has been staged into the daily outreach queue. */
+  queueCount?: number;
+  /** Short Turkish reason captured the last time the lead was queued. */
+  lastQueueReason?: string;
 };
 
 export const OUTREACH_PRIORITY_BUCKET_LABEL: Record<OutreachPriorityBucket, string> = {
@@ -1524,6 +1534,27 @@ export function computeContactReadinessScore(
 
 export function toLeadForAiInsight(s: ScoredLead): LeadForAiInsight {
   const hasWhatsAppPath = normalizePhoneForWhatsApp(s.phone) !== null;
+  const v = s.signalVerification;
+  // signalVerification is the authoritative post-enrichment source; fall back to
+  // legacy booleans when verification has not run yet (older persisted leads).
+  const hasOwnWebsite =
+    Boolean(s.hasOwnWebsite) ||
+    Boolean(s.website?.trim()) ||
+    Boolean(s.websiteCandidateUrl?.trim()) ||
+    v?.websiteVerification === "verified" ||
+    v?.websiteVerification === "reachable";
+  const hasInstagram =
+    Boolean(s.hasInstagram) ||
+    Boolean(s.instagram?.trim()) ||
+    v?.instagramVerification === "verified" ||
+    v?.instagramVerification === "likely";
+  const whatsappConfidence: WhatsAppConfidence | undefined =
+    v?.whatsappVerification === "verified"
+      ? "confirmed"
+      : v?.whatsappVerification === "likely" &&
+          s.whatsappConfidence !== "confirmed"
+        ? "likely"
+        : s.whatsappConfidence;
   return {
     businessSignals: s.businessSignals,
     reviewPainPoints: s.reviewPainPoints?.map((p) => ({
@@ -1551,21 +1582,47 @@ export function toLeadForAiInsight(s: ScoredLead): LeadForAiInsight {
         ? s.contactQuality
         : getContactQuality(s.phone),
     hasWhatsAppPath,
-    hasInstagram: Boolean(s.hasInstagram),
-    hasOwnWebsite: Boolean(s.hasOwnWebsite),
+    hasInstagram,
+    hasOwnWebsite,
     channels: s.channels ?? [],
     outreachIntelligence: s.outreachIntelligence,
-    whatsappConfidence: s.whatsappConfidence,
+    whatsappConfidence,
   };
 }
 
 function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
   const hasWhatsAppPath = normalizePhoneForWhatsApp(s.phone) !== null;
   const tier = s.businessTier ?? calculateBusinessTier(s);
+  // Resolve the authoritative presence flags from signalVerification (post-enrichment
+  // ground truth) before falling back to the legacy import-time booleans.
+  const sv = s.signalVerification;
+  const evHasWebsite =
+    s.hasOwnWebsite ||
+    Boolean(s.website?.trim()) ||
+    Boolean(s.websiteCandidateUrl?.trim()) ||
+    sv?.websiteVerification === "verified" ||
+    sv?.websiteVerification === "reachable";
+  const evHasInstagram =
+    s.hasInstagram ||
+    Boolean(s.instagram?.trim()) ||
+    sv?.instagramVerification === "verified" ||
+    sv?.instagramVerification === "likely";
+  const evHasWhatsApp =
+    hasWhatsAppPath || sv?.whatsappVerification === "verified";
+  const evWebsite =
+    s.website?.trim() ||
+    ((sv?.websiteVerification === "verified" || sv?.websiteVerification === "reachable")
+      ? sv?.websiteSourceUrl?.trim()
+      : undefined) ||
+    s.websiteCandidateUrl?.trim();
+  const evReservationSignal =
+    Boolean(s.hasReservationCTA) ||
+    sv?.reservationSignal === "verified" ||
+    sv?.reservationSignal === "detected";
   const enrichment = buildEnrichmentV2Profile({
-    hasOwnWebsite: s.hasOwnWebsite || Boolean(s.website?.trim()),
-    hasInstagram: s.hasInstagram || Boolean(s.instagram?.trim()),
-    website: s.website,
+    hasOwnWebsite: evHasWebsite,
+    hasInstagram: evHasInstagram,
+    website: evWebsite,
     instagramHandle: s.instagram,
     socialSignalText: buildSocialSignalText(s),
     channels: s.channels,
@@ -1584,8 +1641,8 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     type: s.type,
   });
   const intel = buildExtractedSignals({
-    hasOwnWebsite: s.hasOwnWebsite,
-    hasInstagram: s.hasInstagram,
+    hasOwnWebsite: evHasWebsite,
+    hasInstagram: evHasInstagram,
     channels: s.channels,
     rating: s.rating,
     reviewsCount: s.reviewsCount,
@@ -1600,6 +1657,11 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
   });
   const base: ScoredLead = {
     ...s,
+    // Promote the authoritative resolved URL into the canonical website field so that
+    // all downstream UI (sidebar link, Contact Finder gate) sees a non-empty value
+    // for leads whose website was discovered post-import via signalVerification.
+    website: evWebsite ?? s.website,
+    hasOwnWebsite: evHasWebsite,
     digitalMaturity: enrichment.digitalMaturity,
     bookingFlowStrength: enrichment.bookingFlowStrength,
     otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
@@ -1634,9 +1696,9 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
 
   const conversionLeak = calculateConversionLeak({
     channels: withAi.channels ?? [],
-    hasOwnWebsite: Boolean(withAi.hasOwnWebsite),
-    hasInstagram: Boolean(withAi.hasInstagram),
-    hasWhatsAppPath,
+    hasOwnWebsite: evHasWebsite,
+    hasInstagram: evHasInstagram,
+    hasWhatsAppPath: evHasWhatsApp,
     bookingFlowStrength: enrichment.bookingFlowStrength,
     otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
     socialDemandStrength: enrichment.socialDemandStrength,
@@ -1682,8 +1744,8 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     acquisitionIntelligence: enrichment.acquisitionIntelligence,
     conversionLeak,
     commercialReadiness: enrichment.commercialReadiness,
-    hasInstagram: withAi.hasInstagram,
-    hasOwnWebsite: withAi.hasOwnWebsite,
+    hasInstagram: evHasInstagram,
+    hasOwnWebsite: evHasWebsite,
   });
   const newOpp = Math.round(clamp(opportunityProfile.opportunityScore + oppDelta, 0, 100));
   const opportunityLevel: OpportunityLevel =
@@ -1726,9 +1788,9 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     daysSinceLastReview: scored.daysSinceLastReview,
     occupancy30d: scored.occupancy30d,
     pricePerNight: scored.pricePerNight,
-    hasInstagram: scored.hasInstagram || Boolean(scored.instagram?.trim()),
-    hasOwnWebsite: scored.hasOwnWebsite || Boolean(scored.website?.trim()),
-    hasWhatsAppPath,
+    hasInstagram: evHasInstagram,
+    hasOwnWebsite: evHasWebsite,
+    hasWhatsAppPath: evHasWhatsApp,
     channels: scored.channels ?? [],
     bookingFlowStrength: enrichment.bookingFlowStrength,
     otaDependencyLikelihood: enrichment.otaDependencyLikelihood,
@@ -1740,9 +1802,9 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
 
   const outreachIntelligence = deriveOutreachIntelligence({
     businessTier: scored.businessTier,
-    hasWhatsAppPath,
-    hasInstagram: Boolean(scored.hasInstagram),
-    hasOwnWebsite: Boolean(scored.hasOwnWebsite),
+    hasWhatsAppPath: evHasWhatsApp,
+    hasInstagram: evHasInstagram,
+    hasOwnWebsite: evHasWebsite,
     contactQuality: scored.contactQuality,
     channels: scored.channels ?? [],
     businessSignals: scored.businessSignals,
@@ -1794,13 +1856,13 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     scored.website ?? scored.websiteCandidateUrl ?? null,
   );
   const icpFitScore = calculateIcpFitScore({
-    hasWebsite: Boolean(scored.hasOwnWebsite || scored.website?.trim()),
-    hasInstagram: Boolean(scored.hasInstagram || scored.instagram?.trim()),
-    hasWhatsapp: hasWhatsAppPath,
+    hasWebsite: evHasWebsite,
+    hasInstagram: evHasInstagram,
+    hasWhatsapp: evHasWhatsApp,
     reviewsCount: scored.reviewsCount,
     daysSinceLastReview: scored.daysSinceLastReview,
-    hasReservationSignal: Boolean(scored.hasReservationCTA),
-    hasDirectContactPath: hasWhatsAppPath || Boolean(scored.hasContactPage),
+    hasReservationSignal: evReservationSignal,
+    hasDirectContactPath: evHasWhatsApp || Boolean(scored.hasContactPage),
     channelCount: (scored.channels ?? []).length,
     otaPresence: (scored.channels ?? []).some(
       (c) => c === "Booking" || c === "Airbnb" || c === "Tatilsepeti",
@@ -1819,7 +1881,7 @@ function attachStructuredIntelligence(s: ScoredLead): ScoredLead {
     estimatedDemandVolume: icpAlignment.estimatedDemandVolume,
     reviewsCount: scored.reviewsCount,
     daysSinceLastReview: scored.daysSinceLastReview,
-    hasWhatsAppPath,
+    hasWhatsAppPath: evHasWhatsApp,
     businessOwnershipType: ownership.type,
     verification: scored.signalVerification ?? null,
   });
