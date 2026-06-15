@@ -6138,6 +6138,7 @@ function LeadDetailPanel({
         <TodayActionCard lead={selectedLead} now={now} />
         <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
         <DemoReadinessCard lead={selectedLead} />
+        <CommunicationStrategyCard lead={selectedLead} finder={finderPersisted} now={now} />
         <LeadSignalVerificationBlock lead={selectedLead} />
         <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
         <LeadActivityTimelineBlock lead={selectedLead} />
@@ -6218,6 +6219,34 @@ function BrandLogo() {
 }
 
 /** One compact row inside a daily-queue section. */
+/** v2.2 — One-line outreach mode hint for a queue candidate. Pure. */
+function queueOutreachHint(
+  candidate: QueueCandidate,
+  tr: boolean,
+): { text: string; cls: string } | null {
+  if (candidate.followUpDue)
+    return {
+      text: tr ? "Takip zamanı geldi" : "Follow-up due",
+      cls: "text-amber-400",
+    };
+  const v = candidate.row.signalVerification;
+  if (v?.whatsappVerification === "verified" || candidate.channels.waUrl)
+    return {
+      text: tr ? "WhatsApp önerilir" : "WhatsApp recommended",
+      cls: "text-emerald-400",
+    };
+  if (
+    v?.instagramVerification === "verified" ||
+    v?.instagramVerification === "likely" ||
+    candidate.row.instagram
+  )
+    return {
+      text: tr ? "Instagram önerilir" : "Instagram recommended",
+      cls: "text-sky-400",
+    };
+  return null;
+}
+
 function DailyQueueItem({
   candidate,
   rank,
@@ -6278,6 +6307,12 @@ function DailyQueueItem({
           <span className="text-zinc-600">{tr ? "Sebep: " : "Reason: "}</span>
           {candidate.reasonText}
         </p>
+        {(() => {
+          const hint = queueOutreachHint(candidate, tr);
+          return hint ? (
+            <p className={`mt-0.5 text-[10px] font-medium ${hint.cls}`}>{hint.text}</p>
+          ) : null;
+        })()}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1.5">
         <button
@@ -6442,6 +6477,229 @@ function DailyOpportunityQueue({
           lowPriority,
           { limit: 8, tone: "text-zinc-300" },
         )}
+      </div>
+    </section>
+  );
+}
+
+// ─── v2.1 Founder Focus Engine ──────────────────────────────────────────────
+
+/**
+ * Runtime priority score for daily focus ranking. Pure — no I/O.
+ * Returns 0 for NO_ACTION leads (won/lost/meeting with no action).
+ */
+function computePriorityScore(row: LeadTableRow, now: number): number {
+  const action = computeTodayActionStatus(row, row._s, now);
+  let score = 0;
+  if (action === "HOT_NOW") score += 100;
+  else if (action === "DEMO_READY") score += 80;
+  else if (action === "FOLLOW_UP_DUE") score += 60;
+  else if (action === "NEEDS_CONTACT") score += 40;
+  else return 0;
+
+  const v = row.signalVerification;
+  if (v?.websiteVerification === "verified") score += 15;
+  if (v?.reservationSignal === "verified" || v?.reservationSignal === "detected") score += 20;
+  if (v?.whatsappVerification === "verified" || v?.whatsappVerification === "likely") score += 10;
+  if (typeof row.icpFitScore === "number" && row.icpFitScore >= 70) score += 15;
+
+  return score;
+}
+
+/** v2.1 — "Bugünün En Öncelikli Fırsatları" — top-3 priority panel with queue builder & founder insight. */
+function TodayTopPrioritiesPanel({
+  rows,
+  now,
+  onOpenDetail,
+  onBuildQueue,
+  queueFull,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  onOpenDetail: (id: string) => void;
+  onBuildQueue: (ids: string[]) => void;
+  queueFull: boolean;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const { top3, top10Ids, followUpDue, hotCount, demoCount, waCount, igCount } = useMemo(() => {
+    const scored = rows
+      .map((row) => ({ row, score: computePriorityScore(row, now) }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    let fDue = 0;
+    let hot = 0;
+    let demo = 0;
+    let wa = 0;
+    let ig = 0;
+    for (const { row } of scored) {
+      const a = computeTodayActionStatus(row, row._s, now);
+      if (a === "FOLLOW_UP_DUE") fDue++;
+      else if (a === "HOT_NOW") hot++;
+      else if (a === "DEMO_READY") demo++;
+      const vv = row.signalVerification;
+      if (
+        vv?.whatsappVerification === "verified" ||
+        vv?.whatsappVerification === "likely" ||
+        row.phone
+      )
+        wa++;
+      else if (
+        vv?.instagramVerification === "verified" ||
+        vv?.instagramVerification === "likely" ||
+        row.instagram
+      )
+        ig++;
+    }
+
+    return {
+      top3: scored.slice(0, 3),
+      top10Ids: scored.slice(0, 10).map(({ row }) => row.id),
+      followUpDue: fDue,
+      hotCount: hot,
+      demoCount: demo,
+      waCount: wa,
+      igCount: ig,
+    };
+  }, [rows, now]);
+
+  if (top3.length === 0) return null;
+
+  // v2.2 communication-aware founder insight (highest-priority rule wins)
+  const insight =
+    followUpDue > hotCount + demoCount
+      ? tr
+        ? "Takip bekleyen fırsatlar öncelikli."
+        : "Overdue follow-ups need attention first."
+      : waCount >= 4
+        ? tr
+          ? `Bugün ${waCount} WhatsApp teması öneriliyor.`
+          : `${waCount} WhatsApp contacts recommended today.`
+        : igCount > waCount && igCount > 0
+          ? tr
+            ? "Instagram ağırlıklı iletişim günü."
+            : "Instagram-heavy outreach day."
+          : hotCount > demoCount
+            ? tr
+              ? "Demo planlamaya odaklan."
+              : "Focus on scheduling demos."
+            : demoCount > 0
+              ? tr
+                ? "Alt funnel güçlü, yeni fırsat üretimine bak."
+                : "Bottom funnel strong — consider sourcing fresh leads."
+              : hotCount === 0 && demoCount === 0 && followUpDue === 0
+                ? tr
+                  ? "Yeni lead üretimi gerekli."
+                  : "Pipeline needs fresh leads."
+                : tr
+                  ? "Pipeline dengeli görünüyor."
+                  : "Pipeline looks balanced.";
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-fuchsia-500/20 bg-fuchsia-500/[0.03]">
+      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-white/5 px-4 py-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-fuchsia-200">
+            {tr ? "Bugünün En Öncelikli Fırsatları" : "Today's Top Priorities"}
+          </h2>
+          <p className="mt-0.5 text-[11px] text-zinc-500">
+            {tr
+              ? "Anlık öncelik sıralaması — kalıcı değil"
+              : "Runtime priority ranking — not persisted"}
+          </p>
+        </div>
+        {/* Part 3: Queue Builder */}
+        {!queueFull && top10Ids.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onBuildQueue(top10Ids)}
+            className="shrink-0 rounded-md border border-fuchsia-400/30 bg-fuchsia-500/10 px-2.5 py-1.5 text-xs font-medium text-fuchsia-200 transition hover:bg-fuchsia-500/20"
+          >
+            {tr ? "Bugünün Kuyruğunu Oluştur" : "Build Today's Queue"}
+          </button>
+        )}
+      </div>
+
+      <div className="divide-y divide-white/5">
+        {top3.map(({ row, score }, idx) => {
+          const action = computeTodayActionStatus(row, row._s, now);
+          const badgeLabel =
+            action === "HOT_NOW"
+              ? tr
+                ? "Sıcak Fırsat"
+                : "Hot Lead"
+              : action === "DEMO_READY"
+                ? tr
+                  ? "Demo Hazır"
+                  : "Demo Ready"
+                : action === "FOLLOW_UP_DUE"
+                  ? tr
+                    ? "Takip Zamanı"
+                    : "Follow-up Due"
+                  : tr
+                    ? "İletişim Gerekli"
+                    : "Needs Contact";
+          const badgeCls =
+            action === "HOT_NOW"
+              ? "border-fuchsia-400/30 bg-fuchsia-500/10 text-fuchsia-300"
+              : action === "DEMO_READY"
+                ? "border-violet-400/30 bg-violet-500/10 text-violet-300"
+                : action === "FOLLOW_UP_DUE"
+                  ? "border-amber-400/30 bg-amber-500/10 text-amber-300"
+                  : "border-sky-400/30 bg-sky-500/10 text-sky-300";
+
+          const v = row.signalVerification;
+          const reasonParts: string[] = [];
+          if (action === "FOLLOW_UP_DUE")
+            reasonParts.push(tr ? "Takip zamanı geldi" : "Follow-up due");
+          else if (action === "HOT_NOW")
+            reasonParts.push(tr ? "Yüksek fırsat skoru" : "High opportunity score");
+          else if (action === "DEMO_READY")
+            reasonParts.push(tr ? "Demo için hazır" : "Ready for demo");
+          if (v?.reservationSignal === "verified" || v?.reservationSignal === "detected")
+            reasonParts.push(tr ? "Rezervasyon sinyali" : "Reservation CTA");
+          if (v?.whatsappVerification === "verified") reasonParts.push("WhatsApp ✓");
+
+          return (
+            <button
+              key={row.id}
+              type="button"
+              onClick={() => onOpenDetail(row.id)}
+              className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.02]"
+            >
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-[11px] font-bold text-zinc-400">
+                {idx + 1}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="truncate text-[13px] font-medium text-zinc-100">{row.name}</span>
+                  <span
+                    className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${badgeCls}`}
+                  >
+                    {badgeLabel}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-zinc-500">
+                  {[row.city, reasonParts[0]].filter(Boolean).join(" · ")}
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="text-[13px] font-bold tabular-nums text-zinc-300">{score}</div>
+                <div className="text-[10px] text-zinc-600">{tr ? "öncelik" : "priority"}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Part 5: Founder Focus Insight */}
+      <div className="border-t border-white/5 px-4 py-2.5">
+        <span className="text-[11px] font-medium text-fuchsia-400">
+          {tr ? "Kurucu Odağı" : "Founder Focus"}
+        </span>
+        <span className="ml-2 text-[11px] text-zinc-400">{insight}</span>
       </div>
     </section>
   );
@@ -6896,6 +7154,265 @@ function computeDemoReadiness(
 }
 
 /** v1.9 — "Demo Hazırlık Durumu" checklist card in lead detail panel. */
+// ─── v2.2 Communication Intelligence Layer ──────────────────────────────────
+
+type RecommendedChannelResult = {
+  channel:
+    | "whatsapp_verified"
+    | "whatsapp_possible"
+    | "instagram"
+    | "website"
+    | "phone"
+    | "none";
+  confidence: "high" | "medium" | "low";
+};
+
+/**
+ * Derives the best outreach channel from existing signal verification and
+ * contact finder data. Pure — no I/O. Priority:
+ *   Verified WA > Possible WA > Instagram > Website > Phone > None
+ */
+function computeRecommendedChannel(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+): RecommendedChannelResult {
+  const v = row.signalVerification;
+
+  if (
+    v?.whatsappVerification === "verified" ||
+    finder?.bestContactType === "VERIFIED_WHATSAPP"
+  )
+    return { channel: "whatsapp_verified", confidence: "high" };
+
+  if (
+    v?.whatsappVerification === "likely" ||
+    finder?.bestContactType === "whatsapp" ||
+    finder?.bestContactType === "GENERATED_WHATSAPP" ||
+    Boolean(row.phone?.trim())
+  )
+    return { channel: "whatsapp_possible", confidence: "medium" };
+
+  if (
+    v?.instagramVerification === "verified" ||
+    v?.instagramVerification === "likely" ||
+    v?.instagramVerification === "candidate" ||
+    finder?.bestContactType === "instagram" ||
+    Boolean(row.instagram?.trim())
+  )
+    return { channel: "instagram", confidence: "medium" };
+
+  if (
+    v?.websiteVerification === "verified" ||
+    v?.websiteVerification === "reachable" ||
+    Boolean(row.website?.trim())
+  )
+    return { channel: "website", confidence: "low" };
+
+  if (row.phone?.trim()) return { channel: "phone", confidence: "low" };
+
+  return { channel: "none", confidence: "low" };
+}
+
+/** v2.2 — "İletişim Stratejisi" — channel strategy + readiness + playbook (Parts 1, 3, 4). */
+function CommunicationStrategyCard({
+  lead,
+  finder,
+  now,
+}: {
+  lead: LeadTableRow;
+  finder: ContactFinderResult | undefined;
+  now: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  // Communication phase is over for won/lost leads — hide the card entirely.
+  if (lead._s.status === "won" || lead._s.status === "lost") return null;
+  const v = lead.signalVerification;
+  const action = computeTodayActionStatus(lead, lead._s, now);
+  const rec = computeRecommendedChannel(lead, finder);
+
+  // Part 3: readiness checklist (5 signals)
+  const checks = [
+    {
+      label: tr ? "Website doğrulandı" : "Website verified",
+      ok: v?.websiteVerification === "verified",
+    },
+    {
+      label: tr ? "WhatsApp bulundu" : "WhatsApp found",
+      ok:
+        v?.whatsappVerification === "verified" ||
+        v?.whatsappVerification === "likely" ||
+        finder?.bestContactType === "VERIFIED_WHATSAPP" ||
+        finder?.bestContactType === "whatsapp" ||
+        finder?.bestContactType === "GENERATED_WHATSAPP",
+    },
+    {
+      label: tr ? "Instagram bulundu" : "Instagram found",
+      ok:
+        v?.instagramVerification === "verified" ||
+        v?.instagramVerification === "likely" ||
+        v?.instagramVerification === "candidate" ||
+        Boolean(lead.instagram?.trim()),
+    },
+    {
+      label: tr ? "Rezervasyon CTA bulundu" : "Reservation CTA found",
+      ok: v?.reservationSignal === "verified" || v?.reservationSignal === "detected",
+    },
+    {
+      label: tr ? "İletişim kişisi bulundu" : "Contact person found",
+      ok: Boolean(finder?.bestContactValue?.trim()),
+    },
+  ];
+  const readyCount = checks.filter((c) => c.ok).length;
+  const readinessPct = Math.round((readyCount / checks.length) * 100);
+  const readinessLabel =
+    readinessPct >= 80
+      ? tr
+        ? "Hazır"
+        : "Ready"
+      : readinessPct >= 40
+        ? tr
+          ? "Kısmen Hazır"
+          : "Partially Ready"
+        : tr
+          ? "Araştırma Gerekli"
+          : "Research Needed";
+  const readinessCls =
+    readinessPct >= 80 ? "text-emerald-300" : readinessPct >= 40 ? "text-amber-300" : "text-rose-400";
+
+  // Part 1: channel display strings
+  const channelLabel =
+    rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible"
+      ? "WhatsApp"
+      : rec.channel === "instagram"
+        ? "Instagram"
+        : rec.channel === "website"
+          ? tr
+            ? "Web Sitesi"
+            : "Website"
+          : rec.channel === "phone"
+            ? tr
+              ? "Telefon"
+              : "Phone"
+            : tr
+              ? "Belirsiz"
+              : "Unknown";
+
+  const channelBadgeCls =
+    rec.channel === "whatsapp_verified"
+      ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
+      : rec.channel === "whatsapp_possible"
+        ? "border-emerald-400/20 bg-emerald-500/[0.07] text-emerald-400"
+        : rec.channel === "instagram"
+          ? "border-violet-400/30 bg-violet-500/10 text-violet-300"
+          : rec.channel === "website"
+            ? "border-sky-400/30 bg-sky-500/10 text-sky-300"
+            : "border-zinc-700 bg-zinc-800/60 text-zinc-500";
+
+  const channelReason =
+    rec.channel === "whatsapp_verified"
+      ? tr
+        ? "WhatsApp doğrulandı ve doğrudan iletişim mümkün."
+        : "WhatsApp verified — direct contact available."
+      : rec.channel === "whatsapp_possible"
+        ? tr
+          ? "WhatsApp muhtemel, telefon numarası üzerinden denenebilir."
+          : "WhatsApp likely via phone number."
+        : rec.channel === "instagram"
+          ? tr
+            ? "Instagram aktif, WhatsApp doğrulanmadı."
+            : "Instagram active — WhatsApp not confirmed."
+          : rec.channel === "website"
+            ? v?.reservationSignal === "verified" || v?.reservationSignal === "detected"
+              ? tr
+                ? "Rezervasyon CTA mevcut."
+                : "Reservation CTA detected on site."
+              : tr
+                ? "Web sitesi üzerinden iletişim kurulabilir."
+                : "Contact reachable via website."
+            : tr
+              ? "Doğrulanmış kanal henüz bulunamadı."
+              : "No verified channel found yet.";
+
+  // Part 4: First Contact Playbook — deterministic, action-aware
+  const playbook =
+    action === "DEMO_READY"
+      ? tr
+        ? "Demo görüşmesi planla."
+        : "Schedule a demo call."
+      : action === "FOLLOW_UP_DUE"
+        ? tr
+          ? "Takip mesajı gönder."
+          : "Send a follow-up message."
+        : action === "HOT_NOW"
+          ? rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible"
+            ? tr
+              ? "Doğrudan WhatsApp teması önerilir."
+              : "Direct WhatsApp contact recommended."
+            : tr
+              ? "İlk temas kur — yüksek öncelikli fırsat."
+              : "Make first contact — high-priority opportunity."
+          : rec.channel === "instagram"
+            ? tr
+              ? "DM ile ilk temas kur."
+              : "Initiate contact via Instagram DM."
+            : rec.channel === "website"
+              ? tr
+                ? "İletişim formu üzerinden ulaş."
+                : "Reach out via contact form."
+              : tr
+                ? "İlk tanışma mesajı ile başla."
+                : "Start with an introductory message.";
+
+  if (rec.channel === "none" && readyCount === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.03] px-3 py-2.5">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+          {tr ? "İletişim Stratejisi" : "Communication Strategy"}
+        </span>
+        <span className={`text-[10px] font-medium ${readinessCls}`}>
+          %{readinessPct} · {readinessLabel}
+        </span>
+      </div>
+
+      {/* Recommended channel */}
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-zinc-600">
+          {tr ? "Önerilen Kanal" : "Channel"}
+        </span>
+        <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${channelBadgeCls}`}>
+          {channelLabel}
+          {rec.channel === "whatsapp_verified" && " ✓"}
+        </span>
+      </div>
+
+      {/* Communication reason */}
+      <p className="mb-2 text-[11px] text-zinc-400">
+        <span className="text-zinc-600">{tr ? "Sebep: " : "Reason: "}</span>
+        {channelReason}
+      </p>
+
+      {/* First action playbook */}
+      <div className="mb-3 rounded-md border border-white/5 bg-white/[0.02] px-2 py-1.5">
+        <span className="text-[10px] text-zinc-600">{tr ? "İlk Aksiyon: " : "First Action: "}</span>
+        <span className="text-[11px] font-medium text-zinc-200">{playbook}</span>
+      </div>
+
+      {/* Readiness checklist */}
+      <div className="space-y-1">
+        {checks.map((c) => (
+          <div key={c.label} className="flex items-center gap-2 text-[11px]">
+            <span className={c.ok ? "text-emerald-400" : "text-zinc-600"}>{c.ok ? "✓" : "—"}</span>
+            <span className={c.ok ? "text-zinc-300" : "text-zinc-500"}>{c.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DemoReadinessCard({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
   const tr = locale === "tr";
@@ -8957,6 +9474,26 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const safeSkippedToday = mounted ? dailyOutreach.skippedToday : 0;
   const safeDncToday = mounted ? dailyOutreach.dncToday : 0;
 
+  // v2.1 Queue health — ready/missing counts derived from current queue state.
+  const queueHealth = useMemo(() => {
+    let ready = 0;
+    let missingData = 0;
+    for (const id of dailyOutreach.todayQueue) {
+      const row = allRowsById.get(id);
+      if (!row) continue;
+      if (hasValidOutboundContact(row, contactFinderMap[row.id]).any) ready++;
+      else missingData++;
+    }
+    return {
+      ready,
+      missingData,
+      estimatedMinutes: dailyOutreach.todayQueue.length * 3,
+    };
+  }, [dailyOutreach.todayQueue, allRowsById, contactFinderMap]);
+  const safeQueueHealth = mounted
+    ? queueHealth
+    : { ready: 0, missingData: 0, estimatedMinutes: 0 };
+
   const addLeadIdsToDailyQueue = (ids: string[]) => {
     const now = Date.now();
     const day = localCalendarDayKey();
@@ -9889,6 +10426,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               {t("follow_ups_due_label", locale)} {safeFollowUpDueCount} ·{" "}
               {t("contacted_today_label", locale)} {safeCompletedToday}
             </p>
+            {safeActiveQueueCount > 0 && (
+              <p className="mt-0.5 text-[11px] text-zinc-500">
+                {locale === "tr" ? "Hazır" : "Ready"}{" "}
+                <span className="text-emerald-400">{safeQueueHealth.ready}</span>
+                {" · "}
+                {locale === "tr" ? "Eksik veri" : "Missing data"}{" "}
+                <span className="text-amber-400">{safeQueueHealth.missingData}</span>
+                {" · "}
+                {locale === "tr" ? "Tahmini süre" : "Est. session"}{" "}
+                <span className="text-zinc-300">~{safeQueueHealth.estimatedMinutes} dk</span>
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -9927,6 +10476,17 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* v2.0 Revenue Intelligence — "Bu Haftaki Ticari Görünüm" */}
       {mounted && allRows.length > 0 && (
         <WeeklyCommercialOutlook rows={allRows} now={renderNow || Date.now()} />
+      )}
+
+      {/* v2.1 Founder Focus — "Bugünün En Öncelikli Fırsatları" */}
+      {mounted && allRows.length > 0 && (
+        <TodayTopPrioritiesPanel
+          rows={allRows}
+          now={renderNow || Date.now()}
+          onOpenDetail={(id) => setOpenId(id)}
+          onBuildQueue={(ids) => addLeadIdsToDailyQueue(ids)}
+          queueFull={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
+        />
       )}
 
       {/* v1.8 Execution counters — Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan */}
