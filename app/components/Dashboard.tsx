@@ -40,6 +40,8 @@ import {
   type OpportunityTier,
   OPPORTUNITY_TIER_LABELS,
   OPPORTUNITY_REASON_LABELS,
+  computeLeadLifecycleStatus,
+  type LeadLifecycleStatus,
 } from "@/app/lib/leads";
 import type { SignalSourceKey } from "@/app/lib/signal-verification";
 import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
@@ -2499,6 +2501,40 @@ function StatusPill({ status }: { status: LeadStatus }) {
   );
 }
 
+/** v1.7 — Lifecycle badge (Yeni / Zenginleştirildi / Doğrulandı / Sıcak Fırsat). */
+function LifecycleBadge({ lifecycle }: { lifecycle: LeadLifecycleStatus }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  type Config = { label: string; cls: string };
+  const config: Partial<Record<LeadLifecycleStatus, Config>> = {
+    NEW: {
+      label: tr ? "Yeni" : "New",
+      cls: "bg-zinc-500/15 text-zinc-300 ring-zinc-500/30",
+    },
+    ENRICHED: {
+      label: tr ? "Zenginleştirildi" : "Enriched",
+      cls: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+    },
+    VERIFIED: {
+      label: tr ? "Doğrulandı" : "Verified",
+      cls: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+    },
+    HOT_OPPORTUNITY: {
+      label: tr ? "Sıcak Fırsat" : "Hot Opportunity",
+      cls: "bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/40",
+    },
+  };
+  const item = config[lifecycle];
+  if (!item) return null;
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${item.cls}`}
+    >
+      {item.label}
+    </span>
+  );
+}
+
 function IconWhatsapp({ className = "" }: { className?: string }) {
   return (
     <svg
@@ -3419,6 +3455,7 @@ function HotCard({
   outreachActivityLabel?: string;
 }) {
   const { locale } = useLocale();
+  const lifecycle = computeLeadLifecycleStatus(lead, { status });
   return (
     <div className="group relative flex h-full min-w-[260px] flex-col rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-4 transition hover:border-orange-400/30 hover:from-orange-500/[0.05]">
       <div className="flex items-start justify-between gap-3">
@@ -3544,7 +3581,10 @@ function HotCard({
         </div>
       ) : null}
       <div className="mt-auto flex items-center justify-between pt-4">
-        <StatusPill status={status} />
+        <div className="flex items-center gap-1.5">
+          <StatusPill status={status} />
+          <LifecycleBadge lifecycle={lifecycle} />
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -8568,6 +8608,20 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return { todays, followUps, highNoContact, lowPriority, total: candidates.length };
   }, [allRows, contactFinderMap, dailyOutreach.todayQueue, renderNow, locale]);
 
+  /**
+   * v1.7 Focus Queue — HOT_OPPORTUNITY leads not yet contacted.
+   * Derived filter for future daily outreach targeting; no new page required.
+   */
+  const focusQueue = useMemo(
+    () =>
+      allRows.filter((row) => {
+        const lc = computeLeadLifecycleStatus(row, row._s);
+        return lc === "HOT_OPPORTUNITY" && row._s.status === "new";
+      }),
+    [allRows],
+  );
+  void focusQueue; // available for future outreach targeting
+
   /** Contact a lead directly from the daily queue; logs an "İletişim başlatıldı" event. */
   const contactFromDailyQueue = useCallback(
     (id: string, channel: "whatsapp" | "phone" | "website", url: string) => {
@@ -9756,6 +9810,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                     {t("session_import_badge", locale)}
                                   </span>
                                 )}
+                                <LifecycleBadge lifecycle={computeLeadLifecycleStatus(row, s)} />
                               </div>
                             </button>
                             <OutreachBadgesRow

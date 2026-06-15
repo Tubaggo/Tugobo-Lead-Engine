@@ -2214,3 +2214,72 @@ export function whatsappLinkWithText(phone: string, text: string): string | null
 export function instagramLink(handle: string) {
   return `https://instagram.com/${handle.replace(/^@/, "")}`;
 }
+
+// ─── v1.7 Lead Lifecycle ────────────────────────────────────────────────────
+
+export type LeadLifecycleStatus =
+  | "NEW"
+  | "ENRICHED"
+  | "VERIFIED"
+  | "HOT_OPPORTUNITY"
+  | "CONTACTED"
+  | "DEMO_BOOKED"
+  | "WON"
+  | "LOST";
+
+/**
+ * Derives the v1.7 lead lifecycle status from existing scored-lead data and
+ * workflow state. Pure — no I/O, no mutation of existing scores.
+ *
+ * Hierarchy (highest wins):
+ *   WON / LOST > DEMO_BOOKED > CONTACTED > HOT_OPPORTUNITY > VERIFIED > ENRICHED > NEW
+ */
+export function computeLeadLifecycleStatus(
+  lead: Pick<
+    ScoredLead,
+    "verifiedOpportunityScore" | "signalVerification" | "enrichmentCount" | "lastEnrichedAt"
+  >,
+  s: Pick<LeadStatusUpdate, "status">,
+): LeadLifecycleStatus {
+  // CRM terminal / progress states take precedence over signal-derived states.
+  if (s.status === "won") return "WON";
+  if (s.status === "lost") return "LOST";
+  if (s.status === "meeting") return "DEMO_BOOKED";
+  if (
+    s.status === "contacted" ||
+    s.status === "needs_follow_up" ||
+    s.status === "replied"
+  )
+    return "CONTACTED";
+
+  const v = lead.signalVerification;
+
+  // HOT_OPPORTUNITY: score threshold OR strong multi-channel verification.
+  const score = lead.verifiedOpportunityScore;
+  const scoreHot = typeof score === "number" && score >= 80;
+  const channelHot =
+    v?.websiteVerification === "verified" &&
+    (v.reservationSignal === "verified" || v.reservationSignal === "detected") &&
+    (v.whatsappVerification === "verified" ||
+      v.whatsappVerification === "likely" ||
+      v.instagramVerification === "verified" ||
+      v.instagramVerification === "likely");
+  if (scoreHot || channelHot) return "HOT_OPPORTUNITY";
+
+  // VERIFIED: at least one key signal definitively confirmed.
+  const isVerified =
+    v?.whatsappVerification === "verified" ||
+    v?.websiteVerification === "verified" ||
+    v?.instagramVerification === "verified" ||
+    v?.reservationSignal === "verified";
+  if (isVerified) return "VERIFIED";
+
+  // ENRICHED: lead has passed through the enrichment pipeline at least once.
+  const isEnriched =
+    (typeof lead.enrichmentCount === "number" && lead.enrichmentCount > 0) ||
+    typeof lead.lastEnrichedAt === "string" ||
+    v != null;
+  if (isEnriched) return "ENRICHED";
+
+  return "NEW";
+}
