@@ -6136,6 +6136,8 @@ function LeadDetailPanel({
         <LeadEnrichmentMetaBlock lead={selectedLead} />
         <LeadOpportunityBlock lead={selectedLead} />
         <TodayActionCard lead={selectedLead} now={now} />
+        <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
+        <DemoReadinessCard lead={selectedLead} />
         <LeadSignalVerificationBlock lead={selectedLead} />
         <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
         <LeadActivityTimelineBlock lead={selectedLead} />
@@ -6580,6 +6582,410 @@ function ActionQueuePanel({
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+// ─── v1.9 Sales Pipeline Layer ───────────────────────────────────────────────
+
+/** Pure: follow-up age label for contacted/follow-up leads. Derived only, no persistence. */
+function computeFollowUpAge(s: LeadStatusUpdate, now: number, tr: boolean): string | null {
+  if (s.status !== "contacted" && s.status !== "needs_follow_up" && s.status !== "replied")
+    return null;
+  const base =
+    typeof s.lastContactedAt === "number" && s.lastContactedAt > 0
+      ? s.lastContactedAt
+      : typeof s.contactedAt === "number" && s.contactedAt > 0
+        ? s.contactedAt
+        : null;
+  const followUpAt =
+    typeof s.nextFollowUpAt === "number" && Number.isFinite(s.nextFollowUpAt)
+      ? s.nextFollowUpAt
+      : base != null
+        ? base +
+          (typeof s.followUpAfterHours === "number" && s.followUpAfterHours > 0
+            ? s.followUpAfterHours
+            : 24) *
+            3600000
+        : null;
+  if (followUpAt !== null && now > followUpAt) return tr ? "Takip gecikti" : "Follow-up overdue";
+  if (base == null) return null;
+  const days = Math.floor((now - base) / 86400000);
+  if (days <= 0) return tr ? "Takip bugün" : "Follow-up today";
+  if (days < 2) return tr ? "1 gün geçti" : "1 day ago";
+  if (days < 5) return tr ? "3 gün geçti" : "3 days ago";
+  return tr ? "7 gün geçti" : "7 days ago";
+}
+
+/** Pure: demo readiness checklist derived from signal verification and ICP score. */
+function computeDemoReadiness(
+  lead: LeadTableRow,
+  tr: boolean,
+): { pct: number; ready: boolean; items: { label: string; ok: boolean }[] } {
+  const v = lead.signalVerification;
+  const items = [
+    { label: tr ? "Website doğrulandı" : "Website verified", ok: v?.websiteVerification === "verified" },
+    {
+      label: tr ? "WhatsApp bulundu" : "WhatsApp found",
+      ok: v?.whatsappVerification === "verified" || v?.whatsappVerification === "likely",
+    },
+    {
+      label: tr ? "Instagram bulundu" : "Instagram found",
+      ok:
+        v?.instagramVerification === "verified" ||
+        v?.instagramVerification === "likely" ||
+        v?.instagramVerification === "candidate",
+    },
+    {
+      label: tr ? "Rezervasyon CTA bulundu" : "Reservation CTA found",
+      ok: v?.reservationSignal === "verified" || v?.reservationSignal === "detected",
+    },
+    {
+      label: tr ? "ICP uyumu yüksek" : "High ICP fit",
+      ok: typeof lead.icpFitScore === "number" && lead.icpFitScore >= 70,
+    },
+  ];
+  const done = items.filter((i) => i.ok).length;
+  const pct = Math.round((done / items.length) * 100);
+  return { pct, ready: pct >= 80, items };
+}
+
+/** v1.9 — "Demo Hazırlık Durumu" checklist card in lead detail panel. */
+function DemoReadinessCard({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const s = lead._s;
+  if (s.status === "won" || s.status === "lost") return null;
+  const { pct, ready, items } = computeDemoReadiness(lead, tr);
+  return (
+    <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.03] px-3 py-2.5">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+          {tr ? "Demo Hazırlık Durumu" : "Demo Readiness"}
+        </span>
+        <span
+          className={`text-xs font-semibold tabular-nums ${ready ? "text-emerald-300" : "text-amber-300"}`}
+        >
+          %{pct}
+        </span>
+      </div>
+      <div className="space-y-1">
+        {items.map((item) => (
+          <div key={item.label} className="flex items-center gap-2 text-[11px]">
+            <span className={item.ok ? "text-emerald-400" : "text-zinc-600"}>
+              {item.ok ? "✓" : "—"}
+            </span>
+            <span className={item.ok ? "text-zinc-200" : "text-zinc-500"}>{item.label}</span>
+          </div>
+        ))}
+      </div>
+      <div
+        className={`mt-2 rounded-md px-2 py-1 text-center text-[11px] font-medium ${
+          ready ? "bg-emerald-500/15 text-emerald-200" : "bg-amber-500/10 text-amber-300"
+        }`}
+      >
+        {ready
+          ? tr
+            ? "Demo Hazır"
+            : "Ready for Demo"
+          : tr
+            ? "Daha Fazla Veri Gerekli"
+            : "More Data Needed"}
+      </div>
+    </div>
+  );
+}
+
+/** v1.9 — Quick pipeline stage action buttons in lead detail panel. */
+function PipelineStageActions({
+  lead,
+  setLeadStatus,
+  now,
+}: {
+  lead: LeadTableRow;
+  setLeadStatus: (id: string, status: LeadStatus) => void;
+  now: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const s = lead._s;
+  const ageLabel = computeFollowUpAge(s, now, tr);
+  const ageCls =
+    ageLabel === (tr ? "Takip gecikti" : "Follow-up overdue")
+      ? "text-rose-300"
+      : ageLabel === (tr ? "Takip bugün" : "Follow-up today")
+        ? "text-sky-300"
+        : "text-amber-300";
+
+  const stages: { label: string; status: LeadStatus; active: boolean; activeCls: string }[] = [
+    {
+      label: tr ? "İlk Temas Yapıldı" : "First Contact",
+      status: "contacted",
+      active: s.status === "contacted",
+      activeCls: "bg-sky-500/20 text-sky-200 ring-sky-400/40",
+    },
+    {
+      label: tr ? "Takibe Al" : "Follow-up",
+      status: "needs_follow_up",
+      active: s.status === "needs_follow_up" || s.status === "replied",
+      activeCls: "bg-amber-500/20 text-amber-200 ring-amber-400/40",
+    },
+    {
+      label: tr ? "Demo Planlandı" : "Demo Planned",
+      status: "meeting",
+      active: s.status === "meeting",
+      activeCls: "bg-violet-500/20 text-violet-200 ring-violet-400/40",
+    },
+    {
+      label: tr ? "Kazanıldı" : "Won",
+      status: "won",
+      active: s.status === "won",
+      activeCls: "bg-emerald-500/20 text-emerald-200 ring-emerald-400/40",
+    },
+    {
+      label: tr ? "Kaybedildi" : "Lost",
+      status: "lost",
+      active: s.status === "lost",
+      activeCls: "bg-rose-500/20 text-rose-200 ring-rose-400/40",
+    },
+  ];
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+          {tr ? "Satış Aşaması" : "Pipeline Stage"}
+        </span>
+        {ageLabel && (
+          <span className={`text-[11px] font-medium ${ageCls}`}>{ageLabel}</span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {stages.map((stage) => (
+          <button
+            key={stage.status}
+            type="button"
+            onClick={() => setLeadStatus(lead.id, stage.status)}
+            className={`rounded-md px-2.5 py-1 text-xs ring-1 ring-inset transition ${
+              stage.active
+                ? stage.activeCls
+                : "bg-white/5 text-zinc-300 ring-white/10 hover:bg-white/10"
+            }`}
+          >
+            {stage.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** v1.9 — Pipeline stage counters (Temas Kuruldu / Takipte / Demo Aşamasında / Kazanıldı). */
+function PipelineCounters({ rows }: { rows: LeadTableRow[] }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const counts = useMemo(() => {
+    let contacted = 0;
+    let following = 0;
+    let demo = 0;
+    let won = 0;
+    for (const row of rows) {
+      const st = row._s.status;
+      if (st === "contacted") contacted++;
+      else if (st === "needs_follow_up" || st === "replied") following++;
+      else if (st === "meeting") demo++;
+      else if (st === "won") won++;
+    }
+    return { contacted, following, demo, won };
+  }, [rows]);
+  if (!counts.contacted && !counts.following && !counts.demo && !counts.won) return null;
+  const cards = [
+    { label: tr ? "Temas Kuruldu" : "Contacted", value: counts.contacted, cls: "text-sky-300" },
+    { label: tr ? "Takipte" : "Following Up", value: counts.following, cls: "text-amber-300" },
+    { label: tr ? "Demo Aşamasında" : "In Demo", value: counts.demo, cls: "text-violet-300" },
+    { label: tr ? "Kazanıldı" : "Won", value: counts.won, cls: "text-emerald-300" },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {cards.map((c) => (
+        <div
+          key={c.label}
+          className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center"
+        >
+          <div className={`text-2xl font-bold tabular-nums ${c.cls}`}>{c.value}</div>
+          <div className="mt-0.5 text-[11px] text-zinc-500">{c.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** One card in the pipeline kanban board. */
+function PipelineBoardCard({
+  row,
+  now,
+  onOpen,
+}: {
+  row: LeadTableRow;
+  now: number;
+  onOpen: (id: string) => void;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const score = row.verifiedOpportunityScore;
+  const ageLabel = computeFollowUpAge(row._s, now, tr);
+  const ageCls =
+    ageLabel === (tr ? "Takip gecikti" : "Follow-up overdue")
+      ? "text-rose-300"
+      : ageLabel === (tr ? "Takip bugün" : "Follow-up today")
+        ? "text-sky-300"
+        : "text-amber-400";
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(row.id)}
+      className="w-full rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-left transition hover:border-white/15 hover:bg-white/[0.04]"
+    >
+      <div className="truncate text-[12px] font-medium text-zinc-100">{row.name}</div>
+      {row.city && <div className="mt-0.5 text-[10px] text-zinc-500">{row.city}</div>}
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {typeof score === "number" && (
+          <span className="text-[10px] tabular-nums text-zinc-400">
+            {tr ? "Fırsat" : "Score"}{" "}
+            <span className="font-semibold text-zinc-200">{score}</span>
+          </span>
+        )}
+        {ageLabel && (
+          <span className={`text-[10px] font-medium ${ageCls}`}>· {ageLabel}</span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+/** v1.9 — "Satış Boru Hattı" kanban-style pipeline board. Derived only, no persistence. */
+function SalesPipelineBoard({
+  rows,
+  now,
+  onOpenDetail,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  onOpenDetail: (id: string) => void;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const columns = useMemo(() => {
+    const contacted: LeadTableRow[] = [];
+    const following: LeadTableRow[] = [];
+    const demo: LeadTableRow[] = [];
+    const won: LeadTableRow[] = [];
+    const lost: LeadTableRow[] = [];
+    for (const row of rows) {
+      const st = row._s.status;
+      if (st === "contacted") contacted.push(row);
+      else if (st === "needs_follow_up" || st === "replied") following.push(row);
+      else if (st === "meeting") demo.push(row);
+      else if (st === "won") won.push(row);
+      else if (st === "lost") lost.push(row);
+    }
+    return { contacted, following, demo, won, lost };
+  }, [rows]);
+
+  const hasAny =
+    columns.contacted.length > 0 ||
+    columns.following.length > 0 ||
+    columns.demo.length > 0 ||
+    columns.won.length > 0 ||
+    columns.lost.length > 0;
+  if (!hasAny) return null;
+
+  type ColDef = {
+    key: string;
+    label: string;
+    items: LeadTableRow[];
+    headerCls: string;
+    countCls: string;
+  };
+  const cols: ColDef[] = [
+    {
+      key: "contacted",
+      label: tr ? "İlk Temas" : "First Contact",
+      items: columns.contacted,
+      headerCls: "text-sky-300 border-sky-500/25",
+      countCls: "bg-sky-500/15 text-sky-200",
+    },
+    {
+      key: "following",
+      label: tr ? "Takip" : "Follow-up",
+      items: columns.following,
+      headerCls: "text-amber-300 border-amber-500/25",
+      countCls: "bg-amber-500/15 text-amber-200",
+    },
+    {
+      key: "demo",
+      label: tr ? "Demo" : "Demo",
+      items: columns.demo,
+      headerCls: "text-violet-300 border-violet-500/25",
+      countCls: "bg-violet-500/15 text-violet-200",
+    },
+    {
+      key: "won",
+      label: tr ? "Kazanılan" : "Won",
+      items: columns.won,
+      headerCls: "text-emerald-300 border-emerald-500/25",
+      countCls: "bg-emerald-500/15 text-emerald-200",
+    },
+    {
+      key: "lost",
+      label: tr ? "Kaybedilen" : "Lost",
+      items: columns.lost,
+      headerCls: "text-zinc-400 border-zinc-600/30",
+      countCls: "bg-zinc-600/15 text-zinc-400",
+    },
+  ];
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-indigo-500/15 bg-indigo-500/[0.02]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+          {tr ? "Satış Boru Hattı" : "Sales Pipeline"}
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          {tr
+            ? "Aktif lead aşamalarına genel bakış — aşama değiştirmek için lead detayını aç"
+            : "Active pipeline stages — open lead detail to change stage"}
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="flex min-w-[640px] gap-3 p-4">
+          {cols.map((col) => (
+            <div key={col.key} className="flex min-w-0 flex-1 flex-col gap-2">
+              <div
+                className={`mb-0.5 flex items-center justify-between border-b pb-1.5 ${col.headerCls}`}
+              >
+                <span className="text-[11px] font-semibold uppercase tracking-wider">
+                  {col.label}
+                </span>
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${col.countCls}`}
+                >
+                  {col.items.length}
+                </span>
+              </div>
+              {col.items.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-white/8 px-3 py-4 text-center text-[10px] text-zinc-600">
+                  {tr ? "Boş" : "Empty"}
+                </div>
+              ) : (
+                col.items.map((row) => (
+                  <PipelineBoardCard key={row.id} row={row} now={now} onOpen={onOpenDetail} />
+                ))
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -9293,6 +9699,20 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* v1.8 "Günün Öncelikli Aksiyonları" action queue panel */}
       {mounted && (
         <ActionQueuePanel
+          rows={allRows}
+          now={renderNow || Date.now()}
+          onOpenDetail={(id) => setOpenId(id)}
+        />
+      )}
+
+      {/* v1.9 Pipeline Counters — Temas Kuruldu / Takipte / Demo Aşamasında / Kazanıldı */}
+      {mounted && allRows.length > 0 && (
+        <PipelineCounters rows={allRows} />
+      )}
+
+      {/* v1.9 "Satış Boru Hattı" pipeline board */}
+      {mounted && (
+        <SalesPipelineBoard
           rows={allRows}
           now={renderNow || Date.now()}
           onOpenDetail={(id) => setOpenId(id)}
