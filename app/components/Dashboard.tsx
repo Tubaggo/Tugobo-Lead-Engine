@@ -6447,6 +6447,250 @@ function DailyOpportunityQueue({
   );
 }
 
+/** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
+function WeeklyCommercialOutlook({
+  rows,
+  now,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const intel = useMemo(() => {
+    let verified = 0;
+    let hotCount = 0;
+    let demoCount = 0;
+    let followUpDue = 0;
+    let hotNotContacted = 0;
+    let demoIdle = 0;
+    let activeCount = 0;
+    let expectedClosings = 0;
+
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+
+      const lifecycle = computeLeadLifecycleStatus(row, s);
+      const action = computeTodayActionStatus(row, s, now);
+
+      if (lifecycle === "VERIFIED" || lifecycle === "HOT_OPPORTUNITY") verified++;
+      if (lifecycle === "HOT_OPPORTUNITY") {
+        hotCount++;
+        if (s.status === "new") hotNotContacted++;
+      }
+      if (action === "DEMO_READY" || s.status === "meeting") demoCount++;
+      if (action === "FOLLOW_UP_DUE") followUpDue++;
+      if (action === "DEMO_READY") demoIdle++;
+      if (
+        s.status === "contacted" ||
+        s.status === "needs_follow_up" ||
+        s.status === "replied"
+      )
+        activeCount++;
+
+      // Part 2: probability-weighted expected closings
+      if (action === "HOT_NOW") expectedClosings += 0.35;
+      else if (action === "DEMO_READY") expectedClosings += 0.6;
+      else if (action === "FOLLOW_UP_DUE") expectedClosings += 0.15;
+      else if (action === "NEEDS_CONTACT") expectedClosings += 0.08;
+    }
+
+    // Part 3: Pipeline Gücü 0–100
+    const pipelineScore = Math.min(
+      Math.min(verified * 8, 25) +
+        Math.min(hotCount * 12, 35) +
+        Math.min(demoCount * 15, 30) +
+        Math.min(activeCount * 2, 10),
+      100,
+    );
+
+    return {
+      verified,
+      hotCount,
+      demoCount,
+      followUpDue,
+      hotNotContacted,
+      demoIdle,
+      expectedClosings,
+      pipelineScore,
+    };
+  }, [rows, now]);
+
+  if (rows.length === 0) return null;
+
+  const { pipelineScore } = intel;
+  const pipelineLabelCls =
+    pipelineScore >= 75
+      ? "text-emerald-300"
+      : pipelineScore >= 50
+        ? "text-sky-300"
+        : pipelineScore >= 25
+          ? "text-amber-300"
+          : "text-zinc-400";
+  const pipelineLabel =
+    pipelineScore >= 75
+      ? tr
+        ? "Mükemmel"
+        : "Excellent"
+      : pipelineScore >= 50
+        ? tr
+          ? "Güçlü"
+          : "Strong"
+        : pipelineScore >= 25
+          ? tr
+            ? "Orta"
+            : "Medium"
+          : tr
+            ? "Zayıf"
+            : "Weak";
+
+  // Part 4: collect active risks (max 3)
+  const risks: string[] = [];
+  if (intel.followUpDue > 0)
+    risks.push(
+      tr
+        ? `${intel.followUpDue} takip gecikmiş`
+        : `${intel.followUpDue} follow-up overdue`,
+    );
+  if (intel.hotNotContacted > 0)
+    risks.push(
+      tr
+        ? `${intel.hotNotContacted} sıcak fırsat henüz işleme alınmadı`
+        : `${intel.hotNotContacted} hot opportunity not contacted`,
+    );
+  if (intel.demoIdle > 0)
+    risks.push(
+      tr
+        ? `${intel.demoIdle} demo adayı bekliyor`
+        : `${intel.demoIdle} demo candidate idle`,
+    );
+
+  // Part 5: single highest-priority founder insight
+  const insight =
+    intel.followUpDue > 0
+      ? tr
+        ? "Takip gecikmeleri kapanış oranını düşürebilir."
+        : "Overdue follow-ups may hurt your close rate."
+      : intel.hotCount > intel.demoCount
+        ? tr
+          ? "Fırsat üretimi güçlü, demo planlamaya odaklan."
+          : "Opportunity generation is strong — focus on scheduling demos."
+        : intel.demoCount > intel.hotCount
+          ? tr
+            ? "Borunun alt kısmı güçlü, yeni fırsat ihtiyacı oluşabilir."
+            : "Bottom of funnel is strong — consider sourcing fresh opportunities."
+          : tr
+            ? "Pipeline sağlıklı görünüyor, aksiyonlara devam et."
+            : "Pipeline looks healthy — keep executing.";
+
+  const metrics = [
+    {
+      label: tr ? "Doğrulanmış Fırsatlar" : "Verified Opportunities",
+      value: intel.verified,
+      cls: "text-emerald-300",
+    },
+    {
+      label: tr ? "Sıcak Fırsatlar" : "Hot Opportunities",
+      value: intel.hotCount,
+      cls: "text-fuchsia-300",
+    },
+    {
+      label: tr ? "Demo Adayları" : "Demo Candidates",
+      value: intel.demoCount,
+      cls: "text-violet-300",
+    },
+    {
+      label: tr ? "Takip Bekleyenler" : "Follow-up Due",
+      value: intel.followUpDue,
+      cls: "text-amber-300",
+    },
+  ];
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-indigo-500/20 bg-indigo-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+          {tr ? "Bu Haftaki Ticari Görünüm" : "Weekly Commercial Outlook"}
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          {tr
+            ? "Pipeline zekası — anlık hesaplama, kalıcı değil"
+            : "Runtime pipeline intelligence — not persisted"}
+        </p>
+      </div>
+
+      <div className="space-y-3 p-4">
+        {/* Part 1: Four metric counters */}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {metrics.map((c) => (
+            <div
+              key={c.label}
+              className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center"
+            >
+              <div className={`text-2xl font-bold tabular-nums ${c.cls}`}>{c.value}</div>
+              <div className="mt-0.5 text-[11px] text-zinc-500">{c.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Part 2 + 3: Expected Closings & Pipeline Gücü */}
+        <div className="grid grid-cols-2 gap-2">
+          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-3">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+              {tr ? "Beklenen Kapanış" : "Expected Closings"}
+            </div>
+            <div className="mt-1.5 text-3xl font-bold tabular-nums text-sky-300">
+              {intel.expectedClosings.toFixed(1)}
+            </div>
+            <div className="mt-0.5 text-[10px] text-zinc-600">
+              {tr ? "Olasılık tabanlı tahmin" : "Probability-weighted forecast"}
+            </div>
+          </div>
+          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-3">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+              {tr ? "Pipeline Gücü" : "Pipeline Strength"}
+            </div>
+            <div className={`mt-1.5 text-3xl font-bold tabular-nums ${pipelineLabelCls}`}>
+              {pipelineScore}
+              <span className="ml-1 text-base font-normal text-zinc-500">/100</span>
+            </div>
+            <div className={`mt-0.5 text-[11px] font-medium ${pipelineLabelCls}`}>
+              {pipelineLabel}
+            </div>
+          </div>
+        </div>
+
+        {/* Part 4: Risk Detection */}
+        {risks.length > 0 && (
+          <div className="rounded-lg border border-rose-500/20 bg-rose-500/[0.03] px-3 py-2.5">
+            <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-rose-400">
+              {tr ? "Riskler" : "Risks"}
+            </div>
+            <ul className="space-y-1">
+              {risks.map((r) => (
+                <li key={r} className="flex items-start gap-1.5 text-[12px] text-zinc-300">
+                  <span className="mt-0.5 text-rose-400">·</span>
+                  <span>{r}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Part 5: Founder Insight */}
+        <div className="rounded-lg border border-indigo-400/15 bg-indigo-500/[0.04] px-3 py-2.5">
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-indigo-400">
+            {tr ? "Kurucu İçgörüsü" : "Founder Insight"}
+          </div>
+          <p className="text-[12px] leading-relaxed text-zinc-300">{insight}</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /** v1.8 — Summary counter cards: Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan. */
 function ExecutionCounters({ rows, now }: { rows: LeadTableRow[]; now: number }) {
   const { locale } = useLocale();
@@ -9679,6 +9923,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>
         </div>
       </section>
+
+      {/* v2.0 Revenue Intelligence — "Bu Haftaki Ticari Görünüm" */}
+      {mounted && allRows.length > 0 && (
+        <WeeklyCommercialOutlook rows={allRows} now={renderNow || Date.now()} />
+      )}
 
       {/* v1.8 Execution counters — Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan */}
       {mounted && allRows.length > 0 && (
