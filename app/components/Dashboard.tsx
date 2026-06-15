@@ -42,6 +42,8 @@ import {
   OPPORTUNITY_REASON_LABELS,
   computeLeadLifecycleStatus,
   type LeadLifecycleStatus,
+  computeTodayActionStatus,
+  type TodayActionStatus,
 } from "@/app/lib/leads";
 import type { SignalSourceKey } from "@/app/lib/signal-verification";
 import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
@@ -2535,6 +2537,55 @@ function LifecycleBadge({ lifecycle }: { lifecycle: LeadLifecycleStatus }) {
   );
 }
 
+/** v1.8 — Today action status badge for the execution layer. */
+function ActionStatusBadge({ action }: { action: TodayActionStatus }) {
+  type Cfg = { label: string; cls: string };
+  const configs: Partial<Record<TodayActionStatus, Cfg>> = {
+    HOT_NOW: {
+      label: "Sıcak Fırsat",
+      cls: "bg-fuchsia-500/15 text-fuchsia-200 ring-fuchsia-400/40",
+    },
+    DEMO_READY: {
+      label: "Demo Hazır",
+      cls: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+    },
+    FOLLOW_UP_DUE: {
+      label: "Takip Zamanı",
+      cls: "bg-amber-500/15 text-amber-200 ring-amber-500/30",
+    },
+    NEEDS_CONTACT: {
+      label: "İletişim Kur",
+      cls: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+    },
+  };
+  const c = configs[action];
+  if (!c) return null;
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${c.cls}`}
+    >
+      {c.label}
+    </span>
+  );
+}
+
+function todayActionReasonText(
+  lead: LeadTableRow,
+  action: TodayActionStatus,
+  tr: boolean,
+): string {
+  if (action === "DEMO_READY") return tr ? "Demo için uygun" : "Ready for demo";
+  if (action === "FOLLOW_UP_DUE") return tr ? "Takip zamanı geldi" : "Follow-up time reached";
+  const v = lead.signalVerification;
+  if (v?.reservationSignal === "verified" || v?.reservationSignal === "detected")
+    return tr ? "Rezervasyon CTA bulundu" : "Reservation CTA found";
+  if (v?.websiteVerification === "verified")
+    return tr ? "Web sitesi doğrulandı" : "Website verified";
+  if (v?.whatsappVerification === "verified")
+    return tr ? "WhatsApp doğrulandı" : "WhatsApp verified";
+  return tr ? "Yüksek fırsat skoru" : "High opportunity score";
+}
+
 function IconWhatsapp({ className = "" }: { className?: string }) {
   return (
     <svg
@@ -4583,13 +4634,52 @@ function activityEntryLabel(entry: LeadActivity, locale: string): string {
 
 function LeadActivityTimelineBlock({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
+  const tr = locale === "tr";
   const timeline: LeadActivity[] | undefined = lead.activityTimeline;
+
+  // v1.8: Synthesize runtime display events derived from lifecycle/action state.
+  // These are display-only — they are never persisted to the lead record.
+  const runtimeEvents: { label: string; color: string }[] = [];
+  const lifecycle = computeLeadLifecycleStatus(lead, lead._s);
+  const action = computeTodayActionStatus(lead, lead._s, Date.now());
+  if (lifecycle === "HOT_OPPORTUNITY") {
+    runtimeEvents.push({
+      label: tr ? "Hot Opportunity oldu" : "Became Hot Opportunity",
+      color: "text-fuchsia-300",
+    });
+  }
+  if (action === "FOLLOW_UP_DUE") {
+    runtimeEvents.push({
+      label: tr ? "Takip zamanı geldi" : "Follow-up time reached",
+      color: "text-amber-300",
+    });
+  }
+  if (action === "DEMO_READY") {
+    runtimeEvents.push({
+      label: tr ? "Demo adayı oldu" : "Became demo candidate",
+      color: "text-emerald-300",
+    });
+  }
 
   return (
     <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
       <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-zinc-400">
         {t("detail_activity_timeline_title", locale)}
       </div>
+      {runtimeEvents.length > 0 && (
+        <div className="mb-2 space-y-1">
+          {runtimeEvents.map((ev, i) => (
+            <div key={i} className="flex items-start gap-2">
+              <span className="shrink-0 pt-px text-[10px] tabular-nums text-zinc-600">
+                {tr ? "Şimdi" : "Now"}
+              </span>
+              <span className={`text-[11px] font-medium leading-snug ${ev.color}`}>
+                {ev.label}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       {!timeline || timeline.length === 0 ? (
         <p className="text-[11px] text-zinc-500">{t("detail_activity_empty", locale)}</p>
       ) : (
@@ -4707,6 +4797,53 @@ function signalSourceLabel(key: SignalSourceKey | undefined, locale: string): st
   const m = SIGNAL_SOURCE_LABELS[key];
   if (!m) return null;
   return locale === "tr" ? m.tr : m.en;
+}
+
+/** v1.8 — "Bugün Ne Yapılmalı?" deterministic action recommendation card. */
+function TodayActionCard({ lead, now }: { lead: LeadTableRow; now: number }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const s = lead._s;
+  const action = computeTodayActionStatus(lead, s, now);
+  if (action === "NO_ACTION") return null;
+
+  const v = lead.signalVerification;
+  const hasWA =
+    v?.whatsappVerification === "verified" || v?.whatsappVerification === "likely";
+  const hasIG =
+    v?.instagramVerification === "verified" || v?.instagramVerification === "likely";
+
+  let recommendation = "";
+  if (action === "DEMO_READY") {
+    recommendation = tr ? "Demo planla" : "Schedule a demo";
+  } else if (action === "FOLLOW_UP_DUE") {
+    recommendation = tr ? "Takip mesajı gönder" : "Send a follow-up message";
+  } else {
+    if (hasWA) recommendation = tr ? "WhatsApp üzerinden ilk temas kur" : "Initiate first contact via WhatsApp";
+    else if (hasIG) recommendation = tr ? "Instagram DM önerilir" : "Instagram DM recommended";
+    else recommendation = tr ? "İlk temas kur" : "Initiate first contact";
+  }
+
+  const borderCls =
+    action === "HOT_NOW"
+      ? "border-fuchsia-500/20 bg-fuchsia-500/[0.03]"
+      : action === "DEMO_READY"
+        ? "border-emerald-500/20 bg-emerald-500/[0.03]"
+        : action === "FOLLOW_UP_DUE"
+          ? "border-amber-500/20 bg-amber-500/[0.03]"
+          : "border-sky-500/20 bg-sky-500/[0.03]";
+
+  return (
+    <div className={`rounded-lg border px-3 py-2.5 ${borderCls}`}>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+          {tr ? "Bugün Ne Yapılmalı?" : "What to Do Today?"}
+        </span>
+        <ActionStatusBadge action={action} />
+      </div>
+      <p className="text-[13px] font-medium text-zinc-100">{recommendation}</p>
+    </div>
+  );
 }
 
 /** v1.3/v1.4 Signal Verification panel — verified vs. assumed vs. missing, with evidence sources. */
@@ -5998,6 +6135,7 @@ function LeadDetailPanel({
         </div>
         <LeadEnrichmentMetaBlock lead={selectedLead} />
         <LeadOpportunityBlock lead={selectedLead} />
+        <TodayActionCard lead={selectedLead} now={now} />
         <LeadSignalVerificationBlock lead={selectedLead} />
         <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
         <LeadActivityTimelineBlock lead={selectedLead} />
@@ -6302,6 +6440,146 @@ function DailyOpportunityQueue({
           lowPriority,
           { limit: 8, tone: "text-zinc-300" },
         )}
+      </div>
+    </section>
+  );
+}
+
+/** v1.8 — Summary counter cards: Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan. */
+function ExecutionCounters({ rows, now }: { rows: LeadTableRow[]; now: number }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const counts = useMemo(() => {
+    let todayReach = 0;
+    let followUpPending = 0;
+    let demoCandidate = 0;
+    let won = 0;
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "won") {
+        won++;
+        continue;
+      }
+      const action = computeTodayActionStatus(row, s, now);
+      if (action === "HOT_NOW" || action === "NEEDS_CONTACT") todayReach++;
+      else if (action === "FOLLOW_UP_DUE") followUpPending++;
+      else if (action === "DEMO_READY") demoCandidate++;
+    }
+    return { todayReach, followUpPending, demoCandidate, won };
+  }, [rows, now]);
+
+  const cards = [
+    {
+      label: tr ? "Bugün Ulaşılacak" : "Reach Today",
+      value: counts.todayReach,
+      cls: "text-orange-300",
+    },
+    {
+      label: tr ? "Takip Bekleyen" : "Follow-up Pending",
+      value: counts.followUpPending,
+      cls: "text-amber-300",
+    },
+    {
+      label: tr ? "Demo Adayı" : "Demo Candidate",
+      value: counts.demoCandidate,
+      cls: "text-emerald-300",
+    },
+    {
+      label: tr ? "Kazanılan" : "Won",
+      value: counts.won,
+      cls: "text-fuchsia-300",
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {cards.map((c) => (
+        <div
+          key={c.label}
+          className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center"
+        >
+          <div className={`text-2xl font-bold tabular-nums ${c.cls}`}>{c.value}</div>
+          <div className="mt-0.5 text-[11px] text-zinc-500">{c.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const ACTION_PRIORITY: Record<TodayActionStatus, number> = {
+  HOT_NOW: 4,
+  DEMO_READY: 3,
+  FOLLOW_UP_DUE: 2,
+  NEEDS_CONTACT: 1,
+  NO_ACTION: 0,
+};
+
+/** v1.8 — "Günün Öncelikli Aksiyonları" sorted action queue panel. */
+function ActionQueuePanel({
+  rows,
+  now,
+  onOpenDetail,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  onOpenDetail: (id: string) => void;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const items = useMemo(
+    () =>
+      rows
+        .map((row) => ({ row, action: computeTodayActionStatus(row, row._s, now) }))
+        .filter(({ action }) => action !== "NO_ACTION")
+        .sort((a, b) => ACTION_PRIORITY[b.action] - ACTION_PRIORITY[a.action]),
+    [rows, now],
+  );
+
+  if (items.length === 0) return null;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-orange-500/20 bg-orange-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-orange-200">
+          {tr ? "Günün Öncelikli Aksiyonları" : "Today's Priority Actions"}
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          {tr
+            ? "Bugün iletişime geçilmesi gereken işletmeler"
+            : "Businesses to reach today"}
+        </p>
+      </div>
+      <div className="divide-y divide-white/5">
+        {items.map(({ row, action }) => (
+          <div
+            key={row.id}
+            className="flex items-center justify-between gap-3 px-4 py-2.5 transition hover:bg-white/[0.02]"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="truncate text-sm font-medium text-zinc-100">{row.name}</span>
+                {row.city && (
+                  <span className="shrink-0 text-[11px] text-zinc-500">· {row.city}</span>
+                )}
+              </div>
+              <p className="mt-0.5 text-[11px] text-zinc-500">
+                {todayActionReasonText(row, action, tr)}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <ActionStatusBadge action={action} />
+              <button
+                type="button"
+                onClick={() => onOpenDetail(row.id)}
+                className="rounded-md border border-white/12 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-white/10"
+              >
+                {tr ? "Detay Aç" : "Open"}
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -8996,6 +9274,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         </div>
       </section>
 
+      {/* v1.8 Execution counters — Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan */}
+      {mounted && allRows.length > 0 && (
+        <ExecutionCounters rows={allRows} now={renderNow || Date.now()} />
+      )}
+
       {/* v1.6 Daily Opportunity Queue — "Bugünün Fırsatları" */}
       {mounted && dailyQueuePartition.total > 0 && (
         <DailyOpportunityQueue
@@ -9004,6 +9287,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
           onContact={contactFromDailyQueue}
           queueLimitReached={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
+        />
+      )}
+
+      {/* v1.8 "Günün Öncelikli Aksiyonları" action queue panel */}
+      {mounted && (
+        <ActionQueuePanel
+          rows={allRows}
+          now={renderNow || Date.now()}
+          onOpenDetail={(id) => setOpenId(id)}
         />
       )}
 

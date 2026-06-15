@@ -2215,6 +2215,73 @@ export function instagramLink(handle: string) {
   return `https://instagram.com/${handle.replace(/^@/, "")}`;
 }
 
+// ─── v1.8 Today Action Status ────────────────────────────────────────────────
+
+export type TodayActionStatus =
+  | "HOT_NOW"
+  | "DEMO_READY"
+  | "FOLLOW_UP_DUE"
+  | "NEEDS_CONTACT"
+  | "NO_ACTION";
+
+/**
+ * Derives today's recommended operator action from CRM state and opportunity
+ * score. Pure — no I/O. Priority: HOT_NOW > DEMO_READY > FOLLOW_UP_DUE >
+ * NEEDS_CONTACT > NO_ACTION.
+ */
+export function computeTodayActionStatus(
+  lead: Pick<ScoredLead, "verifiedOpportunityScore">,
+  s: Pick<
+    LeadStatusUpdate,
+    | "status"
+    | "nextFollowUpAt"
+    | "contactedAt"
+    | "lastContactedAt"
+    | "followUpAfterHours"
+    | "doNotContact"
+  >,
+  now: number,
+): TodayActionStatus {
+  if (s.status === "won" || s.status === "lost" || s.status === "meeting")
+    return "NO_ACTION";
+
+  const score = lead.verifiedOpportunityScore;
+
+  if (s.status === "new") {
+    if (typeof score === "number" && score >= 80) return "HOT_NOW";
+    if (typeof score === "number" && score >= 60) return "NEEDS_CONTACT";
+  }
+
+  if (s.status === "replied" && typeof score === "number" && score >= 70)
+    return "DEMO_READY";
+
+  if (!s.doNotContact) {
+    if (s.status === "needs_follow_up") return "FOLLOW_UP_DUE";
+    if (s.status === "contacted") {
+      const followUpAt =
+        typeof s.nextFollowUpAt === "number" && Number.isFinite(s.nextFollowUpAt)
+          ? s.nextFollowUpAt
+          : (() => {
+              const base =
+                typeof s.lastContactedAt === "number" && s.lastContactedAt > 0
+                  ? s.lastContactedAt
+                  : typeof s.contactedAt === "number" && s.contactedAt > 0
+                    ? s.contactedAt
+                    : null;
+              if (!base) return null;
+              const hrs =
+                typeof s.followUpAfterHours === "number" && s.followUpAfterHours > 0
+                  ? s.followUpAfterHours
+                  : 24;
+              return base + hrs * 3600000;
+            })();
+      if (followUpAt !== null && now > followUpAt) return "FOLLOW_UP_DUE";
+    }
+  }
+
+  return "NO_ACTION";
+}
+
 // ─── v1.7 Lead Lifecycle ────────────────────────────────────────────────────
 
 export type LeadLifecycleStatus =
