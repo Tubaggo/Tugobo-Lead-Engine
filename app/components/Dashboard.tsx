@@ -6868,12 +6868,32 @@ function TodayCriticalTasks({
       }
     }
 
-    // Priority 4: High potential but missing contact signal
+    // Priority 4: Queue lead ready for outreach (has contact info — can reach now)
     for (const row of rows) {
       if (result.length >= 5) break;
       const s = row._s;
       if (s.status === "won" || s.status === "lost") continue;
-      if (computeTodayActionStatus(row, s, now) === "NEEDS_CONTACT") {
+      if (!added.has(row.id) && computeTodayActionStatus(row, s, now) === "NEEDS_CONTACT") {
+        const v = row.signalVerification;
+        const hasContact =
+          Boolean(row.phone?.trim()) ||
+          Boolean(row.instagram?.trim()) ||
+          Boolean(row.website?.trim()) ||
+          v?.whatsappVerification === "verified";
+        if (hasContact) {
+          add(row, "needs_contact_hot", tr
+            ? "İletişim kurulmayı bekleyen fırsat."
+            : "Opportunity awaiting outreach.");
+        }
+      }
+    }
+
+    // Priority 5: Missing contact signal for high-value lead
+    for (const row of rows) {
+      if (result.length >= 5) break;
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      if (!added.has(row.id) && computeTodayActionStatus(row, s, now) === "NEEDS_CONTACT") {
         const v = row.signalVerification;
         const hasContact =
           Boolean(row.phone?.trim()) ||
@@ -6885,18 +6905,6 @@ function TodayCriticalTasks({
             ? "Yüksek potansiyel — iletişim bilgisi eksik."
             : "High potential — contact info missing.");
         }
-      }
-    }
-
-    // Priority 5: Needs contact (fill remainder)
-    for (const row of rows) {
-      if (result.length >= 5) break;
-      const s = row._s;
-      if (s.status === "won" || s.status === "lost") continue;
-      if (!added.has(row.id) && computeTodayActionStatus(row, s, now) === "NEEDS_CONTACT") {
-        add(row, "needs_contact_hot", tr
-          ? "İletişim kurulmayı bekleyen fırsat."
-          : "Opportunity awaiting outreach.");
       }
     }
 
@@ -7014,6 +7022,231 @@ function DailyProgressStrip({
         </div>
       ))}
     </div>
+  );
+}
+
+// ─── v2.4 Founder Workflow Engine ────────────────────────────────────────────
+
+type WorkflowStepBadge = "Öncelikli" | "Aktif" | "Beklemede" | "Tamamlandı";
+
+type FounderWorkflowData = {
+  followUpDue: number;
+  hotNow: number;
+  demoReady: number;
+  pipelineLow: boolean;
+  step4Count: number;
+  firstActiveStep: number;
+  recommendation: string;
+};
+
+/** v2.4 — Pure workflow status computation. Excludes won/lost. No I/O. */
+function computeFounderWorkflowStatus(
+  rows: LeadTableRow[],
+  now: number,
+  tr: boolean,
+): FounderWorkflowData {
+  let followUpDue = 0;
+  let hotNow = 0;
+  let demoReady = 0;
+
+  for (const row of rows) {
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost") continue;
+    const action = computeTodayActionStatus(row, s, now);
+    if (action === "FOLLOW_UP_DUE") followUpDue++;
+    else if (action === "HOT_NOW") hotNow++;
+    if (action === "DEMO_READY" || s.status === "meeting") demoReady++;
+  }
+
+  const pipelineLow = hotNow + demoReady + followUpDue < 3;
+  const step4Count = pipelineLow ? 1 : 0;
+  const firstActiveStep =
+    followUpDue > 0 ? 1 : hotNow > 0 ? 2 : demoReady > 0 ? 3 : pipelineLow ? 4 : 0;
+
+  const recommendation =
+    followUpDue > 0
+      ? tr
+        ? "Önce takip gecikmelerini kapat."
+        : "Close overdue follow-ups first."
+      : hotNow > 0
+        ? tr
+          ? "Sıcak fırsatları ilk temas veya demo yönüne taşı."
+          : "Move hot opportunities toward first contact or demo."
+        : demoReady > 0
+          ? tr
+            ? "Demo adaylarını görüşmeye dönüştür."
+            : "Convert demo candidates to meetings."
+          : pipelineLow
+            ? tr
+              ? "Yeni lead import ederek pipeline'ı güçlendir."
+              : "Strengthen the pipeline by importing new leads."
+            : tr
+              ? "Günlük operasyon dengeli görünüyor."
+              : "Daily operation looks balanced.";
+
+  return { followUpDue, hotNow, demoReady, pipelineLow, step4Count, firstActiveStep, recommendation };
+}
+
+function resolveWorkflowStepBadge(
+  stepNum: number,
+  count: number,
+  firstActiveStep: number,
+): WorkflowStepBadge {
+  if (count > 0) return stepNum === firstActiveStep ? "Öncelikli" : "Aktif";
+  return stepNum <= 2 ? "Tamamlandı" : "Beklemede";
+}
+
+/** v2.4 — "Operasyon Akışı" 4-step workflow panel with active recommendation. */
+function FounderWorkflowSteps({
+  rows,
+  now,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const wf = useMemo(
+    () => computeFounderWorkflowStatus(rows, now, tr),
+    [rows, now, tr],
+  );
+
+  if (rows.length === 0) return null;
+
+  const badgeCls: Record<WorkflowStepBadge, string> = {
+    Öncelikli:
+      "bg-rose-500/20 text-rose-200 ring-1 ring-inset ring-rose-400/30",
+    Aktif: "bg-amber-500/15 text-amber-200 ring-1 ring-inset ring-amber-400/30",
+    Beklemede:
+      "bg-zinc-500/10 text-zinc-400 ring-1 ring-inset ring-zinc-600/30",
+    Tamamlandı:
+      "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-400/30",
+  };
+
+  const stepNumCls: Record<WorkflowStepBadge, string> = {
+    Öncelikli: "text-rose-300",
+    Aktif: "text-amber-300",
+    Beklemede: "text-zinc-600",
+    Tamamlandı: "text-emerald-400",
+  };
+
+  type StepDef = {
+    num: number;
+    title: string;
+    count: number;
+    reason: string;
+    badge: WorkflowStepBadge;
+  };
+
+  const steps: StepDef[] = [
+    {
+      num: 1,
+      title: tr ? "Takipleri Kapat" : "Close Follow-ups",
+      count: wf.followUpDue,
+      reason:
+        wf.followUpDue > 0
+          ? tr
+            ? `${wf.followUpDue} takip gecikmiş`
+            : `${wf.followUpDue} overdue`
+          : tr
+            ? "Takip borcu yok"
+            : "No overdue follow-ups",
+      badge: resolveWorkflowStepBadge(1, wf.followUpDue, wf.firstActiveStep),
+    },
+    {
+      num: 2,
+      title: tr ? "Sıcak Fırsatları İşle" : "Engage Hot Leads",
+      count: wf.hotNow,
+      reason:
+        wf.hotNow > 0
+          ? tr
+            ? `${wf.hotNow} sıcak fırsat bekliyor`
+            : `${wf.hotNow} hot lead waiting`
+          : tr
+            ? "Temas edilmemiş sıcak fırsat yok"
+            : "No uncontacted hot leads",
+      badge: resolveWorkflowStepBadge(2, wf.hotNow, wf.firstActiveStep),
+    },
+    {
+      num: 3,
+      title: tr ? "Demo Adaylarını İlerlet" : "Advance Demo Candidates",
+      count: wf.demoReady,
+      reason:
+        wf.demoReady > 0
+          ? tr
+            ? `${wf.demoReady} demo adayı ilerlemeyi bekliyor`
+            : `${wf.demoReady} demo candidate pending`
+          : tr
+            ? "Demo adayı yok"
+            : "No demo candidates",
+      badge: resolveWorkflowStepBadge(3, wf.demoReady, wf.firstActiveStep),
+    },
+    {
+      num: 4,
+      title: tr ? "Yeni Fırsat Üret" : "Generate New Opportunities",
+      count: wf.step4Count,
+      reason: wf.pipelineLow
+        ? tr
+          ? "Pipeline üst kısmı zayıflıyor"
+          : "Upper pipeline thinning"
+        : tr
+          ? "Pipeline yeterince güçlü"
+          : "Pipeline sufficiently strong",
+      badge: resolveWorkflowStepBadge(4, wf.step4Count, wf.firstActiveStep),
+    },
+  ];
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-violet-500/20 bg-violet-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-violet-200">
+          {tr ? "Operasyon Akışı" : "Operation Flow"}
+        </h2>
+      </div>
+      <div className="divide-y divide-white/5">
+        {steps.map((step) => (
+          <div
+            key={step.num}
+            className="flex items-center justify-between gap-3 px-4 py-3"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <span
+                className={`shrink-0 text-lg font-bold tabular-nums ${stepNumCls[step.badge]}`}
+              >
+                {step.num}
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-zinc-100">
+                    {step.title}
+                  </span>
+                  {step.count > 0 && (
+                    <span className="text-sm font-bold tabular-nums text-zinc-300">
+                      ({step.count})
+                    </span>
+                  )}
+                </div>
+                <p className="mt-0.5 truncate text-[11px] text-zinc-500">
+                  {step.reason}
+                </p>
+              </div>
+            </div>
+            <span
+              className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-medium ${badgeCls[step.badge]}`}
+            >
+              {step.badge}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-white/5 px-4 py-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-violet-400">
+          {tr ? "Sıradaki Adım" : "Next Step"}
+        </span>
+        <span className="ml-2 text-[11px] text-zinc-300">{wf.recommendation}</span>
+      </div>
+    </section>
   );
 }
 
@@ -10801,6 +11034,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           rows={allRows}
           completedToday={safeCompletedToday}
           activeQueueCount={safeActiveQueueCount}
+        />
+      )}
+
+      {/* v2.4 Workflow Steps — "Operasyon Akışı" */}
+      {mounted && allRows.length > 0 && (
+        <FounderWorkflowSteps
+          rows={allRows}
+          now={renderNow || Date.now()}
         />
       )}
 
