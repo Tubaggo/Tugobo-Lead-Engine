@@ -6705,6 +6705,318 @@ function TodayTopPrioritiesPanel({
   );
 }
 
+// ─── v2.3 Founder Daily Operating System ────────────────────────────────────
+
+type CriticalTaskType =
+  | "follow_up_overdue"
+  | "hot_not_contacted"
+  | "demo_ready"
+  | "needs_contact_hot"
+  | "missing_signal";
+
+type CriticalTask = {
+  id: string;
+  name: string;
+  city: string | null | undefined;
+  taskType: CriticalTaskType;
+  reason: string;
+};
+
+/** v2.3 — "Bugünün Operasyonu" Daily Operating Brief. Derived only — no AI, no persistence. */
+function DailyOperatingBrief({
+  rows,
+  now,
+  completedToday,
+  activeQueueCount,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  completedToday: number;
+  activeQueueCount: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const intel = useMemo(() => {
+    let followUpDue = 0;
+    let hotNotContacted = 0;
+    let demoCount = 0;
+    let criticalCount = 0;
+    let activeLeadCount = 0;
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      activeLeadCount++;
+      const lifecycle = computeLeadLifecycleStatus(row, s);
+      const action = computeTodayActionStatus(row, s, now);
+      if (action === "FOLLOW_UP_DUE") { followUpDue++; criticalCount++; }
+      if (action === "HOT_NOW") criticalCount++;
+      if (action === "DEMO_READY") { demoCount++; criticalCount++; }
+      if (lifecycle === "HOT_OPPORTUNITY" && s.status === "new") hotNotContacted++;
+    }
+
+    const focus = followUpDue > 0
+      ? (tr ? "Bugün takip gecikmelerini kapat." : "Close overdue follow-ups today.")
+      : hotNotContacted > 0
+        ? (tr ? "Bugün sıcak fırsatları işleme al." : "Engage hot opportunities today.")
+        : demoCount > 0
+          ? (tr ? "Bugün sıcak fırsatları demo aşamasına taşı." : "Move hot leads to demo stage today.")
+          : (tr ? "Bugün yeni lead üretimi gerekiyor." : "New lead generation needed today.");
+
+    const estimatedMinutes = criticalCount * 3;
+    return { criticalCount, focus, estimatedMinutes, activeLeadCount };
+  }, [rows, now, tr]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-indigo-500/25 bg-indigo-500/[0.04]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+          {tr ? "Bugünün Operasyonu" : "Today's Operation"}
+        </h2>
+      </div>
+      <div className="p-4">
+        <div className="mb-4 rounded-lg border border-indigo-400/20 bg-indigo-500/[0.06] px-4 py-3">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-indigo-400">
+            {tr ? "Bugünün Ana Odağı" : "Today's Main Focus"}
+          </div>
+          <div className="text-sm font-medium text-indigo-100">{intel.focus}</div>
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+            <div className="text-2xl font-bold tabular-nums text-rose-300">{intel.criticalCount}</div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Kritik İş" : "Critical Tasks"}</div>
+          </div>
+          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+            <div className="text-2xl font-bold tabular-nums text-amber-300">
+              {intel.estimatedMinutes > 0 ? `~${intel.estimatedMinutes}` : "0"}
+            </div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Tahmini Dakika" : "Est. Minutes"}</div>
+          </div>
+          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+            <div className="text-2xl font-bold tabular-nums text-sky-300">{intel.activeLeadCount}</div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Aktif Lead" : "Active Leads"}</div>
+          </div>
+          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+            <div className="text-2xl font-bold tabular-nums text-emerald-300">{completedToday}</div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Günlük Hedef" : "Daily Target"}</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** v2.3 — "Kritik İşler" up to 5 critical tasks. Excludes won/lost leads. */
+function TodayCriticalTasks({
+  rows,
+  now,
+  onOpenDetail,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  onOpenDetail: (id: string) => void;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const tasks = useMemo((): CriticalTask[] => {
+    const result: CriticalTask[] = [];
+    const added = new Set<string>();
+
+    const add = (row: LeadTableRow, taskType: CriticalTaskType, reason: string) => {
+      if (added.has(row.id) || result.length >= 5) return;
+      added.add(row.id);
+      result.push({ id: row.id, name: row.name, city: row.city, taskType, reason });
+    };
+
+    // Priority 1: Follow-up overdue
+    for (const row of rows) {
+      if (result.length >= 5) break;
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      if (computeTodayActionStatus(row, s, now) === "FOLLOW_UP_DUE") {
+        add(row, "follow_up_overdue", tr
+          ? "Takip süresi doldu — hemen iletişim kur."
+          : "Follow-up overdue — contact now.");
+      }
+    }
+
+    // Priority 2: Hot opportunity not yet contacted
+    for (const row of rows) {
+      if (result.length >= 5) break;
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      const lifecycle = computeLeadLifecycleStatus(row, s);
+      if (lifecycle === "HOT_OPPORTUNITY" && computeTodayActionStatus(row, s, now) === "HOT_NOW") {
+        add(row, "hot_not_contacted", tr
+          ? "Sıcak fırsat — ilk temas kurulmadı."
+          : "Hot opportunity — not yet contacted.");
+      }
+    }
+
+    // Priority 3: Demo-ready
+    for (const row of rows) {
+      if (result.length >= 5) break;
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      if (computeTodayActionStatus(row, s, now) === "DEMO_READY") {
+        add(row, "demo_ready", tr
+          ? "Demo görüşmesi planlanmayı bekliyor."
+          : "Demo meeting needs to be scheduled.");
+      }
+    }
+
+    // Priority 4: High potential but missing contact signal
+    for (const row of rows) {
+      if (result.length >= 5) break;
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      if (computeTodayActionStatus(row, s, now) === "NEEDS_CONTACT") {
+        const v = row.signalVerification;
+        const hasContact =
+          Boolean(row.phone?.trim()) ||
+          Boolean(row.instagram?.trim()) ||
+          Boolean(row.website?.trim()) ||
+          v?.whatsappVerification === "verified";
+        if (!hasContact) {
+          add(row, "missing_signal", tr
+            ? "Yüksek potansiyel — iletişim bilgisi eksik."
+            : "High potential — contact info missing.");
+        }
+      }
+    }
+
+    // Priority 5: Needs contact (fill remainder)
+    for (const row of rows) {
+      if (result.length >= 5) break;
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      if (!added.has(row.id) && computeTodayActionStatus(row, s, now) === "NEEDS_CONTACT") {
+        add(row, "needs_contact_hot", tr
+          ? "İletişim kurulmayı bekleyen fırsat."
+          : "Opportunity awaiting outreach.");
+      }
+    }
+
+    return result;
+  }, [rows, now, tr]);
+
+  if (tasks.length === 0) return null;
+
+  const taskTypeMeta = (t: CriticalTaskType): { label: string; cls: string } => {
+    switch (t) {
+      case "follow_up_overdue":
+        return { label: tr ? "Takip Gecikmiş" : "Overdue Follow-up", cls: "bg-amber-500/15 text-amber-200 ring-1 ring-inset ring-amber-400/30" };
+      case "hot_not_contacted":
+        return { label: tr ? "Sıcak Fırsat" : "Hot Opportunity", cls: "bg-fuchsia-500/15 text-fuchsia-200 ring-1 ring-inset ring-fuchsia-400/30" };
+      case "demo_ready":
+        return { label: tr ? "Demo Hazır" : "Demo Ready", cls: "bg-emerald-500/15 text-emerald-200 ring-1 ring-inset ring-emerald-400/30" };
+      case "missing_signal":
+        return { label: tr ? "Veri Eksik" : "Missing Data", cls: "bg-rose-500/15 text-rose-200 ring-1 ring-inset ring-rose-400/30" };
+      case "needs_contact_hot":
+        return { label: tr ? "Ulaşılacak" : "Reach Out", cls: "bg-sky-500/15 text-sky-200 ring-1 ring-inset ring-sky-400/30" };
+    }
+  };
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-rose-500/20 bg-rose-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-rose-200">
+          {tr ? "Kritik İşler" : "Critical Tasks"}
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          {tr
+            ? `Bugün tamamlanması gereken en kritik ${tasks.length} iş.`
+            : `${tasks.length} most critical tasks to complete today.`}
+        </p>
+      </div>
+      <div className="divide-y divide-white/5">
+        {tasks.map((task) => {
+          const meta = taskTypeMeta(task.taskType);
+          return (
+            <div key={task.id} className="flex items-center justify-between gap-3 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-medium text-zinc-100">{task.name}</span>
+                  {task.city && (
+                    <span className="shrink-0 text-[11px] text-zinc-500">· {task.city}</span>
+                  )}
+                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${meta.cls}`}>
+                    {meta.label}
+                  </span>
+                </div>
+                <p className="mt-0.5 truncate text-[11px] text-zinc-500">{task.reason}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onOpenDetail(task.id)}
+                className="shrink-0 rounded-md border border-white/12 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-white/10"
+              >
+                {tr ? "Detay Aç" : "Open Detail"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/** v2.3 — "Günlük İlerleme" progress strip. Derived from rows and queue session data only. */
+function DailyProgressStrip({
+  rows,
+  completedToday,
+  activeQueueCount,
+}: {
+  rows: LeadTableRow[];
+  completedToday: number;
+  activeQueueCount: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const counts = useMemo(() => {
+    let contacted = 0;
+    let followUpClosed = 0;
+    let demoPlanned = 0;
+    let won = 0;
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "contacted" || s.status === "replied") contacted++;
+      if (s.status === "replied") followUpClosed++;
+      if (s.status === "meeting") demoPlanned++;
+      if (s.status === "won") won++;
+    }
+    const queueTotal = completedToday + activeQueueCount;
+    const queueRate = queueTotal > 0 ? Math.round((completedToday / queueTotal) * 100) : 0;
+    return { contacted, followUpClosed, demoPlanned, won, queueRate };
+  }, [rows, completedToday, activeQueueCount]);
+
+  const items = [
+    { label: tr ? "Kuyruk Tamamlama" : "Queue Done", value: `${counts.queueRate}%`, cls: "text-indigo-300" },
+    { label: tr ? "İletişim Kuruldu" : "Contacted", value: String(counts.contacted), cls: "text-sky-300" },
+    { label: tr ? "Takip Kapatılan" : "Follow-up Closed", value: String(counts.followUpClosed), cls: "text-amber-300" },
+    { label: tr ? "Demo Planlanan" : "Demo Planned", value: String(counts.demoPlanned), cls: "text-emerald-300" },
+    { label: tr ? "Kazanılan" : "Won", value: String(counts.won), cls: "text-fuchsia-300" },
+  ];
+
+  return (
+    <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+      {items.map((item) => (
+        <div
+          key={item.label}
+          className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center"
+        >
+          <div className={`text-xl font-bold tabular-nums ${item.cls}`}>{item.value}</div>
+          <div className="mt-0.5 text-[11px] text-zinc-500">{item.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -10472,6 +10784,34 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>
         </div>
       </section>
+
+      {/* v2.3 Daily Operating Brief — "Bugünün Operasyonu" */}
+      {mounted && allRows.length > 0 && (
+        <DailyOperatingBrief
+          rows={allRows}
+          now={renderNow || Date.now()}
+          completedToday={safeCompletedToday}
+          activeQueueCount={safeActiveQueueCount}
+        />
+      )}
+
+      {/* v2.3 Daily Progress Strip — "Günlük İlerleme" */}
+      {mounted && allRows.length > 0 && (
+        <DailyProgressStrip
+          rows={allRows}
+          completedToday={safeCompletedToday}
+          activeQueueCount={safeActiveQueueCount}
+        />
+      )}
+
+      {/* v2.3 Critical Tasks — "Kritik İşler" */}
+      {mounted && allRows.length > 0 && (
+        <TodayCriticalTasks
+          rows={allRows}
+          now={renderNow || Date.now()}
+          onOpenDetail={(id) => setOpenId(id)}
+        />
+      )}
 
       {/* v2.0 Revenue Intelligence — "Bu Haftaki Ticari Görünüm" */}
       {mounted && allRows.length > 0 && (
