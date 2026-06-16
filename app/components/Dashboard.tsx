@@ -6139,6 +6139,7 @@ function LeadDetailPanel({
         <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
         <DemoReadinessCard lead={selectedLead} />
         <CommunicationStrategyCard lead={selectedLead} finder={finderPersisted} now={now} />
+        <FounderSalesAssistant lead={selectedLead} finder={finderPersisted} now={now} />
         <LeadSignalVerificationBlock lead={selectedLead} />
         <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
         <LeadActivityTimelineBlock lead={selectedLead} />
@@ -8270,6 +8271,163 @@ function CommunicationStrategyCard({
     </div>
   );
 }
+
+// ─── v3.1 Founder Sales Assistant ──────────────────────────────────────────
+
+type SalesAssistantSuggestion = {
+  message: string;
+  actionLabel: string;
+  channelText: string;
+  template: string;
+};
+
+/** v3.1 — Pure deterministic suggestion engine. No AI, no I/O. */
+function computeSalesAssistantSuggestion(
+  lead: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  now: number,
+): SalesAssistantSuggestion | null {
+  const s = lead._s;
+  if (s.status === "won" || s.status === "lost") return null;
+
+  const action = computeTodayActionStatus(lead, s, now);
+  const rec = computeRecommendedChannel(lead, finder);
+
+  // Action-based guidance
+  let message: string;
+  let actionLabel: string;
+  if (s.status === "meeting") {
+    message = "Demo görüşmesini planla ve karar verici kişiyi sürece dahil et.";
+    actionLabel = "Demo Planla";
+  } else if (action === "FOLLOW_UP_DUE") {
+    message =
+      "Takip zamanı geldi. Son görüşmeyi referans alarak kısa bir hatırlatma mesajı gönder.";
+    actionLabel = "Takip Mesajı Gönder";
+  } else if (action === "HOT_NOW") {
+    message =
+      "İlk teması kur. İşletmenin mevcut rezervasyon operasyonunu anlamaya odaklan.";
+    actionLabel = "İlk Teması Kur";
+  } else if (action === "DEMO_READY") {
+    message =
+      "Demo görüşmesi teklif et. Operasyon yoğunluğu ve çok kanallı iletişim problemlerine odaklan.";
+    actionLabel = "Demo Teklif Et";
+  } else {
+    message = "Önce uygun iletişim kanalından kısa bir tanışma mesajı gönder.";
+    actionLabel = "Tanışma Mesajı Gönder";
+  }
+
+  // Channel helper text
+  let channelText: string;
+  if (rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible") {
+    channelText = "WhatsApp üzerinden ilerlenmesi öneriliyor.";
+  } else if (rec.channel === "instagram") {
+    channelText = "Instagram DM üzerinden ilerlenmesi öneriliyor.";
+  } else if (rec.channel === "website") {
+    channelText = "Web formu veya web sitesi üzerinden iletişim öneriliyor.";
+  } else if (rec.channel === "phone") {
+    channelText = "Telefon görüşmesi öneriliyor.";
+  } else {
+    channelText = "Önce iletişim bilgisi doğrulanmalı.";
+  }
+
+  // Channel-specific ready-to-use template
+  let template: string;
+  if (rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible") {
+    template =
+      "Merhaba,\n\nİşletmenizin dijital rezervasyon süreçlerini inceledim.\n\nKısa bir görüşme yaparak mevcut operasyon yapınızı anlamak isterim.\n\nUygun olursanız bilgi paylaşabilir misiniz?";
+  } else if (rec.channel === "instagram") {
+    template =
+      "Merhaba,\n\nRezervasyon ve misafir iletişimi süreçleriniz hakkında kısa bir görüşme yapmak isterim.\n\nUygun olursanız bilgi paylaşabilir misiniz?";
+  } else if (rec.channel === "phone") {
+    template =
+      "Arama öncesi not:\n\nİlk amaç satış yapmak değil,\nmevcut operasyon yapısını anlamak.";
+  } else {
+    template =
+      "Merhaba,\n\nİşletmenizin rezervasyon operasyonları hakkında bilgi almak isterim.\n\nUygun olursanız geri dönüş sağlayabilir misiniz?";
+  }
+
+  return { message, actionLabel, channelText, template };
+}
+
+/** v3.1 — "Satış Asistanı" — deterministic sales guidance card for lead detail sidebar. */
+function FounderSalesAssistant({
+  lead,
+  finder,
+  now,
+}: {
+  lead: LeadTableRow;
+  finder: ContactFinderResult | undefined;
+  now: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const [copied, setCopied] = useState(false);
+
+  const suggestion = computeSalesAssistantSuggestion(lead, finder, now);
+  if (!suggestion) return null;
+
+  function handleCopy() {
+    navigator.clipboard.writeText(suggestion!.template).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2500);
+    });
+  }
+
+  return (
+    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.03] px-3 py-3">
+      {/* Header */}
+      <div className="mb-2.5 flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
+          {tr ? "Satış Asistanı" : "Sales Assistant"}
+        </span>
+      </div>
+      <p className="mb-3 text-[11px] text-zinc-500">
+        {tr ? "Bu lead için önerilen ilk aksiyon." : "Recommended first action for this lead."}
+      </p>
+
+      {/* Action guidance */}
+      <div className="mb-3 rounded-md border border-white/8 bg-white/[0.025] px-3 py-2.5">
+        <p className="text-[12px] font-semibold text-emerald-300">{suggestion.actionLabel}</p>
+        <p className="mt-1 text-[12px] text-zinc-300 leading-relaxed">{suggestion.message}</p>
+        <p className="mt-1.5 text-[11px] italic text-zinc-500">{suggestion.channelText}</p>
+      </div>
+
+      {/* Ready-to-use message template */}
+      <div className="mb-3">
+        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          {tr ? "Önerilen Mesaj" : "Suggested Message"}
+        </p>
+        <div className="rounded-md border border-white/8 bg-zinc-900/40 px-3 py-2.5">
+          <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-zinc-300">
+            {suggestion.template}
+          </p>
+        </div>
+      </div>
+
+      {/* Quick actions */}
+      <div className="flex flex-wrap gap-2">
+        <p className="w-full text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          {tr ? "Hızlı Aksiyonlar" : "Quick Actions"}
+        </p>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+        >
+          {copied ? (tr ? "Kopyalandı!" : "Copied!") : (tr ? "Mesajı Kopyala" : "Copy Message")}
+        </button>
+        <button
+          type="button"
+          className="rounded-md border border-zinc-700/40 bg-white/[0.03] px-3 py-1.5 text-[11px] font-medium text-zinc-400 transition hover:bg-white/[0.05]"
+        >
+          {tr ? "Lead Detayını Aç" : "Open Lead Detail"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── end v3.1 ───────────────────────────────────────────────────────────────
 
 function DemoReadinessCard({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
