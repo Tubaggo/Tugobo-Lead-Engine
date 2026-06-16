@@ -7330,6 +7330,239 @@ function OperationStatusStrip({
   );
 }
 
+// ─── v3.0 Autonomous Sales Plan ────────────────────────────────────────────
+
+type SalesPlanItem = {
+  leadId: string;
+  leadName: string;
+  city: string;
+  action: string;
+  reason: string;
+  channelCopy: string;
+  priority: number;
+};
+
+/** v3.0 — Pure sales plan engine. No AI, no I/O, no scoring changes. */
+function computeAutonomousSalesPlan(
+  rows: LeadTableRow[],
+  now: number,
+  contactFinderMap: Record<string, ContactFinderResult>,
+): SalesPlanItem[] {
+  const items: SalesPlanItem[] = [];
+  const seen = new Set<string>();
+  const MAX = 6;
+
+  function channelCopyFor(row: LeadTableRow): string {
+    const finder = contactFinderMap[row.id];
+    const rec = computeRecommendedChannel(row, finder);
+    if (rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible")
+      return "WhatsApp üzerinden ilerle";
+    if (rec.channel === "instagram") return "Instagram DM ile ilerle";
+    if (rec.channel === "website") return "Web formu / site üzerinden ilerle";
+    if (rec.channel === "phone") return "Telefonla ilk temas kur";
+    return "Önce iletişim bilgisini doğrula";
+  }
+
+  function push(row: LeadTableRow, action: string, reason: string, priority: number) {
+    if (seen.has(row.id) || items.length >= MAX) return;
+    seen.add(row.id);
+    items.push({
+      leadId: row.id,
+      leadName: row.name || "—",
+      city: row.city || "",
+      action,
+      reason,
+      channelCopy: channelCopyFor(row),
+      priority,
+    });
+  }
+
+  // 1. FOLLOW_UP_DUE
+  for (const row of rows) {
+    if (items.length >= MAX) break;
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost") continue;
+    if (computeTodayActionStatus(row, s, now) === "FOLLOW_UP_DUE")
+      push(row, "Takip mesajı gönder", "Takip zamanı geçmiş", 1);
+  }
+
+  // 2. HOT_NOW
+  for (const row of rows) {
+    if (items.length >= MAX) break;
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost" || seen.has(row.id)) continue;
+    if (computeTodayActionStatus(row, s, now) === "HOT_NOW")
+      push(row, "İlk temas kur", "Sıcak fırsat işlenmeyi bekliyor", 2);
+  }
+
+  // 3. DEMO_READY or meeting
+  for (const row of rows) {
+    if (items.length >= MAX) break;
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost" || seen.has(row.id)) continue;
+    if (computeTodayActionStatus(row, s, now) === "DEMO_READY" || s.status === "meeting")
+      push(row, "Demo görüşmesini ilerlet", "Demo aşamasına taşınabilir", 3);
+  }
+
+  // 4. NEEDS_CONTACT
+  for (const row of rows) {
+    if (items.length >= MAX) break;
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost" || seen.has(row.id)) continue;
+    if (computeTodayActionStatus(row, s, now) === "NEEDS_CONTACT")
+      push(row, "Tanışma mesajı gönder", "İletişime uygun lead", 4);
+  }
+
+  // 5. High-value (score >= 70) with no valid outbound contact
+  for (const row of rows) {
+    if (items.length >= MAX) break;
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost" || seen.has(row.id)) continue;
+    const score = typeof row.verifiedOpportunityScore === "number" ? row.verifiedOpportunityScore : 0;
+    if (score >= 70 && !hasValidOutboundContact(row, contactFinderMap[row.id]).any)
+      push(row, "İletişim sinyalini tamamla", "Yüksek değerli lead ancak ulaşım bilgisi eksik", 5);
+  }
+
+  return items;
+}
+
+/** v3.0 — "Bugünün Satış Planı" — Autonomous daily sales plan. Derived only — no AI, no persistence. */
+function AutonomousSalesPlan({
+  rows,
+  now,
+  contactFinderMap,
+  onOpenDetail,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  contactFinderMap: Record<string, ContactFinderResult>;
+  onOpenDetail: (id: string) => void;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const plan = useMemo(
+    () => computeAutonomousSalesPlan(rows, now, contactFinderMap),
+    [rows, now, contactFinderMap],
+  );
+
+  const summary = useMemo(() => {
+    if (plan.length === 0) return null;
+    const followUps = plan.filter((i) => i.priority === 1).length;
+    const firstContact = plan.filter((i) => i.priority === 2 || i.priority === 4).length;
+    const demos = plan.filter((i) => i.priority === 3).length;
+    const highPriorityCount = followUps + firstContact + demos;
+
+    if (followUps > 0 && followUps >= firstContact + demos)
+      return `Bugün takip öncelikli bir operasyon günü.`;
+
+    if (highPriorityCount === 0)
+      return `Pipeline düşük; satış planı yeni fırsat üretimine yöneliyor.`;
+
+    const parts: string[] = [];
+    if (followUps > 0) parts.push(`${followUps} takip`);
+    if (firstContact > 0) parts.push(`${firstContact} ilk temas`);
+    if (demos > 0) parts.push(`${demos} demo`);
+    return `Bugün ${plan.length} aksiyon önerildi: ${parts.join(", ")}.`;
+  }, [plan]);
+
+  if (rows.length === 0) return null;
+
+  const priorityCls: Record<number, string> = {
+    1: "border-rose-500/30 text-rose-300",
+    2: "border-fuchsia-500/30 text-fuchsia-300",
+    3: "border-violet-500/30 text-violet-300",
+    4: "border-sky-500/30 text-sky-300",
+    5: "border-amber-500/30 text-amber-300",
+  };
+
+  if (plan.length === 0) {
+    return (
+      <section className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03]">
+        <div className="border-b border-white/5 px-4 py-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-violet-200">
+            {tr ? "Bugünün Satış Planı" : "Today's Sales Plan"}
+          </h2>
+        </div>
+        <div className="px-4 py-6 text-center">
+          <p className="text-sm font-medium text-zinc-400">
+            {tr
+              ? "Bugün aktif satış aksiyonu görünmüyor."
+              : "No active sales actions today."}
+          </p>
+          <p className="mt-1 text-[12px] text-zinc-600">
+            {tr
+              ? "Yeni lead import ederek pipeline'ı güçlendirebilirsin."
+              : "Import new leads to strengthen the pipeline."}
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-violet-500/20 bg-violet-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-violet-200">
+          {tr ? "Bugünün Satış Planı" : "Today's Sales Plan"}
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          {tr
+            ? "Sistem bugün odaklanman gereken satış aksiyonlarını sıraladı."
+            : "The system ranked today's sales actions for focus."}
+        </p>
+      </div>
+
+      <div className="space-y-2 p-4">
+        {summary && (
+          <div className="rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2.5">
+            <p className="text-[12px] font-medium text-violet-200">{summary}</p>
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          {plan.map((item) => (
+            <div
+              key={item.leadId}
+              className={`flex items-start gap-3 rounded-lg border bg-white/[0.02] px-3 py-2.5 ${priorityCls[item.priority] ?? "border-zinc-700/40"}`}
+            >
+              <div
+                className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold tabular-nums ${priorityCls[item.priority] ?? "border-zinc-600/40 text-zinc-400"}`}
+              >
+                {item.priority}
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                  <span className="truncate text-[13px] font-semibold text-zinc-100">
+                    {item.leadName}
+                  </span>
+                  {item.city && (
+                    <span className="text-[11px] text-zinc-500">{item.city}</span>
+                  )}
+                </div>
+                <p className="mt-0.5 text-[12px] font-medium text-zinc-200">{item.action}</p>
+                <p className="text-[11px] text-zinc-500">{item.reason}</p>
+                <p className="mt-0.5 text-[11px] italic text-zinc-400">{item.channelCopy}</p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => onOpenDetail(item.leadId)}
+                className="shrink-0 rounded-md border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-300 transition hover:bg-violet-500/20"
+              >
+                {tr ? "Detay Aç" : "Open"}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── end v3.0 ───────────────────────────────────────────────────────────────
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -11137,6 +11370,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* v2.4.1 Operation Status Strip — bridge between daily ops and commercial intelligence */}
       {mounted && allRows.length > 0 && (
         <OperationStatusStrip rows={allRows} now={renderNow || Date.now()} />
+      )}
+
+      {/* v3.0 Autonomous Sales Plan — "Bugünün Satış Planı" */}
+      {mounted && allRows.length > 0 && (
+        <AutonomousSalesPlan
+          rows={allRows}
+          now={renderNow || Date.now()}
+          contactFinderMap={contactFinderMap}
+          onOpenDetail={(id) => setOpenId(id)}
+        />
       )}
 
       {/* v2.0 Revenue Intelligence — "Bu Haftaki Ticari Görünüm" */}
