@@ -7250,6 +7250,86 @@ function FounderWorkflowSteps({
   );
 }
 
+/** v2.4.1 — "Operasyon Durumu" bridge strip. Derived from computeFounderWorkflowStatus. No AI, no persistence. */
+function OperationStatusStrip({
+  rows,
+  now,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const { msg, accent } = useMemo(() => {
+    const wf = computeFounderWorkflowStatus(rows, now, tr);
+    if (wf.followUpDue > 0) {
+      return {
+        msg: tr
+          ? `${wf.followUpDue} kritik takip bekliyor.`
+          : `${wf.followUpDue} overdue follow-up${wf.followUpDue !== 1 ? "s" : ""} pending.`,
+        accent: "rose" as const,
+      };
+    }
+    if (wf.hotNow > 0) {
+      return {
+        msg: tr
+          ? `${wf.hotNow} sıcak fırsat işlenmeyi bekliyor.`
+          : `${wf.hotNow} hot opportunit${wf.hotNow !== 1 ? "ies" : "y"} ready to engage.`,
+        accent: "amber" as const,
+      };
+    }
+    if (wf.demoReady > 0) {
+      return {
+        msg: tr
+          ? `${wf.demoReady} demo adayı ilerletilmeyi bekliyor.`
+          : `${wf.demoReady} demo candidate${wf.demoReady !== 1 ? "s" : ""} ready to advance.`,
+        accent: "emerald" as const,
+      };
+    }
+    if (wf.pipelineLow) {
+      return {
+        msg: tr
+          ? "Operasyon yükü düşük, yeni fırsat üretimine odaklanılabilir."
+          : "Operation load is low — focus on new opportunity generation.",
+        accent: "sky" as const,
+      };
+    }
+    return {
+      msg: tr
+        ? "Bugünkü operasyon planlandığı şekilde ilerliyor."
+        : "Today's operation is progressing as planned.",
+      accent: "emerald" as const,
+    };
+  }, [rows, now, tr]);
+
+  if (rows.length === 0) return null;
+
+  const dotCls: Record<typeof accent, string> = {
+    rose: "bg-rose-400",
+    amber: "bg-amber-400",
+    emerald: "bg-emerald-400",
+    sky: "bg-sky-400",
+  };
+
+  const textCls: Record<typeof accent, string> = {
+    rose: "text-rose-200",
+    amber: "text-amber-200",
+    emerald: "text-emerald-200",
+    sky: "text-sky-200",
+  };
+
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03] px-4 py-3">
+      <span className={`h-2 w-2 shrink-0 rounded-full ${dotCls[accent]}`} aria-hidden />
+      <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        {tr ? "Operasyon Durumu" : "Operation Status"}
+      </span>
+      <span className={`min-w-0 flex-1 text-sm font-medium ${textCls[accent]}`}>{msg}</span>
+    </div>
+  );
+}
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -11052,6 +11132,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           now={renderNow || Date.now()}
           onOpenDetail={(id) => setOpenId(id)}
         />
+      )}
+
+      {/* v2.4.1 Operation Status Strip — bridge between daily ops and commercial intelligence */}
+      {mounted && allRows.length > 0 && (
+        <OperationStatusStrip rows={allRows} now={renderNow || Date.now()} />
       )}
 
       {/* v2.0 Revenue Intelligence — "Bu Haftaki Ticari Görünüm" */}
