@@ -4974,6 +4974,175 @@ function LeadSignalVerificationBlock({ lead }: { lead: LeadTableRow }) {
   );
 }
 
+// ─── v3.2 Revenue Potential Engine ──────────────────────────────────────────
+
+type RevenuePotential = {
+  estimatedMrr: number;
+  estimatedArr: number;
+  closeProbability: number;
+  expectedValue: number;
+  reasons: string[];
+};
+
+/** v3.2 — Deterministic revenue potential estimator. No AI, no I/O, no schema changes. */
+function computeRevenuePotential(lead: LeadTableRow): RevenuePotential {
+  const sv = lead.signalVerification;
+  const icp = lead.icpAlignment;
+  const size = icp?.estimatedPropertySize ?? "unknown";
+  const demandVolume = icp?.estimatedDemandVolume ?? "unknown";
+  const operationalComplexityScore = icp?.operationalComplexityScore ?? 0;
+  const multiChannelScore = icp?.multiChannelScore ?? 0;
+  const verifiedOpportunityScore = lead.verifiedOpportunityScore ?? 0;
+  const icpFitScore = lead.icpFitScore ?? 0;
+  const digitalMaturity = lead.digitalMaturity ?? 0;
+  const hotScore = lead.hotScore ?? 0;
+  const leadScore = lead.leadScore ?? 0;
+  const hasReservationCTA =
+    Boolean(lead.hasReservationCTA) ||
+    sv?.reservationSignal === "verified" ||
+    sv?.reservationSignal === "detected";
+  const websiteVerified = sv?.websiteVerification === "verified";
+  const whatsappVerified = sv?.whatsappVerification === "verified";
+
+  // ── MRR Base ──────────────────────────────────────────────────────────────
+  const baseMrr =
+    size === "large" ? 25_000 : size === "medium" ? 12_000 : size === "small" ? 5_000 : 8_000;
+
+  // ── MRR Multipliers ───────────────────────────────────────────────────────
+  let mrrBonus = 0;
+  if (verifiedOpportunityScore >= 80) mrrBonus += 0.22;
+  else if (verifiedOpportunityScore >= 60) mrrBonus += 0.12;
+  else if (verifiedOpportunityScore >= 40) mrrBonus += 0.05;
+  if (icpFitScore >= 75) mrrBonus += 0.12;
+  else if (icpFitScore >= 55) mrrBonus += 0.06;
+  if (digitalMaturity >= 70) mrrBonus += 0.08;
+  if (hasReservationCTA) mrrBonus += 0.12;
+  if (demandVolume === "high") mrrBonus += 0.14;
+  else if (demandVolume === "medium") mrrBonus += 0.06;
+  if (operationalComplexityScore >= 70) mrrBonus += 0.10;
+  if (multiChannelScore >= 70) mrrBonus += 0.06;
+  if (hotScore >= 65) mrrBonus += 0.08;
+  const mrrMultiplier = Math.max(0.8, Math.min(1.65, 1.0 + mrrBonus));
+  const estimatedMrr = Math.round((baseMrr * mrrMultiplier) / 500) * 500;
+
+  // ── Close Probability ─────────────────────────────────────────────────────
+  let prob = 15;
+  if (verifiedOpportunityScore >= 80) prob += 25;
+  else if (verifiedOpportunityScore >= 60) prob += 15;
+  else if (verifiedOpportunityScore >= 40) prob += 8;
+  if (icpFitScore >= 75) prob += 10;
+  else if (icpFitScore >= 55) prob += 5;
+  if (leadScore >= 70) prob += 8;
+  else if (leadScore >= 50) prob += 4;
+  if (digitalMaturity >= 70) prob += 6;
+  if (hasReservationCTA) prob += 5;
+  if (websiteVerified) prob += 5;
+  if (whatsappVerified) prob += 5;
+  if (lead.hasInstagram) prob += 3;
+  if (lead.phone) prob += 3;
+  if (demandVolume === "high") prob += 5;
+  if (operationalComplexityScore >= 70) prob += 4;
+  const closeProbability = Math.max(10, Math.min(90, prob)) / 100;
+
+  // ── ARR & Expected Value ──────────────────────────────────────────────────
+  const estimatedArr = estimatedMrr * 12;
+  const expectedValue = Math.round((estimatedArr * closeProbability) / 500) * 500;
+
+  // ── Reasons ───────────────────────────────────────────────────────────────
+  const candidates: string[] = [];
+  if (verifiedOpportunityScore >= 80) candidates.push("doğrulanmış yüksek fırsat skoru");
+  if (icpFitScore >= 75) candidates.push("ICP uyumu yüksek");
+  if (hasReservationCTA) candidates.push("rezervasyon CTA mevcut");
+  if (demandVolume === "high") candidates.push("yüksek dijital talep");
+  if (operationalComplexityScore >= 70) candidates.push("yüksek operasyonel karmaşıklık");
+  if (multiChannelScore >= 70) candidates.push("çok kanallı iletişim");
+  if (digitalMaturity >= 70) candidates.push("yüksek dijital olgunluk");
+  if (websiteVerified) candidates.push("web sitesi doğrulandı");
+  if (whatsappVerified) candidates.push("WhatsApp hattı aktif");
+  if (lead.hasInstagram) candidates.push("Instagram kanalı mevcut");
+  if (leadScore >= 70) candidates.push("yüksek lead skoru");
+  if (hotScore >= 65) candidates.push("bugün sıcak fırsat");
+  if (size === "large") candidates.push("büyük ölçekli tesis");
+  // Pad to at least 3
+  if (candidates.length < 3) {
+    const sizeLabel =
+      size === "large"
+        ? "büyük ölçekli tesis"
+        : size === "medium"
+          ? "orta ölçekli tesis"
+          : "küçük ölçekli tesis";
+    if (!candidates.includes(sizeLabel)) candidates.push(sizeLabel);
+  }
+  if (candidates.length < 3) candidates.push("aktif satış fırsatı");
+
+  return { estimatedMrr, estimatedArr, closeProbability, expectedValue, reasons: candidates.slice(0, 5) };
+}
+
+/** v3.2 — "Gelir Potansiyeli" card for the lead detail sidebar. Placement: after AI Summary, before TUGOBO Fit. */
+function RevenuePotentialCard({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const rp = computeRevenuePotential(lead);
+  const probPct = Math.round(rp.closeProbability * 100);
+  const probColor =
+    probPct >= 60 ? "text-emerald-300" : probPct >= 35 ? "text-amber-300" : "text-zinc-400";
+
+  return (
+    <div className="space-y-3 rounded-xl border border-amber-400/15 bg-amber-500/[0.03] p-3.5">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-amber-200/80">
+        {tr ? "Gelir Potansiyeli" : "Revenue Potential"}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "MRR Tahmini" : "Est. MRR"}
+          </div>
+          <div className="mt-0.5 text-sm font-bold tabular-nums text-amber-200">
+            {formatTRY(rp.estimatedMrr)}
+          </div>
+        </div>
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "ARR Tahmini" : "Est. ARR"}
+          </div>
+          <div className="mt-0.5 text-sm font-bold tabular-nums text-amber-200">
+            {formatTRY(rp.estimatedArr)}
+          </div>
+        </div>
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Kapanma Olasılığı" : "Close Probability"}
+          </div>
+          <div className={`mt-0.5 text-sm font-bold tabular-nums ${probColor}`}>
+            %{probPct}
+          </div>
+        </div>
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Beklenen Değer" : "Expected Value"}
+          </div>
+          <div className="mt-0.5 text-sm font-bold tabular-nums text-emerald-300">
+            {formatTRY(rp.expectedValue)}
+          </div>
+        </div>
+      </div>
+      {rp.reasons.length > 0 ? (
+        <div className="space-y-1 border-t border-white/5 pt-2.5">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Sinyaller" : "Signals"}
+          </div>
+          {rp.reasons.map((r) => (
+            <div key={r} className="flex items-start gap-1.5 text-[11px] leading-snug text-amber-100/80">
+              <span className="shrink-0 text-emerald-400" aria-hidden="true">✓</span>
+              <span>{r}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Compact ICP indicators for the lead detail drawer. */
 function LeadIcpSection({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
@@ -6135,11 +6304,9 @@ function LeadDetailPanel({
         </div>
         <LeadEnrichmentMetaBlock lead={selectedLead} />
         <LeadOpportunityBlock lead={selectedLead} />
-        <TodayActionCard lead={selectedLead} now={now} />
+        <OperationGuideSection lead={selectedLead} finder={finderPersisted} now={now} />
         <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
         <DemoReadinessCard lead={selectedLead} />
-        <CommunicationStrategyCard lead={selectedLead} finder={finderPersisted} now={now} />
-        <FounderSalesAssistant lead={selectedLead} finder={finderPersisted} now={now} />
         <LeadSignalVerificationBlock lead={selectedLead} />
         <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
         <LeadActivityTimelineBlock lead={selectedLead} />
@@ -6151,6 +6318,7 @@ function LeadDetailPanel({
           lead={selectedLead}
           onAiReviewCompleted={onAiReviewCompleted}
         />
+        <RevenuePotentialCard lead={selectedLead} />
         <LeadIcpSection lead={selectedLead} />
         <LeadDetailMetrics lead={selectedLead} />
         <LeadDetailContactSection
@@ -8428,6 +8596,179 @@ function FounderSalesAssistant({
 }
 
 // ─── end v3.1 ───────────────────────────────────────────────────────────────
+
+// ─── v3.1.1 Operation Guide — Sidebar Consolidation ─────────────────────────
+
+/** v3.1.1 — Unified operational workspace. Merges channel, action, message template and quick
+ *  actions into a single card. Replaces standalone CommunicationStrategyCard,
+ *  FounderSalesAssistant, and TodayActionCard in the sidebar. No new logic — reuses
+ *  computeRecommendedChannel, computeTodayActionStatus, computeSalesAssistantSuggestion. */
+function OperationGuideSection({
+  lead,
+  finder,
+  now,
+}: {
+  lead: LeadTableRow;
+  finder: ContactFinderResult | undefined;
+  now: number;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const [copied, setCopied] = useState(false);
+  const s = lead._s;
+
+  // Closed lead — compact status card instead of operational actions
+  if (s.status === "won" || s.status === "lost") {
+    return (
+      <div className="rounded-lg border border-zinc-700/40 bg-zinc-500/[0.03] px-3 py-3">
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          {tr ? "Operasyon Rehberi" : "Operation Guide"}
+        </p>
+        <div className="rounded-md border border-white/8 bg-white/[0.025] px-3 py-2.5 text-center">
+          {s.status === "won" ? (
+            <>
+              <p className="text-[13px] font-semibold text-emerald-300">
+                {tr ? "Kazanıldı" : "Won"}
+              </p>
+              <p className="mt-0.5 text-[11px] text-zinc-500">
+                {tr
+                  ? "Bu fırsat başarıyla sonuçlandırıldı."
+                  : "This opportunity was successfully closed."}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-[13px] font-semibold text-zinc-400">
+                {tr ? "Kaybedildi" : "Lost"}
+              </p>
+              <p className="mt-0.5 text-[11px] text-zinc-500">
+                {tr
+                  ? "Bu fırsat aktif takipten çıkarıldı."
+                  : "This opportunity has been removed from active follow-up."}
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const action = computeTodayActionStatus(lead, s, now);
+  const rec = computeRecommendedChannel(lead, finder);
+  const suggestion = computeSalesAssistantSuggestion(lead, finder, now);
+  const waDigits = queueSessionWhatsAppDigits(lead, finder);
+  const waLink = waDigits ? whatsappLink(waDigits) : null;
+
+  // Channel display label
+  const channelLabel =
+    rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible"
+      ? "WhatsApp"
+      : rec.channel === "instagram"
+        ? "Instagram"
+        : rec.channel === "website"
+          ? tr ? "Web Formu" : "Website"
+          : rec.channel === "phone"
+            ? tr ? "Telefon" : "Phone"
+            : tr ? "Belirsiz" : "Unknown";
+
+  // Short action label for today
+  const actionCopy =
+    s.status === "meeting"
+      ? tr ? "Demo görüşmesini ilerlet" : "Advance demo meeting"
+      : action === "FOLLOW_UP_DUE"
+        ? tr ? "Takip mesajı gönder" : "Send follow-up"
+        : action === "HOT_NOW"
+          ? tr ? "İlk temas kur" : "Make first contact"
+          : action === "DEMO_READY"
+            ? tr ? "Demo görüşmesini ilerlet" : "Advance to demo"
+            : !hasValidOutboundContact(lead, finder).any
+              ? tr ? "İletişim bilgisini doğrula" : "Verify contact info"
+              : tr ? "Tanışma mesajı gönder" : "Send intro message";
+
+  function handleCopy() {
+    if (!suggestion) return;
+    navigator.clipboard.writeText(suggestion.template).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2500);
+    });
+  }
+
+  return (
+    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.03] px-3 py-3">
+      <p className="mb-2.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
+        {tr ? "Operasyon Rehberi" : "Operation Guide"}
+      </p>
+
+      {/* Önerilen Kanal + Bugünkü Aksiyon */}
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <div className="rounded-md border border-white/8 bg-white/[0.025] px-2.5 py-2">
+          <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">
+            {tr ? "Önerilen Kanal" : "Channel"}
+          </p>
+          <p className="text-[12px] font-semibold text-emerald-300">{channelLabel}</p>
+        </div>
+        <div className="rounded-md border border-white/8 bg-white/[0.025] px-2.5 py-2">
+          <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">
+            {tr ? "Bugünkü Aksiyon" : "Today's Action"}
+          </p>
+          <p className="text-[12px] font-semibold text-sky-300">{actionCopy}</p>
+        </div>
+      </div>
+
+      {/* Guidance message from suggestion engine */}
+      {suggestion && (
+        <p className="mb-3 text-[12px] leading-relaxed text-zinc-300">{suggestion.message}</p>
+      )}
+
+      {/* Önerilen Mesaj */}
+      {suggestion && (
+        <div className="mb-3">
+          <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">
+            {tr ? "Önerilen Mesaj" : "Suggested Message"}
+          </p>
+          <div className="rounded-md border border-white/8 bg-zinc-900/40 px-3 py-2.5">
+            <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-zinc-300">
+              {suggestion.template}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Hızlı Aksiyonlar */}
+      {(suggestion || waLink) && (
+        <div>
+          <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">
+            {tr ? "Hızlı Aksiyonlar" : "Quick Actions"}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {suggestion && (
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+              >
+                {copied
+                  ? tr ? "Kopyalandı!" : "Copied!"
+                  : tr ? "Mesajı Kopyala" : "Copy Message"}
+              </button>
+            )}
+            {waLink && (
+              <button
+                type="button"
+                onClick={() => openExternal(waLink)}
+                className="rounded-md border border-green-500/30 bg-green-500/10 px-2.5 py-1.5 text-[11px] font-medium text-green-300 transition hover:bg-green-500/20"
+              >
+                {tr ? "WhatsApp Aç" : "Open WhatsApp"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── end v3.1.1 ──────────────────────────────────────────────────────────────
 
 function DemoReadinessCard({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
