@@ -8732,6 +8732,272 @@ function RevenueRecoveryEngine({
 
 // ─── end v3.5.0 ──────────────────────────────────────────────────────────────
 
+// ─── v3.6.0 — Founder Command Center ────────────────────────────────────────
+
+type FounderCommandResult = {
+  command: string;
+  impactRevenue: number;
+  criticalLeadId: string | null;
+  criticalLeadName: string;
+  criticalLeadCity: string;
+  criticalLeadReason: string;
+  confidence: "high" | "medium" | "low";
+  insight: string;
+  priority: 1 | 2 | 3 | 4 | 5;
+};
+
+/**
+ * v3.6.0 — Orchestration engine that synthesises existing runtime signals into a
+ * single primary command. Pure function, no AI, no I/O.
+ * Priority order: FOLLOW_UP_DUE > HOT_NOW > DEMO_READY > RECOVERY > PIPELINE_LOW.
+ * Won/lost leads excluded.
+ */
+function computeFounderCommand(
+  rows: LeadTableRow[],
+  now: number,
+  contactFinderMap: Record<string, ContactFinderResult>,
+): FounderCommandResult {
+  type Candidate = { row: LeadTableRow; ev: number };
+  const followUpDue: Candidate[] = [];
+  const hotNow: Candidate[] = [];
+  const demoReady: Candidate[] = [];
+  const recovery: Candidate[] = [];
+
+  for (const row of rows) {
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost") continue;
+
+    const action = computeTodayActionStatus(row, s, now);
+    const rp = computeRevenuePotential(row);
+    const finder = contactFinderMap[row.id];
+    const icpFit = typeof row.icpFitScore === "number" ? row.icpFitScore : 0;
+    const ev = rp.expectedValue;
+
+    if (action === "FOLLOW_UP_DUE") {
+      followUpDue.push({ row, ev });
+    } else if (action === "HOT_NOW" && s.status === "new") {
+      hotNow.push({ row, ev });
+    } else if (action === "DEMO_READY") {
+      demoReady.push({ row, ev });
+    } else if (
+      (ev > 100_000 && !hasValidOutboundContact(row, finder).any) ||
+      (icpFit >= 60 && ev >= 80_000 && s.status === "new" && (s.contactAttempts ?? 0) === 0)
+    ) {
+      recovery.push({ row, ev });
+    }
+  }
+
+  const activePriorityCount = [
+    followUpDue.length > 0,
+    hotNow.length > 0,
+    demoReady.length > 0,
+    recovery.length > 0,
+  ].filter(Boolean).length;
+
+  let confidence: "high" | "medium" | "low";
+  if (activePriorityCount === 1) confidence = "high";
+  else if (activePriorityCount === 2) confidence = "medium";
+  else confidence = "low";
+
+  let command: string;
+  let priority: 1 | 2 | 3 | 4 | 5;
+  let candidates: Candidate[];
+  let criticalLeadReason: string;
+  let insight: string;
+
+  if (followUpDue.length > 0) {
+    priority = 1;
+    command = "Takip gecikmelerini kapat";
+    candidates = followUpDue;
+    criticalLeadReason = "Takip gecikmesi nedeniyle risk altında.";
+    insight = "Bugünkü en büyük gelir riski takip gecikmeleri.";
+  } else if (hotNow.length > 0) {
+    priority = 2;
+    command = "Sıcak fırsatlarla iletişime geç";
+    candidates = hotNow;
+    criticalLeadReason = "Sıcak fırsat henüz işleme alınmadı.";
+    insight = "Sıcak fırsatlar gelir yaratma potansiyeli taşıyor.";
+  } else if (demoReady.length > 0) {
+    priority = 3;
+    command = "Demo adaylarını ilerlet";
+    candidates = demoReady;
+    criticalLeadReason = "Demo aşamasına hazır, harekete geçilmeli.";
+    insight = "Demo adayları kapanış için hazır, harekete geç.";
+  } else if (recovery.length > 0) {
+    priority = 4;
+    command = "Risk altındaki geliri geri kazan";
+    candidates = recovery;
+    criticalLeadReason = "İletişim veya aksiyon eksikliği nedeniyle risk altında.";
+    insight = "Pipeline içindeki riski azaltmak için iletişim aksiyonları gerekli.";
+  } else {
+    // PIPELINE_LOW — no actionable leads
+    return {
+      command: "Yeni fırsat üretimine odaklan",
+      impactRevenue: 0,
+      criticalLeadId: null,
+      criticalLeadName: "",
+      criticalLeadCity: "",
+      criticalLeadReason: "",
+      confidence: "low",
+      insight: "Pipeline dengeli görünüyor ancak yeni fırsat üretimi gerekli.",
+      priority: 5,
+    };
+  }
+
+  candidates.sort((a, b) => b.ev - a.ev);
+  const top = candidates[0];
+  const impactRevenue = candidates.reduce((acc, c) => acc + c.ev, 0);
+
+  return {
+    command,
+    impactRevenue,
+    criticalLeadId: top.row.id,
+    criticalLeadName: top.row.name || "—",
+    criticalLeadCity: top.row.city || "",
+    criticalLeadReason,
+    confidence,
+    insight,
+    priority,
+  };
+}
+
+/** v3.6.0 — Founder Command Center: single dominant recommendation, revenue impact, critical lead. */
+function FounderCommandCenter({
+  rows,
+  now,
+  contactFinderMap,
+  onOpenDetail,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  contactFinderMap: Record<string, ContactFinderResult>;
+  onOpenDetail: (id: string) => void;
+}) {
+  const cmd = useMemo(
+    () => computeFounderCommand(rows, now, contactFinderMap),
+    [rows, now, contactFinderMap],
+  );
+
+  if (rows.length === 0) return null;
+
+  // Empty / PIPELINE_LOW with no leads at all
+  if (cmd.priority === 5 && cmd.impactRevenue === 0) {
+    return (
+      <section className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03]">
+        <div className="border-b border-white/5 px-4 py-3">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+            Komuta Merkezi
+          </h2>
+        </div>
+        <div className="px-4 py-6 text-center">
+          <p className="text-sm font-medium text-zinc-400">
+            Operasyon planlandığı şekilde ilerliyor.
+          </p>
+          <p className="mt-1 text-[12px] text-zinc-600">
+            Bugün için kritik aksiyon görünmüyor.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const priorityBorder: Record<number, string> = {
+    1: "border-rose-500/25 bg-rose-500/[0.04]",
+    2: "border-fuchsia-500/25 bg-fuchsia-500/[0.04]",
+    3: "border-violet-500/25 bg-violet-500/[0.04]",
+    4: "border-amber-500/25 bg-amber-500/[0.04]",
+    5: "border-zinc-700/40 bg-zinc-500/[0.03]",
+  };
+
+  const commandCls: Record<number, string> = {
+    1: "text-rose-200",
+    2: "text-fuchsia-200",
+    3: "text-violet-200",
+    4: "text-amber-200",
+    5: "text-zinc-300",
+  };
+
+  const confidenceLabel =
+    cmd.confidence === "high" ? "Yüksek" : cmd.confidence === "medium" ? "Orta" : "Düşük";
+
+  const confidenceCls =
+    cmd.confidence === "high"
+      ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
+      : cmd.confidence === "medium"
+        ? "text-amber-300 border-amber-500/30 bg-amber-500/10"
+        : "text-zinc-400 border-zinc-600/40 bg-zinc-700/20";
+
+  return (
+    <section
+      className={`overflow-hidden rounded-xl border ${priorityBorder[cmd.priority] ?? priorityBorder[5]}`}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          Komuta Merkezi
+        </h2>
+        <span className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${confidenceCls}`}>
+          Komut Güveni: {confidenceLabel}
+        </span>
+      </div>
+
+      {/* Primary command */}
+      <div className="px-4 pt-4 pb-3">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">
+          Bugünkü Birincil Komut
+        </p>
+        <p
+          className={`mt-1 text-2xl font-bold tracking-tight ${commandCls[cmd.priority] ?? "text-zinc-200"}`}
+        >
+          {cmd.command}
+        </p>
+        {cmd.impactRevenue > 0 && (
+          <p className="mt-1 text-[13px] font-medium text-zinc-400">
+            <span className="font-bold text-zinc-200">{formatTRY(cmd.impactRevenue)}</span>
+            {" "}gelir etkisi
+          </p>
+        )}
+      </div>
+
+      {/* Critical lead */}
+      {cmd.criticalLeadId && (
+        <div className="mx-4 mb-3 overflow-hidden rounded-lg border border-white/8 bg-white/[0.025]">
+          <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">
+                Kritik Lead
+              </p>
+              <p className="mt-0.5 text-[13px] font-semibold text-zinc-100">
+                {cmd.criticalLeadName}
+                {cmd.criticalLeadCity && (
+                  <span className="ml-1.5 text-[11px] font-normal text-zinc-500">
+                    {cmd.criticalLeadCity}
+                  </span>
+                )}
+              </p>
+              <p className="mt-0.5 text-[11px] text-zinc-500">{cmd.criticalLeadReason}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onOpenDetail(cmd.criticalLeadId!)}
+              className="shrink-0 rounded-md border border-zinc-600/50 bg-zinc-700/30 px-2.5 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-zinc-700/50"
+            >
+              Detay Aç
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Founder insight */}
+      <div className="border-t border-white/5 px-4 py-2.5">
+        <p className="text-[11px] italic text-zinc-500">{cmd.insight}</p>
+      </div>
+    </section>
+  );
+}
+
+// ─── end v3.6.0 ──────────────────────────────────────────────────────────────
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -12829,6 +13095,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>
         </div>
       </section>
+
+      {/* v3.6.0 Founder Command Center — single primary command */}
+      {mounted && allRows.length > 0 && (
+        <FounderCommandCenter
+          rows={allRows}
+          now={renderNow || Date.now()}
+          contactFinderMap={contactFinderMap}
+          onOpenDetail={(id) => setOpenId(id)}
+        />
+      )}
 
       {/* v2.3 Daily Operating Brief — "Bugünün Operasyonu" */}
       {mounted && allRows.length > 0 && (
