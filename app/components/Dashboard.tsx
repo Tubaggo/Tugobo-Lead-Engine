@@ -8424,6 +8424,314 @@ function RevenueRiskEngine({
 
 // ─── end v3.4.0 ──────────────────────────────────────────────────────────────
 
+// ─── v3.5.0 — Revenue Recovery Engine ───────────────────────────────────────
+
+type RevenueRecoveryItem = {
+  leadId: string;
+  leadName: string;
+  expectedValue: number;
+  recoveryValue: number;
+  recoveryAction: string;
+  priority: "Critical" | "High" | "Medium";
+  actionLabel: string;
+};
+
+/**
+ * v3.5.0 — Deterministic recovery planner. Pure function, no AI, no I/O.
+ * Mirrors v3.4.0 risk types but attaches a concrete action and a recovery value multiplier.
+ * Priority order matches computeRevenueRisk; won/lost excluded.
+ */
+function computeRevenueRecovery(
+  rows: LeadTableRow[],
+  now: number,
+  contactFinderMap: Record<string, ContactFinderResult>,
+): RevenueRecoveryItem[] {
+  const items: RevenueRecoveryItem[] = [];
+
+  for (const row of rows) {
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost") continue;
+
+    const action = computeTodayActionStatus(row, s, now);
+    const rp = computeRevenuePotential(row);
+    const finder = contactFinderMap[row.id];
+    const icpFit = typeof row.icpFitScore === "number" ? row.icpFitScore : 0;
+
+    let recoveryAction: string | null = null;
+    let recoveryMultiplier = 1;
+    let priority: "Critical" | "High" | "Medium" = "Medium";
+    let actionLabel = "";
+
+    if (action === "FOLLOW_UP_DUE") {
+      recoveryAction = "Takip mesajı gönder";
+      recoveryMultiplier = 1.0;
+      priority = "Critical";
+      actionLabel = "Takip Bekliyor";
+    } else if (action === "HOT_NOW" && s.status === "new") {
+      recoveryAction = "İlk teması bugün kur";
+      recoveryMultiplier = 0.9;
+      priority = "High";
+      actionLabel = "Sıcak Fırsat";
+    } else if (action === "DEMO_READY" && s.status !== "meeting") {
+      recoveryAction = "Demo planla";
+      recoveryMultiplier = 0.8;
+      priority = "High";
+      actionLabel = "Demo Adayı";
+    } else if (rp.expectedValue > 100_000 && !hasValidOutboundContact(row, finder).any) {
+      recoveryAction = "İletişim bilgisini doğrula";
+      recoveryMultiplier = 0.7;
+      priority = "Medium";
+      actionLabel =
+        s.status === "new"
+          ? "Yeni Lead"
+          : s.status === "contacted"
+            ? "Temas Kuruldu"
+            : s.status === "needs_follow_up"
+              ? "Takip"
+              : s.status === "replied"
+                ? "Yanıt Verdi"
+                : "Aktif";
+    } else if (
+      icpFit >= 60 &&
+      rp.expectedValue >= 80_000 &&
+      s.status === "new" &&
+      (s.contactAttempts ?? 0) === 0
+    ) {
+      recoveryAction = "Satış planına dahil et";
+      recoveryMultiplier = 0.6;
+      priority = "Medium";
+      actionLabel = "Yeni Lead";
+    }
+
+    if (recoveryAction) {
+      const recoveryValue = Math.round((rp.expectedValue * recoveryMultiplier) / 500) * 500;
+      items.push({
+        leadId: row.id,
+        leadName: row.name || "—",
+        expectedValue: rp.expectedValue,
+        recoveryValue,
+        recoveryAction,
+        priority,
+        actionLabel,
+      });
+    }
+  }
+
+  return items;
+}
+
+/** v3.5.0 — Revenue Recovery Engine: recoverable revenue KPIs + top 5 recovery rows. Read-only. */
+function RevenueRecoveryEngine({
+  rows,
+  now,
+  contactFinderMap,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  contactFinderMap: Record<string, ContactFinderResult>;
+}) {
+  const recovery = useMemo(() => {
+    const items = computeRevenueRecovery(rows, now, contactFinderMap);
+
+    let weightedPipeline = 0;
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      weightedPipeline += computeRevenuePotential(row).expectedValue;
+    }
+
+    const recoverableRevenue = items.reduce((acc, i) => acc + i.recoveryValue, 0);
+    const recoveryRatio = weightedPipeline > 0 ? recoverableRevenue / weightedPipeline : 0;
+
+    let recoveryPotential: "low" | "medium" | "high";
+    if (recoveryRatio >= 0.4) recoveryPotential = "high";
+    else if (recoveryRatio >= 0.2) recoveryPotential = "medium";
+    else recoveryPotential = "low";
+
+    const founderMessage =
+      recoveryPotential === "high"
+        ? "Mevcut pipeline içinde önemli miktarda geri kazanılabilir gelir bulunuyor."
+        : recoveryPotential === "medium"
+          ? "Takip ve demo aksiyonları gelir potansiyelini artırabilir."
+          : "Recovery potansiyeli sınırlı. Yeni fırsat üretimi daha değerli olabilir.";
+
+    const criticalCount = items.filter((i) => i.priority === "Critical").length;
+    const highCount = items.filter((i) => i.priority === "High").length;
+    const mediumCount = items.filter((i) => i.priority === "Medium").length;
+
+    const top5 = [...items].sort((a, b) => b.recoveryValue - a.recoveryValue).slice(0, 5);
+
+    return {
+      items,
+      recoverableRevenue,
+      recoveryPotential,
+      founderMessage,
+      criticalCount,
+      highCount,
+      mediumCount,
+      top5,
+    };
+  }, [rows, now, contactFinderMap]);
+
+  if (rows.length === 0) return null;
+
+  if (recovery.items.length === 0) {
+    return (
+      <section className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03]">
+        <div className="border-b border-white/5 px-4 py-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
+            Gelir Recovery Planı
+          </h2>
+        </div>
+        <div className="px-4 py-6 text-center">
+          <p className="text-sm font-medium text-zinc-400">
+            Kurtarılabilir gelir görünmüyor.
+          </p>
+          <p className="mt-1 text-[12px] text-zinc-600">
+            Risk altındaki fırsatlar için ek aksiyon gerekmiyor.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const potentialLabel =
+    recovery.recoveryPotential === "high"
+      ? "Yüksek"
+      : recovery.recoveryPotential === "medium"
+        ? "Orta"
+        : "Düşük";
+
+  const potentialCls =
+    recovery.recoveryPotential === "high"
+      ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
+      : recovery.recoveryPotential === "medium"
+        ? "text-sky-300 border-sky-500/30 bg-sky-500/10"
+        : "text-zinc-400 border-zinc-600/40 bg-zinc-700/20";
+
+  const priorityCls: Record<string, string> = {
+    Critical: "text-rose-300 border-rose-500/30 bg-rose-500/10",
+    High: "text-fuchsia-300 border-fuchsia-500/30 bg-fuchsia-500/10",
+    Medium: "text-amber-300 border-amber-500/30 bg-amber-500/10",
+  };
+
+  const priorityDotCls: Record<string, string> = {
+    Critical: "bg-rose-400",
+    High: "bg-fuchsia-400",
+    Medium: "bg-amber-400",
+  };
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-emerald-200">
+          Gelir Recovery Planı
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          Risk altındaki leadler için bugün alınabilecek aksiyonlar ve kurtarılabilir gelir.
+        </p>
+      </div>
+
+      {/* KPI row */}
+      <div className="grid grid-cols-3 gap-px bg-white/5">
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Kurtarılabilir Gelir
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-emerald-300">
+            {formatTRY(recovery.recoverableRevenue)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Recovery değeri toplamı</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Recovery Fırsatları
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-zinc-100">
+            {recovery.items.length} fırsat
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Aksiyon alınabilir leadler</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Recovery Potansiyeli
+          </p>
+          <p className="mt-1.5">
+            <span className={`rounded border px-2.5 py-1 text-sm font-bold ${potentialCls}`}>
+              {potentialLabel}
+            </span>
+          </p>
+          <p className="mt-1.5 text-[11px] text-zinc-600">Pipeline ağırlığına göre</p>
+        </div>
+      </div>
+
+      <div className="space-y-2 p-4">
+        {/* Founder message */}
+        <div className="rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2.5">
+          <p className="text-[12px] font-medium text-zinc-200">{recovery.founderMessage}</p>
+        </div>
+
+        {/* Driver chips */}
+        <div className="flex flex-wrap gap-2">
+          {recovery.criticalCount > 0 && (
+            <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-300">
+              {recovery.criticalCount} kritik aksiyon
+            </span>
+          )}
+          {recovery.highCount > 0 && (
+            <span className="rounded border border-fuchsia-500/30 bg-fuchsia-500/10 px-2.5 py-1 text-[11px] text-fuchsia-300">
+              {recovery.highCount} yüksek öncelik
+            </span>
+          )}
+          {recovery.mediumCount > 0 && (
+            <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-300">
+              {recovery.mediumCount} orta öncelik
+            </span>
+          )}
+        </div>
+
+        {/* Top 5 recovery rows */}
+        <div className="overflow-hidden rounded-lg border border-white/5">
+          <div className="divide-y divide-white/[0.04]">
+            {recovery.top5.map(
+              ({ leadId, leadName, recoveryValue, recoveryAction, priority, actionLabel }) => (
+                <div key={leadId} className="flex items-center gap-3 px-3 py-2.5">
+                  <div
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${priorityDotCls[priority] ?? "bg-zinc-500"}`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-semibold text-zinc-100">{leadName}</p>
+                    <p className="text-[11px] text-zinc-400">{recoveryAction}</p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="text-[13px] font-bold tabular-nums text-emerald-300">
+                      {formatTRY(recoveryValue)}
+                    </p>
+                    <span
+                      className={`mt-0.5 inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium ${priorityCls[priority] ?? "text-zinc-400 border-zinc-600/40 bg-zinc-700/20"}`}
+                    >
+                      {priority === "Critical"
+                        ? "Kritik"
+                        : priority === "High"
+                          ? "Yüksek"
+                          : "Orta"}
+                    </span>
+                    <p className="mt-0.5 text-[10px] text-zinc-600">{actionLabel}</p>
+                  </div>
+                </div>
+              ),
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── end v3.5.0 ──────────────────────────────────────────────────────────────
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -12586,6 +12894,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* v3.4.0 Revenue Risk Engine — risk KPIs + top 5 risk rows */}
       {mounted && allRows.length > 0 && (
         <RevenueRiskEngine
+          rows={allRows}
+          now={renderNow || Date.now()}
+          contactFinderMap={contactFinderMap}
+        />
+      )}
+
+      {/* v3.5.0 Revenue Recovery Engine — recoverable revenue + top 5 recovery actions */}
+      {mounted && allRows.length > 0 && (
+        <RevenueRecoveryEngine
           rows={allRows}
           now={renderNow || Date.now()}
           contactFinderMap={contactFinderMap}
