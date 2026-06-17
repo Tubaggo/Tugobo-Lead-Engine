@@ -7924,6 +7924,207 @@ function TopRevenueOpportunities({
 
 // ─── end v3.2.1 ──────────────────────────────────────────────────────────────
 
+// ─── v3.3.0 — Founder Forecast Engine ───────────────────────────────────────
+
+/** v3.3.0 — 30-day deterministic sales forecast with three bands and confidence rating. Read-only. */
+function FounderForecastEngine({
+  rows,
+  now,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+}) {
+  const forecast = useMemo(() => {
+    let baseSum = 0;
+    let closeProbSum = 0;
+    let activeCount = 0;
+    let demoReady = 0;
+    let meetingCount = 0;
+    let hotNow = 0;
+    let followUpDue = 0;
+
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+
+      const action = computeTodayActionStatus(row, s, now);
+      const isCommerciallyActive =
+        action === "FOLLOW_UP_DUE" ||
+        action === "HOT_NOW" ||
+        action === "DEMO_READY" ||
+        s.status === "meeting";
+
+      if (!isCommerciallyActive) continue;
+
+      const rp = computeRevenuePotential(row);
+      baseSum += rp.expectedValue;
+      closeProbSum += rp.closeProbability;
+      activeCount++;
+
+      if (action === "DEMO_READY") demoReady++;
+      if (s.status === "meeting") meetingCount++;
+      if (action === "HOT_NOW") hotNow++;
+      if (action === "FOLLOW_UP_DUE") followUpDue++;
+    }
+
+    const avgCloseProbability = activeCount > 0 ? closeProbSum / activeCount : 0;
+
+    const conservative = Math.round((baseSum * 0.55) / 500) * 500;
+    const expected = Math.round(baseSum / 500) * 500;
+    const aggressive = Math.round((baseSum * 1.35) / 500) * 500;
+
+    let confidence: "high" | "medium" | "low";
+    if (demoReady + meetingCount >= 2 || avgCloseProbability >= 0.65) {
+      confidence = "high";
+    } else if (hotNow + followUpDue + demoReady >= 3) {
+      confidence = "medium";
+    } else {
+      confidence = "low";
+    }
+
+    const reason =
+      confidence === "high"
+        ? "Demo ve sıcak fırsat yoğunluğu güçlü olduğu için tahmin güveni yüksek."
+        : confidence === "medium"
+          ? "Pipeline aktif ancak kapanış için takip ve demo aksiyonları gerekli."
+          : "Pipeline henüz zayıf; yeni fırsat üretimi ve takip aksiyonları gerekli.";
+
+    return {
+      conservative,
+      expected,
+      aggressive,
+      confidence,
+      reason,
+      activeCount,
+      demoReady,
+      meetingCount,
+      hotNow,
+      followUpDue,
+      avgCloseProbability,
+    };
+  }, [rows, now]);
+
+  if (rows.length === 0) return null;
+
+  if (forecast.activeCount === 0) {
+    return (
+      <section className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03]">
+        <div className="border-b border-white/5 px-4 py-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
+            30 Günlük Satış Tahmini
+          </h2>
+        </div>
+        <div className="px-4 py-6 text-center">
+          <p className="text-sm font-medium text-zinc-400">
+            30 günlük satış tahmini için yeterli aktif fırsat yok.
+          </p>
+          <p className="mt-1 text-[12px] text-zinc-600">
+            Yeni lead üret veya mevcut leadleri zenginleştirerek pipeline&apos;ı güçlendir.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const confidenceLabel =
+    forecast.confidence === "high"
+      ? "Yüksek"
+      : forecast.confidence === "medium"
+        ? "Orta"
+        : "Düşük";
+
+  const confidenceCls =
+    forecast.confidence === "high"
+      ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
+      : forecast.confidence === "medium"
+        ? "text-amber-300 border-amber-500/30 bg-amber-500/10"
+        : "text-rose-300 border-rose-500/30 bg-rose-500/10";
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-sky-500/20 bg-sky-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-sky-200">
+          30 Günlük Satış Tahmini
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          Aktif fırsatların ağırlıklı değerine göre deterministik tahmin.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-3 gap-px bg-white/5">
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Muhafazakâr
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-zinc-300">
+            {formatTRY(forecast.conservative)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">×0.55 beklenen değer</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Beklenen
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-sky-300">
+            {formatTRY(forecast.expected)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Ağırlıklı beklenen değer</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Agresif
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-fuchsia-300">
+            {formatTRY(forecast.aggressive)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">×1.35 beklenen değer</p>
+        </div>
+      </div>
+
+      <div className="space-y-2 p-4">
+        <div className="flex items-start gap-3 rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2.5">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+              Tahmin Güveni
+            </p>
+            <p className="mt-0.5 text-[12px] font-medium text-zinc-200">{forecast.reason}</p>
+          </div>
+          <span
+            className={`shrink-0 rounded border px-2 py-0.5 text-[11px] font-semibold ${confidenceCls}`}
+          >
+            {confidenceLabel}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {forecast.demoReady + forecast.meetingCount > 0 && (
+            <span className="rounded border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-300">
+              {forecast.demoReady + forecast.meetingCount} demo adayı
+            </span>
+          )}
+          {forecast.hotNow > 0 && (
+            <span className="rounded border border-fuchsia-500/30 bg-fuchsia-500/10 px-2.5 py-1 text-[11px] text-fuchsia-300">
+              {forecast.hotNow} sıcak fırsat
+            </span>
+          )}
+          {forecast.followUpDue > 0 && (
+            <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-300">
+              {forecast.followUpDue} takip bekliyor
+            </span>
+          )}
+          <span className="rounded border border-zinc-700/40 bg-zinc-700/20 px-2.5 py-1 text-[11px] text-zinc-400">
+            Ort. kapanma %{Math.round(forecast.avgCloseProbability * 100)}
+          </span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── end v3.3.0 ──────────────────────────────────────────────────────────────
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -12076,6 +12277,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* v3.2.1 Revenue Pipeline Overview — KPI grid */}
       {mounted && allRows.length > 0 && (
         <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
+      )}
+
+      {/* v3.3.0 Founder Forecast Engine — 30-day deterministic forecast */}
+      {mounted && allRows.length > 0 && (
+        <FounderForecastEngine rows={allRows} now={renderNow || Date.now()} />
       )}
 
       {/* v3.2.1 Top Revenue Opportunities — top 5 by expected value */}
