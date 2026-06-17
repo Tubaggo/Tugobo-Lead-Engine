@@ -8125,6 +8125,305 @@ function FounderForecastEngine({
 
 // ─── end v3.3.0 ──────────────────────────────────────────────────────────────
 
+// ─── v3.4.0 — Revenue Risk Engine ───────────────────────────────────────────
+
+type RevenueRiskItem = {
+  leadId: string;
+  leadName: string;
+  expectedValue: number;
+  reason: string;
+  weight: "high" | "medium";
+  actionLabel: string;
+};
+
+/**
+ * v3.4.0 — Deterministic risk scanner. Pure function, no AI, no I/O.
+ * Priority order: FOLLOW_UP_DUE > HOT_NOW not contacted > DEMO_READY idle >
+ *   high value no contact > high ICP/revenue no activity.
+ * First matching rule wins per lead; won/lost excluded.
+ */
+function computeRevenueRisk(
+  rows: LeadTableRow[],
+  now: number,
+  contactFinderMap: Record<string, ContactFinderResult>,
+): RevenueRiskItem[] {
+  const items: RevenueRiskItem[] = [];
+
+  for (const row of rows) {
+    const s = row._s;
+    if (s.status === "won" || s.status === "lost") continue;
+
+    const action = computeTodayActionStatus(row, s, now);
+    const rp = computeRevenuePotential(row);
+    const finder = contactFinderMap[row.id];
+    const icpFit = typeof row.icpFitScore === "number" ? row.icpFitScore : 0;
+
+    let reason: string | null = null;
+    let weight: "high" | "medium" = "medium";
+    let actionLabel = "";
+
+    if (action === "FOLLOW_UP_DUE") {
+      // Risk Type 1: overdue follow-up
+      reason = "Takip gecikmiş.";
+      weight = "high";
+      actionLabel = "Takip Bekliyor";
+    } else if (action === "HOT_NOW" && s.status === "new") {
+      // Risk Type 2: hot opportunity, never contacted
+      reason = "Sıcak fırsat işlenmiyor.";
+      weight = "high";
+      actionLabel = "Sıcak Fırsat";
+    } else if (action === "DEMO_READY" && s.status !== "meeting") {
+      // Risk Type 3: demo-ready but not advanced to meeting
+      reason = "Demo fırsatı bekliyor.";
+      weight = "medium";
+      actionLabel = "Demo Adayı";
+    } else if (rp.expectedValue > 100_000 && !hasValidOutboundContact(row, finder).any) {
+      // Risk Type 4: high value, no reachable contact channel
+      reason = "Yüksek değerli fırsat ancak ulaşım kanalı eksik.";
+      weight = "high";
+      actionLabel =
+        s.status === "new"
+          ? "Yeni Lead"
+          : s.status === "contacted"
+            ? "Temas Kuruldu"
+            : s.status === "needs_follow_up"
+              ? "Takip"
+              : s.status === "replied"
+                ? "Yanıt Verdi"
+                : "Aktif";
+    } else if (
+      icpFit >= 60 &&
+      rp.expectedValue >= 80_000 &&
+      s.status === "new" &&
+      (s.contactAttempts ?? 0) === 0
+    ) {
+      // Risk Type 5: high ICP + high revenue, never touched
+      reason = "Ticari değeri yüksek fırsat aksiyon almıyor.";
+      weight = "medium";
+      actionLabel = "Yeni Lead";
+    }
+
+    if (reason) {
+      items.push({
+        leadId: row.id,
+        leadName: row.name || "—",
+        expectedValue: rp.expectedValue,
+        reason,
+        weight,
+        actionLabel,
+      });
+    }
+  }
+
+  return items;
+}
+
+/** v3.4.0 — Revenue Risk Engine: risk KPIs + top 5 risk rows + founder warning. Read-only. */
+function RevenueRiskEngine({
+  rows,
+  now,
+  contactFinderMap,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+  contactFinderMap: Record<string, ContactFinderResult>;
+}) {
+  const risk = useMemo(() => {
+    const items = computeRevenueRisk(rows, now, contactFinderMap);
+
+    // Weighted pipeline = sum of all active leads' expectedValue (denominator)
+    let weightedPipeline = 0;
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+      weightedPipeline += computeRevenuePotential(row).expectedValue;
+    }
+
+    const riskedRevenue = items.reduce((acc, i) => acc + i.expectedValue, 0);
+    const riskRatio = weightedPipeline > 0 ? riskedRevenue / weightedPipeline : 0;
+
+    let riskLevel: "low" | "medium" | "high";
+    if (riskRatio >= 0.4) riskLevel = "high";
+    else if (riskRatio >= 0.2) riskLevel = "medium";
+    else riskLevel = "low";
+
+    const warning =
+      riskLevel === "high"
+        ? "Yüksek değerli fırsatlar risk altında. Operasyon öncelikleri gözden geçirilmeli."
+        : riskLevel === "medium"
+          ? "Takip ve demo gecikmeleri gelir tahminini etkileyebilir."
+          : "Pipeline sağlıklı görünüyor.";
+
+    // Driver counts
+    const followUpCount = items.filter((i) => i.reason === "Takip gecikmiş.").length;
+    const hotIdleCount = items.filter((i) => i.reason === "Sıcak fırsat işlenmiyor.").length;
+    const demoIdleCount = items.filter((i) => i.reason === "Demo fırsatı bekliyor.").length;
+    const noContactCount = items.filter(
+      (i) => i.reason === "Yüksek değerli fırsat ancak ulaşım kanalı eksik.",
+    ).length;
+
+    const top5 = [...items].sort((a, b) => b.expectedValue - a.expectedValue).slice(0, 5);
+
+    return {
+      items,
+      riskedRevenue,
+      riskLevel,
+      warning,
+      followUpCount,
+      hotIdleCount,
+      demoIdleCount,
+      noContactCount,
+      top5,
+    };
+  }, [rows, now, contactFinderMap]);
+
+  if (rows.length === 0) return null;
+
+  if (risk.items.length === 0) {
+    return (
+      <section className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03]">
+        <div className="border-b border-white/5 px-4 py-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
+            Gelir Risk Analizi
+          </h2>
+        </div>
+        <div className="px-4 py-6 text-center">
+          <p className="text-sm font-medium text-zinc-400">Risk altında gelir görünmüyor.</p>
+          <p className="mt-1 text-[12px] text-zinc-600">Pipeline şu an sağlıklı görünüyor.</p>
+        </div>
+      </section>
+    );
+  }
+
+  const riskLevelLabel =
+    risk.riskLevel === "high" ? "Yüksek" : risk.riskLevel === "medium" ? "Orta" : "Düşük";
+
+  const riskLevelCls =
+    risk.riskLevel === "high"
+      ? "text-rose-300 border-rose-500/30 bg-rose-500/10"
+      : risk.riskLevel === "medium"
+        ? "text-amber-300 border-amber-500/30 bg-amber-500/10"
+        : "text-emerald-300 border-emerald-500/30 bg-emerald-500/10";
+
+  const sectionBorderCls =
+    risk.riskLevel === "high"
+      ? "border-rose-500/20 bg-rose-500/[0.03]"
+      : risk.riskLevel === "medium"
+        ? "border-amber-500/20 bg-amber-500/[0.03]"
+        : "border-zinc-700/40 bg-zinc-500/[0.03]";
+
+  const headingCls =
+    risk.riskLevel === "high"
+      ? "text-rose-200"
+      : risk.riskLevel === "medium"
+        ? "text-amber-200"
+        : "text-zinc-300";
+
+  return (
+    <section className={`overflow-hidden rounded-xl border ${sectionBorderCls}`}>
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className={`text-sm font-semibold uppercase tracking-wider ${headingCls}`}>
+          Gelir Risk Analizi
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          Risk altındaki fırsatların gelir etkisi — won/lost hariç.
+        </p>
+      </div>
+
+      {/* KPI row */}
+      <div className="grid grid-cols-3 gap-px bg-white/5">
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Risk Altındaki Gelir
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-rose-300">
+            {formatTRY(risk.riskedRevenue)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Riskli fırsatların EV toplamı</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Riskli Fırsatlar
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-zinc-100">
+            {risk.items.length} fırsat
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Risk altındaki aktif leadler</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Risk Seviyesi
+          </p>
+          <p className="mt-1.5">
+            <span className={`rounded border px-2.5 py-1 text-sm font-bold ${riskLevelCls}`}>
+              {riskLevelLabel}
+            </span>
+          </p>
+          <p className="mt-1.5 text-[11px] text-zinc-600">Pipeline ağırlığına göre</p>
+        </div>
+      </div>
+
+      <div className="space-y-2 p-4">
+        {/* Warning */}
+        <div className="rounded-lg border border-white/8 bg-white/[0.025] px-3 py-2.5">
+          <p className="text-[12px] font-medium text-zinc-200">{risk.warning}</p>
+        </div>
+
+        {/* Risk drivers */}
+        <div className="flex flex-wrap gap-2">
+          {risk.followUpCount > 0 && (
+            <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-300">
+              {risk.followUpCount} takip gecikmiş
+            </span>
+          )}
+          {risk.hotIdleCount > 0 && (
+            <span className="rounded border border-fuchsia-500/30 bg-fuchsia-500/10 px-2.5 py-1 text-[11px] text-fuchsia-300">
+              {risk.hotIdleCount} sıcak fırsat işlenmiyor
+            </span>
+          )}
+          {risk.demoIdleCount > 0 && (
+            <span className="rounded border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-300">
+              {risk.demoIdleCount} demo bekliyor
+            </span>
+          )}
+          {risk.noContactCount > 0 && (
+            <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-300">
+              {risk.noContactCount} ulaşım kanalı eksik
+            </span>
+          )}
+        </div>
+
+        {/* Top 5 risk rows */}
+        <div className="overflow-hidden rounded-lg border border-white/5">
+          <div className="divide-y divide-white/[0.04]">
+            {risk.top5.map(({ leadId, leadName, expectedValue, reason, weight, actionLabel }) => (
+              <div key={leadId} className="flex items-center gap-3 px-3 py-2.5">
+                <div
+                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${weight === "high" ? "bg-rose-400" : "bg-amber-400"}`}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-semibold text-zinc-100">{leadName}</p>
+                  <p className="text-[11px] text-zinc-500">{reason}</p>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="text-[13px] font-bold tabular-nums text-rose-300">
+                    {formatTRY(expectedValue)}
+                  </p>
+                  <p className="text-[10px] text-zinc-600">{actionLabel}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── end v3.4.0 ──────────────────────────────────────────────────────────────
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -12282,6 +12581,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* v3.3.0 Founder Forecast Engine — 30-day deterministic forecast */}
       {mounted && allRows.length > 0 && (
         <FounderForecastEngine rows={allRows} now={renderNow || Date.now()} />
+      )}
+
+      {/* v3.4.0 Revenue Risk Engine — risk KPIs + top 5 risk rows */}
+      {mounted && allRows.length > 0 && (
+        <RevenueRiskEngine
+          rows={allRows}
+          now={renderNow || Date.now()}
+          contactFinderMap={contactFinderMap}
+        />
       )}
 
       {/* v3.2.1 Top Revenue Opportunities — top 5 by expected value */}
