@@ -7732,6 +7732,198 @@ function AutonomousSalesPlan({
 
 // ─── end v3.0 ───────────────────────────────────────────────────────────────
 
+// ─── v3.2.1 — Weighted Revenue Pipeline Dashboard ───────────────────────────
+
+/** v3.2.1 — Pipeline KPI grid: total ARR, weighted expected value, actionable revenue, avg close probability. Read-only. */
+function RevenuePipelineOverview({
+  rows,
+  now,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+}) {
+  const kpis = useMemo(() => {
+    let totalPipeline = 0;
+    let weightedPipeline = 0;
+    let actionableRevenue = 0;
+    let closeProbabilitySum = 0;
+    let activeCount = 0;
+
+    for (const row of rows) {
+      const s = row._s;
+      if (s.status === "won" || s.status === "lost") continue;
+
+      const rp = computeRevenuePotential(row);
+      totalPipeline += rp.estimatedArr;
+      weightedPipeline += rp.expectedValue;
+      closeProbabilitySum += rp.closeProbability;
+      activeCount++;
+
+      const action = computeTodayActionStatus(row, s, now);
+      if (
+        action === "FOLLOW_UP_DUE" ||
+        action === "HOT_NOW" ||
+        action === "DEMO_READY" ||
+        s.status === "meeting"
+      ) {
+        actionableRevenue += rp.expectedValue;
+      }
+    }
+
+    const avgCloseProbability = activeCount > 0 ? closeProbabilitySum / activeCount : 0;
+    return { totalPipeline, weightedPipeline, actionableRevenue, avgCloseProbability };
+  }, [rows, now]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-emerald-200">
+          Pipeline Gelir Değeri
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          Aktif leadlerin toplam ve ağırlıklı gelir potansiyeli — won/lost hariç.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-px bg-white/5 sm:grid-cols-4">
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Toplam Pipeline
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-zinc-100">
+            {formatTRY(kpis.totalPipeline)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Toplam ARR (aktif leadler)</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Weighted Pipeline
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-sky-300">
+            {formatTRY(kpis.weightedPipeline)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Beklenen değer toplamı</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Bu Ay Hedeflenebilir
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-fuchsia-300">
+            {formatTRY(kpis.actionableRevenue)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Aksiyon leadlerden weighted EV</p>
+        </div>
+
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Ort. Kapanma
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-amber-300">
+            %{Math.round(kpis.avgCloseProbability * 100)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Ortalama kapanma olasılığı</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** v3.2.1 — Top 5 active leads ranked by expected value. Read-only. */
+function TopRevenueOpportunities({
+  rows,
+  now,
+}: {
+  rows: LeadTableRow[];
+  now: number;
+}) {
+  const top5 = useMemo(() => {
+    return rows
+      .filter((row) => row._s.status !== "won" && row._s.status !== "lost")
+      .map((row) => {
+        const rp = computeRevenuePotential(row);
+        const action = computeTodayActionStatus(row, row._s, now);
+        return { row, rp, action };
+      })
+      .sort((a, b) => b.rp.expectedValue - a.rp.expectedValue)
+      .slice(0, 5);
+  }, [rows, now]);
+
+  if (top5.length === 0) return null;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
+          En Değerli Fırsatlar
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          Beklenen değere göre sıralanan ilk 5 aktif lead.
+        </p>
+      </div>
+
+      <div className="divide-y divide-white/[0.04]">
+        {top5.map(({ row, rp, action }, idx) => {
+          const actionLabel =
+            action === "HOT_NOW"
+              ? "Sıcak Fırsat"
+              : action === "DEMO_READY"
+                ? "Demo Adayı"
+                : action === "FOLLOW_UP_DUE"
+                  ? "Takip Bekliyor"
+                  : row._s.status === "meeting"
+                    ? "Görüşme Aşamasında"
+                    : "Aktif";
+
+          const actionCls =
+            action === "HOT_NOW"
+              ? "text-fuchsia-300 border-fuchsia-500/30 bg-fuchsia-500/10"
+              : action === "DEMO_READY"
+                ? "text-violet-300 border-violet-500/30 bg-violet-500/10"
+                : action === "FOLLOW_UP_DUE"
+                  ? "text-amber-300 border-amber-500/30 bg-amber-500/10"
+                  : row._s.status === "meeting"
+                    ? "text-sky-300 border-sky-500/30 bg-sky-500/10"
+                    : "text-zinc-400 border-zinc-600/40 bg-zinc-700/20";
+
+          return (
+            <div key={row.id} className="flex items-center gap-3 px-4 py-3">
+              <span className="w-4 shrink-0 text-center text-[11px] font-bold tabular-nums text-zinc-600">
+                {idx + 1}
+              </span>
+
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[13px] font-semibold text-zinc-100">
+                  {row.name}
+                </p>
+                <p className="text-[11px] text-zinc-500">
+                  {formatTRY(rp.estimatedMrr)} MRR &middot; %{Math.round(rp.closeProbability * 100)} kapanma
+                </p>
+              </div>
+
+              <div className="shrink-0 text-right">
+                <p className="text-[13px] font-bold tabular-nums text-emerald-300">
+                  {formatTRY(rp.expectedValue)}
+                </p>
+                <span
+                  className={`mt-0.5 inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium ${actionCls}`}
+                >
+                  {actionLabel}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// ─── end v3.2.1 ──────────────────────────────────────────────────────────────
+
 /** v2.0 — "Bu Haftaki Ticari Görünüm" Revenue Intelligence Layer. Derived only — no AI, no persistence. */
 function WeeklyCommercialOutlook({
   rows,
@@ -11879,6 +12071,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           contactFinderMap={contactFinderMap}
           onOpenDetail={(id) => setOpenId(id)}
         />
+      )}
+
+      {/* v3.2.1 Revenue Pipeline Overview — KPI grid */}
+      {mounted && allRows.length > 0 && (
+        <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
+      )}
+
+      {/* v3.2.1 Top Revenue Opportunities — top 5 by expected value */}
+      {mounted && allRows.length > 0 && (
+        <TopRevenueOpportunities rows={allRows} now={renderNow || Date.now()} />
       )}
 
       {/* v2.0 Revenue Intelligence — "Bu Haftaki Ticari Görünüm" */}
