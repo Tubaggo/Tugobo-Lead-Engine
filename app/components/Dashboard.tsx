@@ -6334,6 +6334,8 @@ function DashboardSectionHeader({ title, titleTr }: { title: string; titleTr: st
   );
 }
 
+type WorkspaceTab = "overview" | "opportunity" | "revenue" | "execution";
+
 /** Single render tree for the open lead (one selected object, no list iteration). */
 function LeadDetailPanel({
   selectedLead,
@@ -6393,10 +6395,30 @@ function LeadDetailPanel({
   onAiReviewCompleted?: () => void;
 }) {
   const { locale } = useLocale();
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setActiveTab("overview");
+  }, [selectedLead.id]);
+
+  const TAB_LABELS: Record<WorkspaceTab, { en: string; tr: string }> = {
+    overview:    { en: "Overview",    tr: "Genel Bakış" },
+    opportunity: { en: "Opportunity", tr: "Fırsat"      },
+    revenue:     { en: "Revenue",     tr: "Gelir"       },
+    execution:   { en: "Execution",   tr: "Uygulama"    },
+  };
+  const ALL_TABS: WorkspaceTab[] = ["overview", "opportunity", "revenue", "execution"];
+
+  function handleTabClick(tab: WorkspaceTab) {
+    setActiveTab(tab);
+    scrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <LeadDetailHeader lead={selectedLead} onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
         <LeadDetailScoreSummary lead={selectedLead} />
         <div className="mt-4 flex flex-col gap-1.5">
           <button
@@ -6415,72 +6437,102 @@ function LeadDetailPanel({
             </p>
           ) : null}
         </div>
-        <DashboardSectionHeader title="Overview" titleTr="Genel Bakış" />
-        <div className="space-y-3">
-          <RevenuePotentialCard lead={selectedLead} />
-          <CommercialPackagingCard lead={selectedLead} />
-          <LeadIcpSection lead={selectedLead} />
+
+        {/* Workspace tab bar */}
+        <div className="mt-5 grid grid-cols-4 border-b border-white/[0.08]">
+          {ALL_TABS.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => handleTabClick(tab)}
+              className={`-mb-px border-b-2 py-2.5 text-[11px] font-medium transition-colors ${
+                activeTab === tab
+                  ? "border-indigo-400 text-indigo-300"
+                  : "border-transparent text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {locale === "tr" ? TAB_LABELS[tab].tr : TAB_LABELS[tab].en}
+            </button>
+          ))}
         </div>
-        <DashboardSectionHeader title="Opportunity" titleTr="Fırsat" />
-        <div className="space-y-3">
-          <LeadOpportunityBlock lead={selectedLead} />
-          <LeadDetailIntelligenceSection
-            lead={selectedLead}
-            finderPersisted={finderPersisted}
-          />
-          <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
-          <LeadDetailContactSection
-            lead={selectedLead}
-            finderPersisted={finderPersisted}
-            finderRequest={contactFinderRequest}
-            updateLead={updateLead}
-            findBestContact={findBestContact}
-          />
-          <LeadSignalVerificationBlock lead={selectedLead} />
-        </div>
-        <DashboardSectionHeader title="Revenue" titleTr="Gelir" />
-        <div className="space-y-3">
-          <LeadDetailAiInsightSection
-            lead={selectedLead}
-            onAiReviewCompleted={onAiReviewCompleted}
-          />
-          <LeadDetailMetrics lead={selectedLead} />
-        </div>
-        <DashboardSectionHeader title="Execution" titleTr="Uygulama" />
-        <div className="space-y-3 pb-4">
-          <LeadActivityTimelineBlock lead={selectedLead} />
-          <OperationGuideSection lead={selectedLead} finder={finderPersisted} now={now} />
-          <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
-          <DemoReadinessCard lead={selectedLead} />
-          <LeadDetailWorkflowSection
-            lead={selectedLead}
-            setLeadStatus={setLeadStatus}
-            onSendMessage={onSendMessage}
-            sendMessageBusy={sendMessageBusy}
-            now={now}
-            outreachActivityLabel={outreachActivityLabel}
-            importIntelligenceLabels={importIntelligenceLabels}
-          />
-          <LeadDetailReplyHelperSection
-            lead={selectedLead}
-            ownerReplyDraft={ownerReplyDraft}
-            onOwnerReplyChange={setOwnerReplyDraft}
-            onGenerate={onGenerateReplyHelper}
-            generateBusy={replyHelperBusy}
-            generateError={replyHelperError}
-            suggestion={replyHelperSuggestion}
-            copied={replyCopied}
-            onCopyReply={onCopyReplyHelper}
-            onApplySuggestion={onApplyReplyHelperSuggestion}
-          />
-          <LeadDetailNotesSection
-            lead={selectedLead}
-            draftNote={draftNote}
-            setDraftNote={setDraftNote}
-            updateLead={updateLead}
-          />
-          <LeadEnrichmentMetaBlock lead={selectedLead} />
-        </div>
+
+        {/* Overview — "How valuable is this lead?" */}
+        {activeTab === "overview" && (
+          <div className="space-y-3 pt-4">
+            <RevenuePotentialCard lead={selectedLead} />
+            <CommercialPackagingCard lead={selectedLead} />
+            <LeadIcpSection lead={selectedLead} />
+          </div>
+        )}
+
+        {/* Opportunity — "Can this lead realistically become a customer?" */}
+        {activeTab === "opportunity" && (
+          <div className="space-y-3 pt-4">
+            <LeadOpportunityBlock lead={selectedLead} />
+            <LeadDetailIntelligenceSection
+              lead={selectedLead}
+              finderPersisted={finderPersisted}
+            />
+            <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
+            <LeadDetailContactSection
+              lead={selectedLead}
+              finderPersisted={finderPersisted}
+              finderRequest={contactFinderRequest}
+              updateLead={updateLead}
+              findBestContact={findBestContact}
+            />
+            <LeadSignalVerificationBlock lead={selectedLead} />
+          </div>
+        )}
+
+        {/* Revenue — "What revenue opportunity exists?" */}
+        {activeTab === "revenue" && (
+          <div className="space-y-3 pt-4">
+            <LeadDetailAiInsightSection
+              lead={selectedLead}
+              onAiReviewCompleted={onAiReviewCompleted}
+            />
+            <LeadDetailMetrics lead={selectedLead} />
+          </div>
+        )}
+
+        {/* Execution — "What should I do next?" */}
+        {activeTab === "execution" && (
+          <div className="space-y-3 pb-4 pt-4">
+            <LeadActivityTimelineBlock lead={selectedLead} />
+            <OperationGuideSection lead={selectedLead} finder={finderPersisted} now={now} />
+            <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
+            <DemoReadinessCard lead={selectedLead} />
+            <LeadDetailWorkflowSection
+              lead={selectedLead}
+              setLeadStatus={setLeadStatus}
+              onSendMessage={onSendMessage}
+              sendMessageBusy={sendMessageBusy}
+              now={now}
+              outreachActivityLabel={outreachActivityLabel}
+              importIntelligenceLabels={importIntelligenceLabels}
+            />
+            <LeadDetailReplyHelperSection
+              lead={selectedLead}
+              ownerReplyDraft={ownerReplyDraft}
+              onOwnerReplyChange={setOwnerReplyDraft}
+              onGenerate={onGenerateReplyHelper}
+              generateBusy={replyHelperBusy}
+              generateError={replyHelperError}
+              suggestion={replyHelperSuggestion}
+              copied={replyCopied}
+              onCopyReply={onCopyReplyHelper}
+              onApplySuggestion={onApplyReplyHelperSuggestion}
+            />
+            <LeadDetailNotesSection
+              lead={selectedLead}
+              draftNote={draftNote}
+              setDraftNote={setDraftNote}
+              updateLead={updateLead}
+            />
+            <LeadEnrichmentMetaBlock lead={selectedLead} />
+          </div>
+        )}
       </div>
     </div>
   );
