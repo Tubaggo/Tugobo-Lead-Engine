@@ -117,6 +117,10 @@ import {
   type Locale,
 } from "@/app/lib/i18n";
 import Image from "next/image";
+import {
+  computeCommercialPackaging,
+  type CommercialPackage,
+} from "@/lib/commercial/commercial-packaging";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
@@ -5143,6 +5147,102 @@ function RevenuePotentialCard({ lead }: { lead: LeadTableRow }) {
   );
 }
 
+function commercialPackageBadgeClass(pkg: CommercialPackage): string {
+  const base = "rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset";
+  switch (pkg) {
+    case "enterprise":
+      return `${base} bg-fuchsia-500/12 text-fuchsia-200 ring-fuchsia-400/30`;
+    case "growth":
+      return `${base} bg-violet-500/12 text-violet-200 ring-violet-400/30`;
+    case "professional":
+      return `${base} bg-sky-500/12 text-sky-200 ring-sky-400/30`;
+    default:
+      return `${base} bg-zinc-500/12 text-zinc-300 ring-zinc-400/25`;
+  }
+}
+
+/** v3.7.1 — "Ticari Paketleme" commercial decision card. Placement: after Revenue Potential. */
+function CommercialPackagingCard({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const result = computeCommercialPackaging({
+    icpFitScore: lead.icpFitScore ?? 0,
+    icpAlignment: lead.icpAlignment,
+    verifiedOpportunityScore: lead.verifiedOpportunityScore ?? 0,
+    signalVerification: lead.signalVerification,
+    hasOwnWebsite: lead.hasOwnWebsite,
+    hasInstagram: lead.hasInstagram,
+    phone: lead.phone,
+    adsLikelihood: lead.adsLikelihood,
+    acquisitionIntelligence: lead.acquisitionIntelligence,
+    digitalMaturity: lead.digitalMaturity,
+    leadScore: lead.leadScore,
+  });
+
+  const { package: pkg, commercialFitScore, monthlyRevenue, annualRevenue, reasoning } = result;
+  const signals = reasoning.slice(1);
+
+  const pkgLabel =
+    pkg === "enterprise"
+      ? "Enterprise"
+      : pkg === "growth"
+        ? "Growth"
+        : pkg === "professional"
+          ? "Professional"
+          : "Starter";
+
+  return (
+    <div className="space-y-3 rounded-xl border border-sky-400/15 bg-sky-500/[0.03] p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-sky-200/80">
+          {tr ? "Ticari Paketleme" : "Commercial Packaging"}
+        </div>
+        <div className="text-sm font-bold tabular-nums text-sky-300">
+          {commercialFitScore}
+          <span className="ml-0.5 text-[9px] font-normal text-zinc-500">/100</span>
+        </div>
+      </div>
+      <div>
+        <span className={commercialPackageBadgeClass(pkg)}>{pkgLabel}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Aylık Gelir" : "Monthly Revenue"}
+          </div>
+          <div className="mt-0.5 text-sm font-bold tabular-nums text-sky-200">
+            {formatTRY(monthlyRevenue)}
+            <span className="ml-0.5 text-[9px] font-normal text-zinc-500">/ay</span>
+          </div>
+        </div>
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Yıllık Gelir" : "Annual Revenue"}
+          </div>
+          <div className="mt-0.5 text-sm font-bold tabular-nums text-sky-200">
+            {formatTRY(annualRevenue)}
+            <span className="ml-0.5 text-[9px] font-normal text-zinc-500">/yıl</span>
+          </div>
+        </div>
+      </div>
+      {signals.length > 0 ? (
+        <div className="space-y-1 border-t border-white/5 pt-2.5">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Paket Gerekçesi" : "Why This Package"}
+          </div>
+          {signals.map((r) => (
+            <div key={r} className="flex items-start gap-1.5 text-[11px] leading-snug text-sky-100/80">
+              <span className="shrink-0 text-sky-400" aria-hidden="true">✓</span>
+              <span>{r}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Compact ICP indicators for the lead detail drawer. */
 function LeadIcpSection({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
@@ -6319,6 +6419,7 @@ function LeadDetailPanel({
           onAiReviewCompleted={onAiReviewCompleted}
         />
         <RevenuePotentialCard lead={selectedLead} />
+        <CommercialPackagingCard lead={selectedLead} />
         <LeadIcpSection lead={selectedLead} />
         <LeadDetailMetrics lead={selectedLead} />
         <LeadDetailContactSection
