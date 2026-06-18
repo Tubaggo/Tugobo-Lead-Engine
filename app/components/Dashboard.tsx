@@ -83,6 +83,7 @@ import ImportPanel, {
 } from "@/app/components/ImportPanel";
 import { ICP_SEARCH_CONFIGS, filterLeadsForTargetAudience } from "@/app/lib/places-import";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
+import AppNav from "@/app/components/AppNav";
 import {
   acquisitionSignalUiLine,
   acquisitionWeaknessUiLine,
@@ -13135,7 +13136,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   return (
-    <div className="relative mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="relative mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 px-4 py-6 sm:px-6 lg:grid-cols-[188px_1fr] lg:gap-6 lg:px-8">
+      <aside className="lg:sticky lg:top-4 lg:self-start">
+        <AppNav currentPath="/" showLocaleToggle />
+      </aside>
+      <div className="flex min-w-0 flex-col gap-6">
       <header className="flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -13147,7 +13152,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           <p className="mt-1 text-xs text-zinc-500">{t("app_tagline", locale)}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
-          <LocaleToggle />
+          <LocaleToggle className="lg:hidden" />
           <span className="hidden sm:inline">{t("today", locale)}</span>
           <span
             className="rounded-md bg-white/5 px-2.5 py-1 font-medium text-zinc-200 ring-1 ring-inset ring-white/10 tabular-nums"
@@ -14764,6 +14769,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>,
           document.body,
         )}
+      </div>
     </div>
   );
 }

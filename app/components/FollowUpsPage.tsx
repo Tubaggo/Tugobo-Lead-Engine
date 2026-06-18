@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
+import { useLocale } from "@/app/components/LocaleProvider";
+import AppNav from "@/app/components/AppNav";
 import { t } from "@/app/lib/i18n";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
@@ -233,21 +233,8 @@ export default function FollowUpsPage() {
   return (
     <main className="min-h-screen bg-zinc-950 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 lg:grid-cols-[180px_1fr]">
-        <aside className="rounded-xl border border-white/10 bg-white/[0.02] p-3 lg:sticky lg:top-4 lg:self-start">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-[11px] uppercase tracking-wider text-zinc-500">
-              {t("navigation", locale)}
-            </div>
-            <LocaleToggle />
-          </div>
-          <nav className="mt-2 space-y-1.5 text-sm">
-            <Link href="/" className="block rounded-md px-2 py-1.5 text-zinc-300 hover:bg-white/5">
-              {t("dashboard", locale)}
-            </Link>
-            <Link href="/dashboard/follow-ups" className="block rounded-md bg-orange-500/15 px-2 py-1.5 text-orange-200">
-              {t("follow_ups", locale)}
-            </Link>
-          </nav>
+        <aside className="lg:sticky lg:top-4 lg:self-start">
+          <AppNav currentPath="/dashboard/follow-ups" showLocaleToggle />
         </aside>
         <section className="rounded-xl border border-orange-500/20 bg-orange-500/[0.04] p-4 ring-1 ring-inset ring-orange-500/10">
           <div className="flex flex-wrap items-center justify-between gap-2">
