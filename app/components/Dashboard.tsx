@@ -6321,6 +6321,19 @@ function LeadDetailNotesSection({
   );
 }
 
+function DashboardSectionHeader({ title, titleTr }: { title: string; titleTr: string }) {
+  const { locale } = useLocale();
+  return (
+    <div className="mb-4 mt-7 flex items-center gap-3">
+      <div className="h-px flex-1 bg-white/[0.07]" />
+      <span className="shrink-0 text-[9px] font-bold uppercase tracking-[0.18em] text-zinc-600">
+        {locale === "tr" ? titleTr : title}
+      </span>
+      <div className="h-px flex-1 bg-white/[0.07]" />
+    </div>
+  );
+}
+
 /** Single render tree for the open lead (one selected object, no list iteration). */
 function LeadDetailPanel({
   selectedLead,
@@ -6383,9 +6396,9 @@ function LeadDetailPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <LeadDetailHeader lead={selectedLead} onClose={onClose} />
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
         <LeadDetailScoreSummary lead={selectedLead} />
-        <div className="flex flex-col gap-1.5">
+        <div className="mt-4 flex flex-col gap-1.5">
           <button
             type="button"
             disabled={manualReEnrichBusy}
@@ -6402,60 +6415,72 @@ function LeadDetailPanel({
             </p>
           ) : null}
         </div>
-        <LeadEnrichmentMetaBlock lead={selectedLead} />
-        <LeadOpportunityBlock lead={selectedLead} />
-        <OperationGuideSection lead={selectedLead} finder={finderPersisted} now={now} />
-        <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
-        <DemoReadinessCard lead={selectedLead} />
-        <LeadSignalVerificationBlock lead={selectedLead} />
-        <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
-        <LeadActivityTimelineBlock lead={selectedLead} />
-        <LeadDetailIntelligenceSection
-          lead={selectedLead}
-          finderPersisted={finderPersisted}
-        />
-        <LeadDetailAiInsightSection
-          lead={selectedLead}
-          onAiReviewCompleted={onAiReviewCompleted}
-        />
-        <RevenuePotentialCard lead={selectedLead} />
-        <CommercialPackagingCard lead={selectedLead} />
-        <LeadIcpSection lead={selectedLead} />
-        <LeadDetailMetrics lead={selectedLead} />
-        <LeadDetailContactSection
-          lead={selectedLead}
-          finderPersisted={finderPersisted}
-          finderRequest={contactFinderRequest}
-          updateLead={updateLead}
-          findBestContact={findBestContact}
-        />
-        <LeadDetailWorkflowSection
-          lead={selectedLead}
-          setLeadStatus={setLeadStatus}
-          onSendMessage={onSendMessage}
-          sendMessageBusy={sendMessageBusy}
-          now={now}
-          outreachActivityLabel={outreachActivityLabel}
-          importIntelligenceLabels={importIntelligenceLabels}
-        />
-        <LeadDetailReplyHelperSection
-          lead={selectedLead}
-          ownerReplyDraft={ownerReplyDraft}
-          onOwnerReplyChange={setOwnerReplyDraft}
-          onGenerate={onGenerateReplyHelper}
-          generateBusy={replyHelperBusy}
-          generateError={replyHelperError}
-          suggestion={replyHelperSuggestion}
-          copied={replyCopied}
-          onCopyReply={onCopyReplyHelper}
-          onApplySuggestion={onApplyReplyHelperSuggestion}
-        />
-        <LeadDetailNotesSection
-          lead={selectedLead}
-          draftNote={draftNote}
-          setDraftNote={setDraftNote}
-          updateLead={updateLead}
-        />
+        <DashboardSectionHeader title="Overview" titleTr="Genel Bakış" />
+        <div className="space-y-3">
+          <RevenuePotentialCard lead={selectedLead} />
+          <CommercialPackagingCard lead={selectedLead} />
+          <LeadIcpSection lead={selectedLead} />
+        </div>
+        <DashboardSectionHeader title="Opportunity" titleTr="Fırsat" />
+        <div className="space-y-3">
+          <LeadOpportunityBlock lead={selectedLead} />
+          <LeadDetailIntelligenceSection
+            lead={selectedLead}
+            finderPersisted={finderPersisted}
+          />
+          <LeadContactCenter lead={selectedLead} finderPersisted={finderPersisted} />
+          <LeadDetailContactSection
+            lead={selectedLead}
+            finderPersisted={finderPersisted}
+            finderRequest={contactFinderRequest}
+            updateLead={updateLead}
+            findBestContact={findBestContact}
+          />
+          <LeadSignalVerificationBlock lead={selectedLead} />
+        </div>
+        <DashboardSectionHeader title="Revenue" titleTr="Gelir" />
+        <div className="space-y-3">
+          <LeadDetailAiInsightSection
+            lead={selectedLead}
+            onAiReviewCompleted={onAiReviewCompleted}
+          />
+          <LeadDetailMetrics lead={selectedLead} />
+        </div>
+        <DashboardSectionHeader title="Execution" titleTr="Uygulama" />
+        <div className="space-y-3 pb-4">
+          <LeadActivityTimelineBlock lead={selectedLead} />
+          <OperationGuideSection lead={selectedLead} finder={finderPersisted} now={now} />
+          <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
+          <DemoReadinessCard lead={selectedLead} />
+          <LeadDetailWorkflowSection
+            lead={selectedLead}
+            setLeadStatus={setLeadStatus}
+            onSendMessage={onSendMessage}
+            sendMessageBusy={sendMessageBusy}
+            now={now}
+            outreachActivityLabel={outreachActivityLabel}
+            importIntelligenceLabels={importIntelligenceLabels}
+          />
+          <LeadDetailReplyHelperSection
+            lead={selectedLead}
+            ownerReplyDraft={ownerReplyDraft}
+            onOwnerReplyChange={setOwnerReplyDraft}
+            onGenerate={onGenerateReplyHelper}
+            generateBusy={replyHelperBusy}
+            generateError={replyHelperError}
+            suggestion={replyHelperSuggestion}
+            copied={replyCopied}
+            onCopyReply={onCopyReplyHelper}
+            onApplySuggestion={onApplyReplyHelperSuggestion}
+          />
+          <LeadDetailNotesSection
+            lead={selectedLead}
+            draftNote={draftNote}
+            setDraftNote={setDraftNote}
+            updateLead={updateLead}
+          />
+          <LeadEnrichmentMetaBlock lead={selectedLead} />
+        </div>
       </div>
     </div>
   );
