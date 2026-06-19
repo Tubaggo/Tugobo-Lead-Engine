@@ -10667,6 +10667,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     useState<AllLeadsTimeFilter>("all_time");
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
   const [workspaceTab, setWorkspaceTab] = useState<"opportunities" | "revenue" | "execution" | "intelligence">("opportunities");
+  const workspaceSelectorRef = useRef<HTMLDivElement>(null);
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [dailyOutreach, setDailyOutreach] = useState<DailyOutreachPersisted>({
@@ -13210,7 +13211,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   return (
     <div className="relative mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 px-4 py-6 sm:px-6 lg:grid-cols-[188px_1fr] lg:gap-6 lg:px-8">
       <aside className="lg:sticky lg:top-4 lg:self-start">
-        <AppNav currentPath="/" showLocaleToggle />
+        <AppNav
+          currentPath="/"
+          showLocaleToggle
+          activeWorkspace={workspaceTab}
+          onNavigate={(ws) => {
+            setWorkspaceTab(ws);
+            workspaceSelectorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
+        />
       </aside>
       <div className="flex min-w-0 flex-col gap-6">
       <header className="flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
@@ -13288,7 +13297,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       </section>
 
       {/* v3.8.3 Workspace Selector */}
-      <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
+      <div ref={workspaceSelectorRef} className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
         {(
           [
             { id: "opportunities", label: locale === "tr" ? "Fırsatlar" : "Opportunities", accent: "indigo" },
