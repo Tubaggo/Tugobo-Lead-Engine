@@ -2173,6 +2173,37 @@ function leadRowAcquisitionHighlightClass(row: LeadTableRow): string {
   return "";
 }
 
+const COMPACT_SIGNAL_LIMIT = 3;
+const DEFAULT_CHIP_PRIORITY = 40;
+const CHIP_DISPLAY_PRIORITY: Record<string, number> = {
+  dnc: 1,
+  fudue: 2,
+  "opp-vhigh": 3,
+  hipri: 4,
+  "opp-high": 5,
+  risk: 6,
+  "priority-bucket": 7,
+  "recommended-action": 8,
+  inq: 9,
+  ctoday: 10,
+  "ig-act": 11,
+  readiness: 12,
+  quality: 13,
+  "ig-verified": 14,
+  "ota-high-v2": 15,
+  "booking-gap-v2": 16,
+  cbefore: 17,
+  fuonce: 18,
+  newimp: 19,
+  spam: 20,
+  new: 21,
+  reimp: 22,
+  "ig-possible": 23,
+  "ig-broken": 24,
+  "ig-manual": 25,
+  airtable: 26,
+};
+
 function OutreachBadgesRow({
   row,
   newImport,
@@ -2180,6 +2211,7 @@ function OutreachBadgesRow({
   inQueue,
   syncedToAirtable = false,
   now,
+  compact = false,
 }: {
   row: LeadTableRow;
   newImport?: boolean;
@@ -2187,8 +2219,10 @@ function OutreachBadgesRow({
   inQueue?: boolean;
   syncedToAirtable?: boolean;
   now: number;
+  compact?: boolean;
 }) {
   const { locale } = useLocale();
+  const [expanded, setExpanded] = useState(false);
   const s = row._s;
   const readiness = rowReadiness(row);
   const last =
@@ -2432,30 +2466,72 @@ function OutreachBadgesRow({
     });
   }
   if (chips.length === 0) return null;
-  const chipNodes: ReactNode[] = [];
-  for (let i = 0; i < chips.length; i++) {
-    const c = chips[i];
-    chipNodes.push(
-      c.href ? (
-        <a
-          key={c.key}
-          className={c.cls}
-          href={c.href}
-          title={c.title}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {c.label}
-        </a>
-      ) : (
-        <span key={c.key} className={c.cls} title={c.title}>
-          {c.label}
-        </span>
-      ),
+
+  function renderChip(c: { key: string; cls: string; label: string; href?: string; title?: string }) {
+    return c.href ? (
+      <a
+        key={c.key}
+        className={c.cls}
+        href={c.href}
+        title={c.title}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {c.label}
+      </a>
+    ) : (
+      <span key={c.key} className={c.cls} title={c.title}>
+        {c.label}
+      </span>
     );
   }
-  return <div className="mt-1 flex flex-wrap gap-1">{chipNodes}</div>;
+
+  if (compact && !expanded) {
+    const sorted = [...chips].sort(
+      (a, b) =>
+        (CHIP_DISPLAY_PRIORITY[a.key] ?? DEFAULT_CHIP_PRIORITY) -
+        (CHIP_DISPLAY_PRIORITY[b.key] ?? DEFAULT_CHIP_PRIORITY),
+    );
+    const visible = sorted.slice(0, COMPACT_SIGNAL_LIMIT);
+    const hiddenCount = chips.length - COMPACT_SIGNAL_LIMIT;
+    return (
+      <div className="mt-1 flex flex-wrap gap-1">
+        {visible.map(renderChip)}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded(true);
+            }}
+            className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-zinc-400 ring-1 ring-inset ring-zinc-600/40 transition-colors hover:bg-white/5 hover:text-zinc-200"
+          >
+            +{hiddenCount} {locale === "tr" ? "sinyal daha" : "more signals"}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const chipNodes: ReactNode[] = chips.map(renderChip);
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {chipNodes}
+      {compact && expanded && chips.length > COMPACT_SIGNAL_LIMIT && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded(false);
+          }}
+          className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-zinc-400 ring-1 ring-inset ring-zinc-600/40 transition-colors hover:bg-white/5 hover:text-zinc-200"
+        >
+          {locale === "tr" ? "↑ Kapat" : "↑ Collapse"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function ScoreBar({ score, tone }: { score: number; tone: "lead" | "hot" }) {
@@ -13633,6 +13709,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             inQueue={dailyOutreach.todayQueue.includes(row.id)}
                             syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
                             now={renderNow}
+                            compact
                           />
                           <WhyThisLeadChips
                             lead={row}
@@ -14331,6 +14408,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                               inQueue={dailyOutreach.todayQueue.includes(row.id)}
                               syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
                               now={renderNow}
+                              compact
                             />
                             <WhyThisLeadChips
                               lead={row}
