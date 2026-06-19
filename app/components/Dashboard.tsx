@@ -13619,225 +13619,206 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         ) : latestImportRows.length === 0 ? (
           <div className="px-4 py-6 text-sm text-amber-300">{t("no_new_leads_import", locale)}</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-white/[0.02] text-left text-[11px] uppercase tracking-wider text-zinc-500">
-                <tr>
-                  <th className="px-4 py-2.5 font-medium">
-                    <input
-                      type="checkbox"
-                      checked={
-                        latestImportRows.length > 0 &&
-                        latestImportRows.every((row) => selectedLeadIds.includes(row.id))
+          <div className="p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <label className="inline-flex cursor-pointer items-center gap-2 text-[11px] text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={
+                    latestImportRows.length > 0 &&
+                    latestImportRows.every((row) => selectedLeadIds.includes(row.id))
+                  }
+                  aria-label="Select latest import leads"
+                  onChange={(e) => {
+                    const ids = latestImportRows.map((x) => x.id);
+                    setSelectedLeadIds((prev) => {
+                      if (e.target.checked) {
+                        const next = new Set(prev);
+                        for (const id of ids) next.add(id);
+                        return Array.from(next);
                       }
-                      aria-label="Select latest import leads"
-                      onChange={(e) => {
-                        const ids = latestImportRows.map((x) => x.id);
-                        setSelectedLeadIds((prev) => {
-                          if (e.target.checked) {
-                            const next = new Set(prev);
-                            for (const id of ids) next.add(id);
-                            return Array.from(next);
-                          }
-                          const removeSet = new Set(ids);
-                          return prev.filter((id) => !removeSet.has(id));
-                        });
-                      }}
-                    />
-                  </th>
-                  <th className="w-[38%] px-4 py-2.5 font-medium">{t("col_lead", locale)}</th>
-                  <th className="px-4 py-2.5 font-medium">{t("col_type", locale)}</th>
-                  <th className="px-4 py-2.5 font-medium">{t("col_location", locale)}</th>
-                  <th className="px-4 py-2.5 font-medium">{t("col_imported", locale)}</th>
-                  <th
-                    className="px-4 py-2.5 font-medium"
-                    title={t("contact_readiness_title", locale)}
+                      const removeSet = new Set(ids);
+                      return prev.filter((id) => !removeSet.has(id));
+                    });
+                  }}
+                />
+                {locale === "tr" ? "Tümünü seç" : "Select all"}
+              </label>
+              <span className="tabular-nums text-[11px] text-zinc-600">
+                {latestImportRows.length} {locale === "tr" ? "lead" : "leads"}
+              </span>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {latestImportRows.map((row, index) => {
+                const isNew = lastImportNewIds.includes(row.id);
+                const isReimported = lastImportUpdatedIds.includes(row.id);
+                const inQueueCard = dailyOutreach.todayQueue.includes(row.id);
+                const isSynced = airtableSyncedLeadIds.includes(row.id);
+                const readinessCard = rowReadinessWithFinder(row, contactFinderMap[row.id]);
+                const readinessLabelCard = readinessCategoryUiLabel(row, contactFinderMap[row.id], locale);
+                const lcCard = row._s.lastContactedAt ?? row._s.contactedAt ?? null;
+
+                return (
+                  <div
+                    key={renderLeadKey("latest-import", row, index)}
+                    className="flex flex-col gap-2 rounded-lg border border-indigo-400/20 bg-indigo-500/[0.04] p-3 shadow-[inset_0_0_0_1px_rgba(129,140,248,0.15)] transition hover:bg-indigo-500/[0.07]"
                   >
-                    {t("contact_readiness", locale)}
-                  </th>
-                  <th
-                    className="px-4 py-2.5 font-medium"
-                    title={t("hot_score_title", locale)}
-                  >
-                    {t("hot_score", locale)}
-                  </th>
-                  <th className="px-4 py-2.5 font-medium">{t("lead_score", locale)}</th>
-                  <th className="px-4 py-2.5 text-right font-medium">{t("actions", locale)}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {latestImportRows.map((row, index) => {
-                  return (
-                    <tr
-                      key={renderLeadKey("latest-import", row, index)}
-                      className="bg-indigo-500/[0.05] shadow-[inset_0_0_0_1px_rgba(129,140,248,0.25)]"
-                    >
-                      <td className="px-4 py-3 align-top">
-                        <input
-                          type="checkbox"
-                          checked={selectedLeadIds.includes(row.id)}
-                          aria-label={`Select ${row.name}`}
-                          onChange={(e) =>
-                            toggleLeadSelection(row.id, e.target.checked)
-                          }
-                        />
-                      </td>
-                      <td className="px-4 py-3 align-top">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              onClick={() => setOpenId(row.id)}
-                              className="text-left font-medium text-zinc-100 hover:text-white"
-                            >
-                              {row.name}
-                            </button>
-                            {lastImportNewIds.includes(row.id) && (
+                    {/* Card header */}
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedLeadIds.includes(row.id)}
+                        aria-label={`Select ${row.name}`}
+                        onChange={(e) => toggleLeadSelection(row.id, e.target.checked)}
+                        className="mt-0.5 shrink-0"
+                      />
+                      <div className="min-w-0 flex-1">
+                        {/* Name + meta */}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setOpenId(row.id)}
+                            className="text-left text-sm font-semibold text-zinc-100 hover:text-white"
+                          >
+                            {row.name}
+                          </button>
+                          {row.type && (
+                            <span className="shrink-0 text-[10px] text-zinc-500">· {row.type}</span>
+                          )}
+                          {(row.city || row.region) && (
+                            <span className="shrink-0 text-[10px] text-zinc-500">
+                              · {[row.city, row.region].filter(Boolean).join(", ")}
+                            </span>
+                          )}
+                        </div>
+                        {/* Import status badges */}
+                        {(isNew || isReimported) && (
+                          <div className="mt-0.5 flex flex-wrap gap-1">
+                            {isNew && (
                               <span className="inline-flex items-center rounded-full bg-indigo-400/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-indigo-200 ring-1 ring-inset ring-indigo-400/40">
                                 {t("new_to_database", locale)}
                               </span>
                             )}
-                            {lastImportUpdatedIds.includes(row.id) && (
+                            {isReimported && (
                               <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-200 ring-1 ring-inset ring-amber-400/40">
                                 {t("reimported", locale)}
                               </span>
                             )}
                           </div>
-                          <OutreachBadgesRow
-                            row={row}
-                            newImport={lastImportNewIds.includes(row.id)}
-                            reimported={lastImportUpdatedIds.includes(row.id)}
-                            inQueue={dailyOutreach.todayQueue.includes(row.id)}
-                            syncedToAirtable={airtableSyncedLeadIds.includes(row.id)}
-                            now={renderNow}
-                            compact
-                          />
-                          <WhyThisLeadChips
-                            lead={row}
-                            enrichment={contactFinderMap[row.id]}
-                            limit={3}
-                          />
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 align-top text-xs text-zinc-300">
-                        {row.type}
-                      </td>
-                      <td className="px-4 py-3 align-top text-xs text-zinc-300">
-                        <div>{row.city}</div>
-                        <div className="text-[11px] text-zinc-500">{row.region}</div>
-                      </td>
-                      <td className="px-4 py-3 align-top text-xs text-zinc-400">
-                        <div>
-                          {relativeCalendarLabel(
-                            row.firstImportedAt ?? row.createdAt,
-                            renderNow,
-                            locale,
-                          )}
-                        </div>
-                        {(() => {
-                          const lc =
-                            row._s.lastContactedAt ?? row._s.contactedAt ?? null;
-                          return lc ? (
-                            <div className="mt-0.5 text-[11px] text-zinc-500">
-                              {t("last_contact", locale)}:{" "}
-                              {relativeCalendarLabel(lc, renderNow, locale)}
-                            </div>
-                          ) : null;
-                        })()}
-                        <div className="mt-0.5 text-[11px] text-zinc-500">
-                          {t("outreach_prefix", locale)}:{" "}
-                          {getLastOutreachActivityLabel(row.id, row._s, renderNow)}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 align-top">
-                        <div className="flex items-center gap-2">
-                          <ScoreBar
-                            score={rowReadinessWithFinder(row, contactFinderMap[row.id]).score}
-                            tone="lead"
-                          />
-                          <span className="text-[10px] text-zinc-400">
-                            {readinessCategoryUiLabel(row, contactFinderMap[row.id], locale)}
+                        )}
+                        {/* Scores */}
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="flex items-center gap-1.5">
+                            <ScoreBar score={readinessCard.score} tone="lead" />
+                            <span className="text-[10px] text-zinc-500">{readinessLabelCard}</span>
+                          </span>
+                          <span className="text-[11px] text-zinc-500">
+                            {locale === "tr" ? "Sıcak" : "Hot"}:{" "}
+                            <span className={`font-semibold tabular-nums ${scoreColor(row.hotScore)}`}>
+                              {row.hotScore}
+                            </span>
+                          </span>
+                          <span className="text-[11px] text-zinc-500">
+                            Lead:{" "}
+                            <span className={`font-semibold tabular-nums ${scoreColor(row.leadScore)}`}>
+                              {row.leadScore}
+                            </span>
                           </span>
                         </div>
-                      </td>
-                      <td className="px-4 py-3 align-top">
-                        <ScoreBar score={row.hotScore} tone="hot" />
-                      </td>
-                      <td className="px-4 py-3 align-top">
-                        <ScoreBar score={row.leadScore} tone="lead" />
-                      </td>
-                      <td className="px-4 py-3 align-top">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <LeadWhatsAppAction
-                            phone={row.phone}
-                            leadId={row.id}
-                            onMarkContacted={recordWhatsAppOutreach}
-                            outreachDisabled={row._s.doNotContact}
-                          />
-                          <LeadWebsiteAction website={row.website} />
-                          <LeadInstagramAction
-                            instagram={row.instagram}
-                            acquisition={row.acquisitionIntelligence}
-                          />
-                          <button
-                            type="button"
-                            disabled={row._s.doNotContact}
-                            onClick={() => void startAiMessage(row)}
-                            title="Kişiselleştirilmiş AI mesajı"
-                            className="inline-flex h-10 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:text-xs"
-                          >
-                            <IconSpark className="h-3.5 w-3.5 shrink-0" />
-                            {t("ai_message", locale)}
-                          </button>
-                          {!row._s.doNotContact &&
-                            (isFollowUpDue(row._s, renderNow) ||
-                              row._s.status === "needs_follow_up") && (
-                              <button
-                                type="button"
-                                onClick={() => void startFollowUpOutreach(row)}
-                                title="Kısa hatırlatma mesajı ve WhatsApp"
-                                className="inline-flex h-10 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20 sm:h-8 sm:text-xs"
-                              >
-                                {t("follow_up", locale)}
-                              </button>
-                            )}
-                          <button
-                            type="button"
-                            disabled={(() => {
-                              const now = renderNow;
-                              const inQ = dailyOutreach.todayQueue.includes(row.id);
-                              const elig = isEligibleForDailyQueue(
-                                row,
-                                contactFinderMap[row.id],
-                                dailyOutreach.todayQueue,
-                                now,
-                              );
-                              return (
-                                inQ ||
-                                !elig ||
-                                (!inQ &&
-                                  safeActiveQueueCount >= DAILY_OUTREACH_LIMIT)
-                              );
-                            })()}
-                            title="Add to today’s outreach queue (max 20)"
-                            onClick={() => addLeadIdsToDailyQueue([row.id])}
-                            className="inline-flex h-10 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8"
-                          >
-                            {t("add_to_queue", locale)}
-                          </button>
-                          <button
-                            onClick={() => setOpenId(row.id)}
-                            title="Open details"
-                            className="inline-flex h-8 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-xs text-zinc-200 transition hover:bg-white/10"
-                          >
-                            {t("open", locale)}
-                          </button>
+                        {/* Signal badges (compact) */}
+                        <OutreachBadgesRow
+                          row={row}
+                          newImport={isNew}
+                          reimported={isReimported}
+                          inQueue={inQueueCard}
+                          syncedToAirtable={isSynced}
+                          now={renderNow}
+                          compact
+                        />
+                        {/* Why this lead */}
+                        <WhyThisLeadChips
+                          lead={row}
+                          enrichment={contactFinderMap[row.id]}
+                          limit={3}
+                        />
+                        {/* Date meta */}
+                        <div className="mt-0.5 text-[10px] text-zinc-600">
+                          {relativeCalendarLabel(row.firstImportedAt ?? row.createdAt, renderNow, locale)}
+                          {lcCard && (
+                            <> · {t("last_contact", locale)}: {relativeCalendarLabel(lcCard, renderNow, locale)}</>
+                          )}
+                          {" · "}{t("outreach_prefix", locale)}: {getLastOutreachActivityLabel(row.id, row._s, renderNow)}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-wrap items-center gap-1.5 border-t border-white/5 pt-2">
+                      <LeadWhatsAppAction
+                        phone={row.phone}
+                        leadId={row.id}
+                        onMarkContacted={recordWhatsAppOutreach}
+                        outreachDisabled={row._s.doNotContact}
+                      />
+                      <LeadWebsiteAction website={row.website} />
+                      <LeadInstagramAction
+                        instagram={row.instagram}
+                        acquisition={row.acquisitionIntelligence}
+                      />
+                      <button
+                        type="button"
+                        disabled={row._s.doNotContact}
+                        onClick={() => void startAiMessage(row)}
+                        title="Kişiselleştirilmiş AI mesajı"
+                        className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-2 text-[11px] font-medium text-violet-200 transition hover:bg-violet-500/20 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <IconSpark className="h-3.5 w-3.5 shrink-0" />
+                        {t("ai_message", locale)}
+                      </button>
+                      {!row._s.doNotContact &&
+                        (isFollowUpDue(row._s, renderNow) || row._s.status === "needs_follow_up") && (
+                          <button
+                            type="button"
+                            onClick={() => void startFollowUpOutreach(row)}
+                            title="Kısa hatırlatma mesajı ve WhatsApp"
+                            className="inline-flex h-8 shrink-0 items-center rounded-md border border-orange-400/30 bg-orange-500/10 px-2 text-[11px] font-medium text-orange-200 transition hover:bg-orange-500/20"
+                          >
+                            {t("follow_up", locale)}
+                          </button>
+                        )}
+                      <button
+                        type="button"
+                        disabled={(() => {
+                          const nowCard = renderNow;
+                          const inQNow = dailyOutreach.todayQueue.includes(row.id);
+                          const eligCard = isEligibleForDailyQueue(
+                            row,
+                            contactFinderMap[row.id],
+                            dailyOutreach.todayQueue,
+                            nowCard,
+                          );
+                          return inQNow || !eligCard || (!inQNow && safeActiveQueueCount >= DAILY_OUTREACH_LIMIT);
+                        })()}
+                        title="Add to today’s outreach queue (max 20)"
+                        onClick={() => addLeadIdsToDailyQueue([row.id])}
+                        className="inline-flex h-8 shrink-0 items-center rounded-md border border-emerald-400/25 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {t("add_to_queue", locale)}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOpenId(row.id)}
+                        title="Open details"
+                        className="inline-flex h-8 items-center justify-center rounded-md border border-white/10 bg-white/5 px-2 text-[11px] text-zinc-200 transition hover:bg-white/10"
+                      >
+                        {t("open", locale)}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
         {latestImportOnlyDuplicates && latestImportRows.length === 0 && (
