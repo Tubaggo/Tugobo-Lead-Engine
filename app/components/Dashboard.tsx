@@ -2496,7 +2496,7 @@ function OutreachBadgesRow({
     const visible = sorted.slice(0, COMPACT_SIGNAL_LIMIT);
     const hiddenCount = chips.length - COMPACT_SIGNAL_LIMIT;
     return (
-      <div className="mt-1 flex flex-wrap gap-1">
+      <div className="mt-0.5 flex w-full flex-wrap items-center gap-1.5">
         {visible.map(renderChip)}
         {hiddenCount > 0 && (
           <button
@@ -2516,7 +2516,7 @@ function OutreachBadgesRow({
 
   const chipNodes: ReactNode[] = chips.map(renderChip);
   return (
-    <div className="mt-1 flex flex-wrap gap-1">
+    <div className="mt-0.5 flex w-full flex-wrap items-center gap-1.5">
       {chipNodes}
       {compact && expanded && chips.length > COMPACT_SIGNAL_LIMIT && (
         <button
@@ -13645,7 +13645,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                       }}
                     />
                   </th>
-                  <th className="px-4 py-2.5 font-medium">{t("col_lead", locale)}</th>
+                  <th className="w-[38%] px-4 py-2.5 font-medium">{t("col_lead", locale)}</th>
                   <th className="px-4 py-2.5 font-medium">{t("col_type", locale)}</th>
                   <th className="px-4 py-2.5 font-medium">{t("col_location", locale)}</th>
                   <th className="px-4 py-2.5 font-medium">{t("col_imported", locale)}</th>
@@ -13683,7 +13683,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         />
                       </td>
                       <td className="px-4 py-3 align-top">
-                        <div>
+                        <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <button
                               onClick={() => setOpenId(row.id)}
@@ -14320,7 +14320,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                         onChange={(e) => toggleSelectVisible(e.target.checked)}
                       />
                     </th>
-                    <th className="px-4 py-2.5 font-medium">{t("col_lead", locale)}</th>
+                    <th className="w-[38%] px-4 py-2.5 font-medium">{t("col_lead", locale)}</th>
                     <th className="px-4 py-2.5 font-medium">{t("col_location", locale)}</th>
                     <th className="px-4 py-2.5 font-medium">{t("col_imported", locale)}</th>
                     <th
@@ -14377,7 +14377,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           />
                         </td>
                         <td className="px-4 py-3 align-top">
-                          <div>
+                          <div className="min-w-0">
                             <button
                               type="button"
                               onClick={() => setOpenId(row.id)}
