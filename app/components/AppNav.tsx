@@ -55,8 +55,14 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: { en: "Sales Plan", tr: "Satış Planı" }, workspace: "execution" },
       { label: { en: "Activity Timeline", tr: "Aktivite Geçmişi" }, workspace: "execution" },
-      { label: { en: "Follow-up Queue", tr: "Takip Kuyruğu" }, href: "/dashboard/follow-ups" },
       { label: { en: "Founder Assistant", tr: "Kurucu Asistanı" }, workspace: "execution" },
+    ],
+  },
+  {
+    id: "followups",
+    label: { en: "Follow-up Queue", tr: "Takip Kuyruğu" },
+    items: [
+      { label: { en: "Today's Follow-ups", tr: "Bugünün Takipleri" }, href: "/dashboard/follow-ups" },
     ],
   },
   {
