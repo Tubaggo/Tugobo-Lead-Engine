@@ -6697,69 +6697,60 @@ function DailyQueueItem({
         ? OPPORTUNITY_TIER_LABELS[tier].tr
         : OPPORTUNITY_TIER_LABELS[tier].en
       : tier ?? "";
+  const hint = queueOutreachHint(candidate, tr);
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-white/8 bg-white/[0.015] px-3 py-2.5 transition hover:bg-white/[0.03] sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex items-center gap-2 rounded-md border border-white/8 bg-white/[0.015] px-2.5 py-2 transition hover:bg-white/[0.03]">
+      {typeof rank === "number" && (
+        <span className="w-4 shrink-0 text-center text-[10px] font-bold tabular-nums text-zinc-600">
+          {rank}
+        </span>
+      )}
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          {typeof rank === "number" && (
-            <span className="shrink-0 text-[11px] font-semibold tabular-nums text-zinc-500">
-              {rank}.
-            </span>
-          )}
-          <span className="truncate text-sm font-medium text-zinc-100">{row.name}</span>
-          {row.city && <span className="shrink-0 text-[11px] text-zinc-500">· {row.city}</span>}
-        </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
-          {typeof score === "number" && (
-            <span className="tabular-nums text-zinc-300">
-              {tr ? "Fırsat" : "Opportunity"}{" "}
-              <span className={`font-semibold ${tier ? opportunityTierColor(tier) : ""}`}>
-                {score}
-              </span>
-            </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="truncate text-[13px] font-medium text-zinc-100">{row.name}</span>
+          {row.city && (
+            <span className="shrink-0 text-[10px] text-zinc-500">· {row.city}</span>
           )}
           {tier && <span className={opportunityTierChip(tier)}>{tierLabel}</span>}
-          <span className="text-emerald-300/80">{channels.bestLabel}</span>
+          {typeof score === "number" && (
+            <span className={`shrink-0 tabular-nums text-[11px] font-semibold ${tier ? opportunityTierColor(tier) : "text-zinc-300"}`}>
+              {score}
+            </span>
+          )}
           {candidate.inOutreachQueue && (
             <span className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] text-indigo-200 ring-1 ring-inset ring-indigo-400/30">
               {tr ? "Kuyrukta" : "In queue"}
             </span>
           )}
         </div>
-        <p className="mt-1 truncate text-[11px] text-zinc-500">
-          <span className="text-zinc-600">{tr ? "Sebep: " : "Reason: "}</span>
-          {candidate.reasonText}
-        </p>
-        {(() => {
-          const hint = queueOutreachHint(candidate, tr);
-          return hint ? (
-            <p className={`mt-0.5 text-[10px] font-medium ${hint.cls}`}>{hint.text}</p>
-          ) : null;
-        })()}
+        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[10px]">
+          <span className="truncate text-zinc-500">{candidate.reasonText}</span>
+          {hint && <span className={`shrink-0 font-medium ${hint.cls}`}>{hint.text}</span>}
+        </div>
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1">
         <button
           type="button"
           onClick={() => onOpenDetail(row.id)}
-          className="rounded-md border border-white/12 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-white/10"
+          className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-zinc-300 transition hover:bg-white/10"
         >
-          {tr ? "Detay Aç" : "Open Detail"}
+          {tr ? "Detay" : "Detail"}
         </button>
         {channels.waUrl && (
           <button
             type="button"
             onClick={() => onContact(row.id, "whatsapp", channels.waUrl!)}
-            className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2 py-1 text-[11px] font-medium text-emerald-100 transition hover:bg-emerald-500/25"
+            className="rounded border border-emerald-400/30 bg-emerald-500/10 px-1.5 py-1 text-[10px] font-medium text-emerald-200 transition hover:bg-emerald-500/20"
           >
-            {tr ? "WhatsApp Aç" : "Open WhatsApp"}
+            WA
           </button>
         )}
         {!channels.waUrl && channels.phone && (
           <button
             type="button"
             onClick={() => onContact(row.id, "phone", `tel:${channels.phone!.replace(/\s+/g, "")}`)}
-            className="rounded-md border border-sky-400/35 bg-sky-500/15 px-2 py-1 text-[11px] font-medium text-sky-100 transition hover:bg-sky-500/25"
+            className="rounded border border-sky-400/30 bg-sky-500/10 px-1.5 py-1 text-[10px] font-medium text-sky-200 transition hover:bg-sky-500/20"
           >
             {tr ? "Ara" : "Call"}
           </button>
@@ -6768,9 +6759,9 @@ function DailyQueueItem({
           <button
             type="button"
             onClick={() => onContact(row.id, "website", channels.websiteUrl!)}
-            className="rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[11px] font-medium text-zinc-200 transition hover:bg-white/10"
+            className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-zinc-300 transition hover:bg-white/10"
           >
-            {tr ? "Siteyi Aç" : "Open Site"}
+            Web
           </button>
         )}
         {!candidate.inOutreachQueue && !candidate.followUpScheduled && (
@@ -6779,9 +6770,9 @@ function DailyQueueItem({
             onClick={() => onAddToQueue(row.id)}
             disabled={queueLimitReached}
             title={queueLimitReached ? (tr ? "Günlük kuyruk dolu" : "Daily queue full") : undefined}
-            className="rounded-md border border-fuchsia-400/30 bg-fuchsia-500/10 px-2 py-1 text-[11px] font-medium text-fuchsia-200 transition hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded border border-fuchsia-400/25 bg-fuchsia-500/10 px-1.5 py-1 text-[10px] font-medium text-fuchsia-200 transition hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {tr ? "Kuyruğa Al" : "Queue"}
+            {tr ? "Kuyruk" : "Queue"}
           </button>
         )}
       </div>
@@ -6871,36 +6862,40 @@ function DailyOpportunityQueue({
         </span>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
-        {renderSection(
-          tr ? "Bugünün Fırsatları" : "Today's Opportunities",
-          tr
-            ? "En güçlü fırsatlar önce — günlük öncelik sırasına göre ilk 10."
-            : "Strongest opportunities first — top 10 by daily priority.",
-          todays,
-          { ranked: true, limit: 10, tone: "text-fuchsia-200" },
-        )}
-        {renderSection(
-          tr ? "Takip Bekleyenler" : "Awaiting Follow-up",
-          tr
-            ? "Takip planlanmış lead'ler — en yakın zamanı gelen önce."
-            : "Leads with a scheduled follow-up — soonest due first.",
-          followUps,
-          { limit: 12, tone: "text-orange-200" },
-        )}
-        {renderSection(
-          tr ? "Yüksek Fırsat — Henüz İletişim Yok" : "High Opportunity — Not Yet Contacted",
-          tr
-            ? "Güçlü fırsat ama hiç iletişime geçilmemiş yeni lead'ler."
-            : "Strong but never-contacted new leads.",
-          highNoContact,
-          { limit: 10, tone: "text-emerald-200" },
-        )}
-        {renderSection(
-          tr ? "Düşük Öncelik" : "Low Priority",
-          tr ? "Bugün için daha düşük öncelikli adaylar." : "Lower-priority candidates for today.",
-          lowPriority,
-          { limit: 8, tone: "text-zinc-300" },
-        )}
+        <div>
+          {renderSection(
+            tr ? "Bugünün Fırsatları" : "Today's Opportunities",
+            tr
+              ? "En güçlü fırsatlar önce — günlük öncelik sırasına göre ilk 10."
+              : "Strongest opportunities first — top 10 by daily priority.",
+            todays,
+            { ranked: true, limit: 10, tone: "text-fuchsia-200" },
+          )}
+        </div>
+        <div className="space-y-3">
+          {renderSection(
+            tr ? "Takip Bekleyenler" : "Awaiting Follow-up",
+            tr
+              ? "Takip planlanmış lead'ler — en yakın zamanı gelen önce."
+              : "Leads with a scheduled follow-up — soonest due first.",
+            followUps,
+            { limit: 12, tone: "text-orange-200" },
+          )}
+          {renderSection(
+            tr ? "Yüksek Fırsat — Henüz İletişim Yok" : "High Opportunity — Not Yet Contacted",
+            tr
+              ? "Güçlü fırsat ama hiç iletişime geçilmemiş yeni lead'ler."
+              : "Strong but never-contacted new leads.",
+            highNoContact,
+            { limit: 10, tone: "text-emerald-200" },
+          )}
+          {renderSection(
+            tr ? "Düşük Öncelik" : "Low Priority",
+            tr ? "Bugün için daha düşük öncelikli adaylar." : "Lower-priority candidates for today.",
+            lowPriority,
+            { limit: 8, tone: "text-zinc-300" },
+          )}
+        </div>
       </div>
     </section>
   );
