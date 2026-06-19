@@ -10595,6 +10595,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [allLeadsTimeFilter, setAllLeadsTimeFilter] =
     useState<AllLeadsTimeFilter>("all_time");
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
+  const [workspaceTab, setWorkspaceTab] = useState<"opportunities" | "revenue" | "execution" | "intelligence">("opportunities");
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [dailyOutreach, setDailyOutreach] = useState<DailyOutreachPersisted>({
@@ -13215,6 +13216,44 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         />
       </section>
 
+      {/* v3.8.3 Workspace Selector */}
+      <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
+        {(
+          [
+            { id: "opportunities", label: locale === "tr" ? "Fırsatlar" : "Opportunities", accent: "indigo" },
+            { id: "revenue", label: locale === "tr" ? "Gelir" : "Revenue", accent: "emerald" },
+            { id: "execution", label: locale === "tr" ? "Uygulama" : "Execution", accent: "orange" },
+            { id: "intelligence", label: locale === "tr" ? "İstihbarat" : "Intelligence", accent: "violet" },
+          ] as const
+        ).map(({ id, label, accent }) => {
+          const isActive = workspaceTab === id;
+          const accentClasses: Record<string, string> = {
+            indigo: "bg-indigo-500/20 text-indigo-200 ring-indigo-400/30",
+            emerald: "bg-emerald-500/20 text-emerald-200 ring-emerald-400/30",
+            orange: "bg-orange-500/20 text-orange-200 ring-orange-400/30",
+            violet: "bg-violet-500/20 text-violet-200 ring-violet-400/30",
+          };
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setWorkspaceTab(id)}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-all ring-1 ring-inset ${
+                isActive
+                  ? accentClasses[accent]
+                  : "text-zinc-500 ring-transparent hover:bg-white/5 hover:text-zinc-300"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* EXECUTION workspace */}
+      {workspaceTab === "execution" && (
+      <>
+
       {/* Morning Outreach */}
       <section className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.04] p-4 backdrop-blur ring-1 ring-inset ring-emerald-400/10">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -13340,6 +13379,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         />
       )}
 
+      </>)}
+
+      {/* REVENUE workspace */}
+      {workspaceTab === "revenue" && (
+      <>
+
       {/* v3.2.1 Revenue Pipeline Overview — KPI grid */}
       {mounted && allRows.length > 0 && (
         <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
@@ -13378,6 +13423,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         <WeeklyCommercialOutlook rows={allRows} now={renderNow || Date.now()} />
       )}
 
+      </>)}
+
+      {/* OPPORTUNITIES workspace (part 1) */}
+      {workspaceTab === "opportunities" && (
+      <>
+
       {/* v2.1 Founder Focus — "Bugünün En Öncelikli Fırsatları" */}
       {mounted && allRows.length > 0 && (
         <TodayTopPrioritiesPanel
@@ -13389,11 +13440,20 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         />
       )}
 
+      </>)}
+
+      {/* EXECUTION workspace (part 2 — counters) */}
+      {workspaceTab === "execution" && (
+      <>
       {/* v1.8 Execution counters — Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan */}
       {mounted && allRows.length > 0 && (
         <ExecutionCounters rows={allRows} now={renderNow || Date.now()} />
       )}
+      </>)}
 
+      {/* OPPORTUNITIES workspace (part 2) */}
+      {workspaceTab === "opportunities" && (
+      <>
       {/* v1.6 Daily Opportunity Queue — "Bugünün Fırsatları" */}
       {mounted && dailyQueuePartition.total > 0 && (
         <DailyOpportunityQueue
@@ -13404,6 +13464,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           queueLimitReached={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
         />
       )}
+
+      </>)}
+
+      {/* EXECUTION workspace (part 3 — pipeline & action queue) */}
+      {workspaceTab === "execution" && (
+      <>
 
       {/* v1.8 "Günün Öncelikli Aksiyonları" action queue panel */}
       {mounted && (
@@ -13427,6 +13493,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           onOpenDetail={(id) => setOpenId(id)}
         />
       )}
+
+      </>)}
+
+      {/* OPPORTUNITIES workspace (part 3 — import) */}
+      {workspaceTab === "opportunities" && (
+      <>
 
       {/* Import */}
       <ImportPanel onImport={handleImport} hasCachedResults={hasCachedImportResults} />
@@ -13698,11 +13770,17 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         )}
       </section>
 
+      </>)}
+
       {queueActionNotice && (
         <div className="rounded-md border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
           {queueActionNotice}
         </div>
       )}
+
+      {/* EXECUTION workspace (part 4 — queue & follow-ups) */}
+      {workspaceTab === "execution" && (
+      <>
 
       <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3 ring-1 ring-inset ring-emerald-500/10">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -13851,6 +13929,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         )}
       </section>
 
+      </>)}
+
       {selectedLeadIds.length > 0 && (
         <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-2">
           <span className="text-xs text-zinc-400">
@@ -13889,6 +13969,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         </section>
       )}
 
+      {/* OPPORTUNITIES workspace (part 4 — hot leads) */}
+      {workspaceTab === "opportunities" && (
+      <>
+
       {/* Hot 10 */}
       <section>
         <div className="mb-3 flex items-end justify-between">
@@ -13918,6 +14002,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           ))}
         </div>
       </section>
+
+      </>)}
+
+      {/* INTELLIGENCE workspace — All Leads */}
+      {workspaceTab === "intelligence" && (
+      <>
 
       {/* All Leads (collapsible) */}
       <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur">
@@ -14394,6 +14484,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </>
         )}
       </section>
+
+      </>)}
 
       <footer className="pb-8 pt-2 text-center text-[11px] text-zinc-600">
         {t("footer_mvp", locale)}
