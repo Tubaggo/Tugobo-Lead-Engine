@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 
-type WorkspaceId = "opportunities" | "revenue" | "execution" | "intelligence";
+type WorkspaceId = "opportunities" | "revenue" | "execution" | "intelligence" | "followups";
 
 type NavItem = {
   label: { en: string; tr: string };
@@ -60,9 +60,9 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     id: "followups",
-    label: { en: "Follow-up Queue", tr: "Takip Kuyruğu" },
+    label: { en: "Follow-up", tr: "Takip" },
     items: [
-      { label: { en: "Today's Follow-ups", tr: "Bugünün Takipleri" }, href: "/dashboard/follow-ups" },
+      { label: { en: "Today's Follow-ups", tr: "Bugünün Takipleri" }, workspace: "followups" },
     ],
   },
   {

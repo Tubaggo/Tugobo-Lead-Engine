@@ -84,6 +84,7 @@ import ImportPanel, {
 import { ICP_SEARCH_CONFIGS, filterLeadsForTargetAudience } from "@/app/lib/places-import";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 import AppNav from "@/app/components/AppNav";
+import FollowUpsWorkspace from "@/app/components/FollowUpsWorkspace";
 import {
   acquisitionSignalUiLine,
   acquisitionWeaknessUiLine,
@@ -10668,7 +10669,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [allLeadsTimeFilter, setAllLeadsTimeFilter] =
     useState<AllLeadsTimeFilter>("all_time");
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
-  const [workspaceTab, setWorkspaceTab] = useState<"opportunities" | "revenue" | "execution" | "intelligence">("opportunities");
+  const [workspaceTab, setWorkspaceTab] = useState<"opportunities" | "revenue" | "execution" | "intelligence" | "followups">("opportunities");
   const workspaceSelectorRef = useRef<HTMLDivElement>(null);
   const [smartSegment, setSmartSegment] = useState<SmartSegmentId | null>(null);
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
@@ -13355,6 +13356,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             { id: "revenue", label: locale === "tr" ? "Gelir" : "Revenue", accent: "emerald" },
             { id: "execution", label: locale === "tr" ? "Uygulama" : "Execution", accent: "orange" },
             { id: "intelligence", label: locale === "tr" ? "İstihbarat" : "Intelligence", accent: "violet" },
+            { id: "followups", label: locale === "tr" ? "Takip" : "Follow-up", accent: "amber" },
           ] as const
         ).map(({ id, label, accent }) => {
           const isActive = workspaceTab === id;
@@ -13363,6 +13365,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             emerald: "bg-emerald-500/20 text-emerald-200 ring-emerald-400/30",
             orange: "bg-orange-500/20 text-orange-200 ring-orange-400/30",
             violet: "bg-violet-500/20 text-violet-200 ring-violet-400/30",
+            amber: "bg-amber-500/20 text-amber-200 ring-amber-400/30",
           };
           return (
             <button
@@ -14683,6 +14686,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       </section>
 
       </>)}
+
+      {/* FOLLOWUPS workspace — Bugünün Takipleri */}
+      {workspaceTab === "followups" && (
+        <FollowUpsWorkspace />
+      )}
 
       <footer className="pb-8 pt-2 text-center text-[11px] text-zinc-600">
         {t("footer_mvp", locale)}

@@ -1,5 +1,5 @@
-import FollowUpsPage from "@/app/components/FollowUpsPage";
+import { permanentRedirect } from "next/navigation";
 
 export default function FollowUpsRoutePage() {
-  return <FollowUpsPage />;
+  permanentRedirect("/");
 }
