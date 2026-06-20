@@ -127,6 +127,10 @@ import {
   computeExpectedRevenue,
   type ExpectedRevenueResult,
 } from "@/lib/revenue/expected-revenue";
+import {
+  computeExpectedRevenueRanking,
+  type ExpectedRevenueRankingResult,
+} from "@/lib/revenue/expected-revenue-ranking";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
@@ -176,7 +180,7 @@ type ContactChannelCat = "ready" | "needs_finder" | "none";
 /** Lead row as rendered in the UI (workflow state merged from `stateMap`). */
 type LeadTableRow = ScoredLead & { _s: LeadStatusUpdate };
 
-type SmartSegmentId = "hot" | "icp" | "whatsapp" | "digital" | "enterprise" | "growth";
+type SmartSegmentId = "hot" | "icp" | "whatsapp" | "digital" | "enterprise" | "growth" | "revenue_priority";
 
 type StateMap = Record<string, LeadStatusUpdate>;
 
@@ -8112,6 +8116,112 @@ function AutonomousSalesPlan({
 
 // ─── end v3.0 ───────────────────────────────────────────────────────────────
 
+// ─── v3.9.1 — Revenue Ranking Summary ───────────────────────────────────────
+
+/** v3.9.1 — Revenue priority ranking summary: critical/high counts + top ranked lead. */
+function RevenueRankingCard({
+  rows,
+  revenuePriorityMap,
+  onOpenDetail,
+}: {
+  rows: LeadTableRow[];
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>;
+  onOpenDetail: (id: string) => void;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const stats = useMemo(() => {
+    let critical = 0;
+    let high = 0;
+    let topLead: LeadTableRow | null = null;
+    let topScore = -1;
+
+    for (const r of rows) {
+      if (r._s.status === "lost" || r._s.doNotContact) continue;
+      const rp = revenuePriorityMap.get(r.id);
+      if (!rp) continue;
+      if (rp.revenuePriorityTier === "critical") critical++;
+      else if (rp.revenuePriorityTier === "high") high++;
+      if (rp.revenuePriorityScore > topScore) {
+        topScore = rp.revenuePriorityScore;
+        topLead = r;
+      }
+    }
+
+    return { critical, high, topLead, topScore };
+  }, [rows, revenuePriorityMap]);
+
+  if (stats.critical === 0 && stats.high === 0) return null;
+
+  const topRp = stats.topLead ? revenuePriorityMap.get(stats.topLead.id) : null;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-amber-400/20 bg-amber-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-200">
+          {tr ? "Gelir Öncelik Sıralaması" : "Revenue Priority Ranking"}
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          {tr
+            ? "Ağırlıklı MRR × dönüşüm olasılığı × paket seviyesine göre sıralama."
+            : "Ranked by weighted MRR × conversion probability × package tier."}
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-px bg-white/5 sm:grid-cols-3">
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            {tr ? "Kritik" : "Critical"}
+          </p>
+          <p className="mt-1.5 text-2xl font-bold tabular-nums text-rose-300">
+            {stats.critical}
+          </p>
+          <p className="mt-0.5 text-[10px] text-zinc-600">
+            {tr ? "lead (≥80 puan)" : "leads (≥80 score)"}
+          </p>
+        </div>
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            {tr ? "Yüksek" : "High"}
+          </p>
+          <p className="mt-1.5 text-2xl font-bold tabular-nums text-amber-300">
+            {stats.high}
+          </p>
+          <p className="mt-0.5 text-[10px] text-zinc-600">
+            {tr ? "lead (≥60 puan)" : "leads (≥60 score)"}
+          </p>
+        </div>
+        {stats.topLead && topRp && (
+          <div className="col-span-2 bg-zinc-900 px-4 py-4 sm:col-span-1">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+              {tr ? "En Yüksek Öncelik" : "Top Priority"}
+            </p>
+            <button
+              type="button"
+              onClick={() => onOpenDetail(stats.topLead!.id)}
+              className="mt-1.5 block text-left"
+            >
+              <p className="truncate text-sm font-semibold text-zinc-100 hover:text-amber-200">
+                {stats.topLead.name}
+              </p>
+              <p className="mt-0.5 text-[10px] text-zinc-500">
+                {tr ? "Puan" : "Score"}: {topRp.revenuePriorityScore}
+                {" · "}
+                {({
+                  critical: tr ? "Kritik" : "Critical",
+                  high: tr ? "Yüksek" : "High",
+                  medium: tr ? "Orta" : "Medium",
+                  low: tr ? "Düşük" : "Low",
+                } as const)[topRp.revenuePriorityTier]}
+              </p>
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 // ─── v3.2.1 — Weighted Revenue Pipeline Dashboard ───────────────────────────
 
 /** v3.9.0 — Pipeline Expected Revenue summary: weighted MRR, ARR, expected customer count. */
@@ -11553,6 +11663,29 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return m;
   }, [allRows]);
 
+  /** v3.9.1 — Revenue priority ranking per lead: revenuePriorityScore (0–100) + tier. */
+  const revenuePriorityByLeadId = useMemo(() => {
+    const m = new Map<string, ExpectedRevenueRankingResult>();
+    for (const r of allRows) {
+      const er = expectedRevenueByLeadId.get(r.id);
+      if (!er) continue;
+      const pkg = packageByLeadId.get(r.id) ?? "starter";
+      m.set(r.id, computeExpectedRevenueRanking({
+        expectedRevenue: er,
+        commercialPackage: pkg,
+        hotScore: r.hotScore,
+        leadScore: r.leadScore,
+        verifiedOpportunityScore: r.verifiedOpportunityScore ?? 0,
+        icpFitScore: r.icpFitScore ?? 0,
+        contactReadinessScore: r.contactReadinessScore,
+        pipelineStatus: r._s.status,
+        signalVerification: r.signalVerification,
+        acquisitionIntelligence: r.acquisitionIntelligence,
+      }));
+    }
+    return m;
+  }, [allRows, expectedRevenueByLeadId, packageByLeadId]);
+
   const segmentCounts = useMemo((): Record<SmartSegmentId, number> => ({
     hot: allRows.filter((r) => r.hotScore >= 70).length,
     icp: allRows.filter((r) => (r.icpAlignment?.tugoboFitScore ?? r.icpFitScore ?? 0) >= 75).length,
@@ -11560,7 +11693,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     digital: allRows.filter((r) => Boolean(r.website?.trim()) && Boolean(r.instagram?.trim())).length,
     enterprise: allRows.filter((r) => packageByLeadId.get(r.id) === "enterprise").length,
     growth: allRows.filter((r) => packageByLeadId.get(r.id) === "growth").length,
-  }), [allRows, packageByLeadId]);
+    revenue_priority: allRows.filter((r) => (revenuePriorityByLeadId.get(r.id)?.revenuePriorityScore ?? 0) >= 60).length,
+  }), [allRows, packageByLeadId, revenuePriorityByLeadId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -11709,10 +11843,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         case "digital": return Boolean(r.website?.trim()) && Boolean(r.instagram?.trim());
         case "enterprise": return packageByLeadId.get(r.id) === "enterprise";
         case "growth": return packageByLeadId.get(r.id) === "growth";
+        case "revenue_priority": return (revenuePriorityByLeadId.get(r.id)?.revenuePriorityScore ?? 0) >= 60;
         default: return true;
       }
     });
-  }, [filtered, focusFiltered, smartSegment, packageByLeadId]);
+  }, [filtered, focusFiltered, smartSegment, packageByLeadId, revenuePriorityByLeadId]);
 
   const visibleAllLeads = useMemo(() => {
     if (showAllLeadsRows) return segmentApplied;
@@ -13784,6 +13919,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {workspaceTab === "revenue" && (
       <>
 
+      {/* v3.9.1 Revenue Priority Ranking — critical/high counts + top lead */}
+      {mounted && allRows.length > 0 && (
+        <RevenueRankingCard
+          rows={allRows}
+          revenuePriorityMap={revenuePriorityByLeadId}
+          onOpenDetail={(id) => setOpenId(id)}
+        />
+      )}
+
       {/* v3.9.0 Pipeline Expected Revenue — package price × probability */}
       {mounted && allRows.length > 0 && (
         <PipelineExpectedRevenueCard rows={allRows} />
@@ -14456,6 +14600,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 activeCls: "border-indigo-400/40 bg-indigo-500/[0.08]",
                 countCls: "bg-indigo-500/20 text-indigo-200",
               },
+              {
+                id: "revenue_priority" as SmartSegmentId,
+                icon: "💰",
+                label: locale === "tr" ? "Gelir Önceliği Yüksek" : "High Revenue Priority",
+                desc: locale === "tr" ? "Yüksek + Kritik gelir öncelikli" : "High & critical revenue priority",
+                activeCls: "border-amber-400/40 bg-amber-500/[0.08]",
+                countCls: "bg-amber-500/20 text-amber-200",
+              },
             ]
           ).map(({ id, icon, label, desc, activeCls, countCls }) => {
             const isActive = smartSegment === id;
@@ -14511,6 +14663,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 digital: locale === "tr" ? "🌐 Dijital Güçlü" : "🌐 Digitally Strong",
                 enterprise: locale === "tr" ? "📦 Enterprise Adayları" : "📦 Enterprise Candidates",
                 growth: locale === "tr" ? "📈 Growth Adayları" : "📈 Growth Candidates",
+                revenue_priority: locale === "tr" ? "💰 Gelir Önceliği Yüksek" : "💰 High Revenue Priority",
               } satisfies Record<SmartSegmentId, string>)[smartSegment]}
             </span>
           </span>
@@ -14864,7 +15017,24 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                           </div>
                           {(() => {
                             const er = expectedRevenueByLeadId.get(row.id);
+                            const rp = revenuePriorityByLeadId.get(row.id);
                             if (!er || er.weightedExpectedMonthlyRevenue < 500) return null;
+                            const tierLabel = rp
+                              ? ({
+                                  critical: locale === "tr" ? "Kritik" : "Critical",
+                                  high: locale === "tr" ? "Yüksek" : "High",
+                                  medium: locale === "tr" ? "Orta" : "Medium",
+                                  low: locale === "tr" ? "Düşük" : "Low",
+                                } as const)[rp.revenuePriorityTier]
+                              : null;
+                            const tierColor = rp
+                              ? ({
+                                  critical: "text-rose-300",
+                                  high: "text-amber-300",
+                                  medium: "text-zinc-400",
+                                  low: "text-zinc-500",
+                                } as const)[rp.revenuePriorityTier]
+                              : "text-zinc-500";
                             return (
                               <div className="mt-0.5 text-[10px] text-zinc-500">
                                 {locale === "tr" ? "Beklenen MRR" : "Expected MRR"}:{" "}
@@ -14874,6 +15044,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                                 <span className="ml-1 text-zinc-600">
                                   · %{Math.round(er.expectedCustomerProbability * 100)}
                                 </span>
+                                {tierLabel && rp && (rp.revenuePriorityTier === "critical" || rp.revenuePriorityTier === "high") && (
+                                  <span className={`ml-1 font-medium ${tierColor}`}>
+                                    · {locale === "tr" ? "Gelir Önceliği" : "Rev. Priority"}: {tierLabel}
+                                  </span>
+                                )}
                               </div>
                             );
                           })()}
