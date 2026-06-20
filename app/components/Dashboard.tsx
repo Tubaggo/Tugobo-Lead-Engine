@@ -123,6 +123,10 @@ import {
   computeCommercialPackaging,
   type CommercialPackage,
 } from "@/lib/commercial/commercial-packaging";
+import {
+  computeExpectedRevenue,
+  type ExpectedRevenueResult,
+} from "@/lib/revenue/expected-revenue";
 
 const STORAGE_KEY = "tugobo-lead-engine:state-v1";
 const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
@@ -5323,6 +5327,128 @@ function CommercialPackagingCard({ lead }: { lead: LeadTableRow }) {
   );
 }
 
+/** v3.9.0 — "Beklenen Gelir" expected revenue card. Placement: after CommercialPackagingCard. */
+function ExpectedRevenueCard({ lead }: { lead: LeadTableRow }) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const pkg = computeCommercialPackaging({
+    icpFitScore: lead.icpFitScore ?? 0,
+    icpAlignment: lead.icpAlignment,
+    verifiedOpportunityScore: lead.verifiedOpportunityScore ?? 0,
+    signalVerification: lead.signalVerification,
+    hasOwnWebsite: lead.hasOwnWebsite,
+    hasInstagram: lead.hasInstagram,
+    phone: lead.phone,
+    adsLikelihood: lead.adsLikelihood,
+    acquisitionIntelligence: lead.acquisitionIntelligence,
+    digitalMaturity: lead.digitalMaturity,
+    leadScore: lead.leadScore,
+  });
+
+  const er = computeExpectedRevenue({
+    commercialPackaging: pkg,
+    hotScore: lead.hotScore,
+    leadScore: lead.leadScore,
+    verifiedOpportunityScore: lead.verifiedOpportunityScore ?? 0,
+    icpFitScore: lead.icpFitScore ?? 0,
+    contactReadinessScore: lead.contactReadinessScore,
+    signalVerification: lead.signalVerification,
+    phone: lead.phone,
+    hasOwnWebsite: lead.hasOwnWebsite,
+    hasInstagram: lead.hasInstagram,
+    pipelineStatus: lead._s.status,
+    doNotContact: lead._s.doNotContact,
+    adsLikelihood: lead.adsLikelihood,
+    acquisitionIntelligence: lead.acquisitionIntelligence,
+  });
+
+  const probPct = Math.round(er.expectedCustomerProbability * 100);
+  const probColor =
+    probPct >= 45 ? "text-emerald-300" : probPct >= 20 ? "text-amber-300" : "text-zinc-400";
+  const confLabel =
+    er.expectedRevenueConfidence === "high"
+      ? tr ? "Yüksek" : "High"
+      : er.expectedRevenueConfidence === "medium"
+        ? tr ? "Orta" : "Medium"
+        : tr ? "Düşük" : "Low";
+  const confColor =
+    er.expectedRevenueConfidence === "high"
+      ? "text-emerald-300"
+      : er.expectedRevenueConfidence === "medium"
+        ? "text-amber-300"
+        : "text-zinc-500";
+
+  return (
+    <div className="space-y-3 rounded-xl border border-amber-400/15 bg-amber-500/[0.03] p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-amber-200/80">
+          {tr ? "Beklenen Gelir" : "Expected Revenue"}
+        </div>
+        <div className={`text-xs font-semibold tabular-nums ${probColor}`}>
+          %{probPct}
+          <span className="ml-0.5 text-[9px] font-normal text-zinc-500">
+            {" "}{tr ? "ihtimal" : "probability"}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Ağırlıklı Aylık" : "Weighted MRR"}
+          </div>
+          <div className="mt-0.5 text-sm font-bold tabular-nums text-amber-200">
+            {formatTRY(er.weightedExpectedMonthlyRevenue)}
+            <span className="ml-0.5 text-[9px] font-normal text-zinc-500">/ay</span>
+          </div>
+        </div>
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Ağırlıklı Yıllık" : "Weighted ARR"}
+          </div>
+          <div className="mt-0.5 text-sm font-bold tabular-nums text-amber-200">
+            {formatTRY(er.weightedExpectedAnnualRevenue)}
+            <span className="ml-0.5 text-[9px] font-normal text-zinc-500">/yıl</span>
+          </div>
+        </div>
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Taban MRR" : "Base MRR"}
+          </div>
+          <div className="mt-0.5 text-xs font-semibold tabular-nums text-zinc-300">
+            {formatTRY(er.expectedMonthlyRevenue)}
+            <span className="ml-0.5 text-[9px] font-normal text-zinc-500">/ay</span>
+          </div>
+        </div>
+        <div className="rounded-lg bg-white/5 p-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Güven" : "Confidence"}
+          </div>
+          <div className={`mt-0.5 text-xs font-semibold ${confColor}`}>{confLabel}</div>
+        </div>
+      </div>
+
+      {er.expectedRevenueReasoning.length > 0 && (
+        <div className="space-y-1 border-t border-white/5 pt-2.5">
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+            {tr ? "Gerekçe" : "Reasoning"}
+          </div>
+          {er.expectedRevenueReasoning.slice(0, 4).map((reason) => (
+            <div
+              key={reason}
+              className="flex items-start gap-1.5 text-[11px] leading-snug text-amber-100/70"
+            >
+              <span className="shrink-0 text-amber-400" aria-hidden="true">·</span>
+              <span>{reason}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Compact ICP indicators for the lead detail drawer. */
 function LeadIcpSection({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
@@ -6541,6 +6667,7 @@ function LeadDetailPanel({
           <div className="space-y-3 pt-4">
             <RevenuePotentialCard lead={selectedLead} />
             <CommercialPackagingCard lead={selectedLead} />
+            <ExpectedRevenueCard lead={selectedLead} />
             <LeadIcpSection lead={selectedLead} />
           </div>
         )}
@@ -7986,6 +8113,107 @@ function AutonomousSalesPlan({
 // ─── end v3.0 ───────────────────────────────────────────────────────────────
 
 // ─── v3.2.1 — Weighted Revenue Pipeline Dashboard ───────────────────────────
+
+/** v3.9.0 — Pipeline Expected Revenue summary: weighted MRR, ARR, expected customer count. */
+function PipelineExpectedRevenueCard({ rows }: { rows: LeadTableRow[] }) {
+  const kpis = useMemo(() => {
+    let totalWeightedMrr = 0;
+    let totalWeightedArr = 0;
+    let expectedCustomers = 0;
+    let activeCount = 0;
+
+    for (const r of rows) {
+      if (r._s.status === "lost") continue;
+
+      const pkg = computeCommercialPackaging({
+        icpFitScore: r.icpFitScore ?? 0,
+        icpAlignment: r.icpAlignment,
+        verifiedOpportunityScore: r.verifiedOpportunityScore ?? 0,
+        signalVerification: r.signalVerification,
+        hasOwnWebsite: r.hasOwnWebsite,
+        hasInstagram: r.hasInstagram,
+        phone: r.phone,
+        adsLikelihood: r.adsLikelihood,
+        acquisitionIntelligence: r.acquisitionIntelligence,
+        digitalMaturity: r.digitalMaturity,
+        leadScore: r.leadScore,
+      });
+
+      const er = computeExpectedRevenue({
+        commercialPackaging: pkg,
+        hotScore: r.hotScore,
+        leadScore: r.leadScore,
+        verifiedOpportunityScore: r.verifiedOpportunityScore ?? 0,
+        icpFitScore: r.icpFitScore ?? 0,
+        contactReadinessScore: r.contactReadinessScore,
+        signalVerification: r.signalVerification,
+        phone: r.phone,
+        hasOwnWebsite: r.hasOwnWebsite,
+        hasInstagram: r.hasInstagram,
+        pipelineStatus: r._s.status,
+        doNotContact: r._s.doNotContact,
+        adsLikelihood: r.adsLikelihood,
+        acquisitionIntelligence: r.acquisitionIntelligence,
+      });
+
+      totalWeightedMrr += er.weightedExpectedMonthlyRevenue;
+      totalWeightedArr += er.weightedExpectedAnnualRevenue;
+      expectedCustomers += er.expectedCustomerProbability;
+      activeCount++;
+    }
+
+    return {
+      totalWeightedMrr: Math.round(totalWeightedMrr),
+      totalWeightedArr: Math.round(totalWeightedArr),
+      expectedCustomers: Math.round(expectedCustomers * 10) / 10,
+      activeCount,
+    };
+  }, [rows]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-200">
+          Pipeline Beklenen Gelir
+        </h2>
+        <p className="mt-0.5 text-[11px] text-zinc-500">
+          Paket fiyatı × dönüşüm olasılığı — lost hariç {kpis.activeCount} aktif lead.
+        </p>
+      </div>
+      <div className="grid grid-cols-3 gap-px bg-white/5">
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Beklenen MRR
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-amber-300">
+            {formatTRY(kpis.totalWeightedMrr)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Ağırlıklı aylık abonelik geliri</p>
+        </div>
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Beklenen ARR
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-amber-300">
+            {formatTRY(kpis.totalWeightedArr)}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Ağırlıklı yıllık abonelik geliri</p>
+        </div>
+        <div className="bg-zinc-900 px-4 py-4">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Beklenen Müşteri
+          </p>
+          <p className="mt-1.5 text-xl font-bold tabular-nums text-amber-300">
+            {kpis.expectedCustomers}
+          </p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Toplam beklenen dönüşüm sayısı</p>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 /** v3.2.1 — Pipeline KPI grid: total ARR, weighted expected value, actionable revenue, avg close probability. Read-only. */
 function RevenuePipelineOverview({
@@ -11288,6 +11516,43 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return m;
   }, [allRows]);
 
+  /** v3.9.0 — Expected revenue per lead: weighted MRR = package price × conversion probability. */
+  const expectedRevenueByLeadId = useMemo(() => {
+    const m = new Map<string, ExpectedRevenueResult>();
+    for (const r of allRows) {
+      const pkg = computeCommercialPackaging({
+        icpFitScore: r.icpFitScore ?? 0,
+        icpAlignment: r.icpAlignment,
+        verifiedOpportunityScore: r.verifiedOpportunityScore ?? 0,
+        signalVerification: r.signalVerification,
+        hasOwnWebsite: r.hasOwnWebsite,
+        hasInstagram: r.hasInstagram,
+        phone: r.phone,
+        adsLikelihood: r.adsLikelihood,
+        acquisitionIntelligence: r.acquisitionIntelligence,
+        digitalMaturity: r.digitalMaturity,
+        leadScore: r.leadScore,
+      });
+      m.set(r.id, computeExpectedRevenue({
+        commercialPackaging: pkg,
+        hotScore: r.hotScore,
+        leadScore: r.leadScore,
+        verifiedOpportunityScore: r.verifiedOpportunityScore ?? 0,
+        icpFitScore: r.icpFitScore ?? 0,
+        contactReadinessScore: r.contactReadinessScore,
+        signalVerification: r.signalVerification,
+        phone: r.phone,
+        hasOwnWebsite: r.hasOwnWebsite,
+        hasInstagram: r.hasInstagram,
+        pipelineStatus: r._s.status,
+        doNotContact: r._s.doNotContact,
+        adsLikelihood: r.adsLikelihood,
+        acquisitionIntelligence: r.acquisitionIntelligence,
+      }));
+    }
+    return m;
+  }, [allRows]);
+
   const segmentCounts = useMemo((): Record<SmartSegmentId, number> => ({
     hot: allRows.filter((r) => r.hotScore >= 70).length,
     icp: allRows.filter((r) => (r.icpAlignment?.tugoboFitScore ?? r.icpFitScore ?? 0) >= 75).length,
@@ -13519,6 +13784,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {workspaceTab === "revenue" && (
       <>
 
+      {/* v3.9.0 Pipeline Expected Revenue — package price × probability */}
+      {mounted && allRows.length > 0 && (
+        <PipelineExpectedRevenueCard rows={allRows} />
+      )}
+
       {/* v3.2.1 Revenue Pipeline Overview — KPI grid */}
       {mounted && allRows.length > 0 && (
         <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
@@ -14592,6 +14862,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                             )}
                             {" · "}{t("outreach_prefix", locale)}: {getLastOutreachActivityLabel(row.id, s, renderNow)}
                           </div>
+                          {(() => {
+                            const er = expectedRevenueByLeadId.get(row.id);
+                            if (!er || er.weightedExpectedMonthlyRevenue < 500) return null;
+                            return (
+                              <div className="mt-0.5 text-[10px] text-zinc-500">
+                                {locale === "tr" ? "Beklenen MRR" : "Expected MRR"}:{" "}
+                                <span className="font-medium tabular-nums text-amber-300">
+                                  {formatTRY(er.weightedExpectedMonthlyRevenue)}
+                                </span>
+                                <span className="ml-1 text-zinc-600">
+                                  · %{Math.round(er.expectedCustomerProbability * 100)}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5 border-t border-white/5 pt-2">
