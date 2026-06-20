@@ -11375,21 +11375,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     renderNow,
   ]);
 
-  const segmentApplied = useMemo(() => {
-    if (!smartSegment) return filtered;
-    return filtered.filter((r) => {
-      switch (smartSegment) {
-        case "hot": return r.hotScore >= 70;
-        case "icp": return (r.icpAlignment?.tugoboFitScore ?? r.icpFitScore ?? 0) >= 75;
-        case "whatsapp": return Boolean(r.phone?.trim()) && !r._s.whatsappInvalid;
-        case "digital": return Boolean(r.website?.trim()) && Boolean(r.instagram?.trim());
-        case "enterprise": return packageByLeadId.get(r.id) === "enterprise";
-        case "growth": return packageByLeadId.get(r.id) === "growth";
-        default: return true;
-      }
-    });
-  }, [filtered, smartSegment, packageByLeadId]);
-
   const useLatestImportHotLeads = latestImportLeads.length > 0;
   const hotLeadsSource = useLatestImportHotLeads ? latestImportLeads : allRows;
   const hot5 = useMemo(() => {
@@ -11424,18 +11409,18 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const tabFiltered = useMemo(() => {
     if (allLeadsTab === "focused") {
-      return segmentApplied.filter(
+      return filtered.filter(
         (r) => !r._s.doNotContact && r._s.status === "new" && r.hotScore >= 60,
       );
     }
     if (allLeadsTab === "new") {
-      return segmentApplied.filter((r) => r._s.status === "new");
+      return filtered.filter((r) => r._s.status === "new");
     }
     if (allLeadsTab === "hot") {
-      return segmentApplied.filter((r) => !r._s.doNotContact && r.hotScore >= 70);
+      return filtered.filter((r) => !r._s.doNotContact && r.hotScore >= 70);
     }
-    return segmentApplied;
-  }, [segmentApplied, allLeadsTab]);
+    return filtered;
+  }, [filtered, allLeadsTab]);
 
   const focusFiltered = useMemo(() => {
     if (!focusMode) return tabFiltered;
@@ -11444,10 +11429,29 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     );
   }, [tabFiltered, focusMode]);
 
+  // Segment discovery mode: when a smartSegment is active, source directly from
+  // filtered (search/type/status/channel filters only) so the displayed count
+  // matches the segment card count. Tab/focus narrowing is bypassed intentionally.
+  // When no segment is active the normal focusFiltered chain is used unchanged.
+  const segmentApplied = useMemo(() => {
+    if (!smartSegment) return focusFiltered;
+    return filtered.filter((r) => {
+      switch (smartSegment) {
+        case "hot": return r.hotScore >= 70;
+        case "icp": return (r.icpAlignment?.tugoboFitScore ?? r.icpFitScore ?? 0) >= 75;
+        case "whatsapp": return Boolean(r.phone?.trim()) && !r._s.whatsappInvalid;
+        case "digital": return Boolean(r.website?.trim()) && Boolean(r.instagram?.trim());
+        case "enterprise": return packageByLeadId.get(r.id) === "enterprise";
+        case "growth": return packageByLeadId.get(r.id) === "growth";
+        default: return true;
+      }
+    });
+  }, [filtered, focusFiltered, smartSegment, packageByLeadId]);
+
   const visibleAllLeads = useMemo(() => {
-    if (showAllLeadsRows) return focusFiltered;
-    return focusFiltered.slice(0, 15);
-  }, [focusFiltered, showAllLeadsRows]);
+    if (showAllLeadsRows) return segmentApplied;
+    return segmentApplied.slice(0, 15);
+  }, [segmentApplied, showAllLeadsRows]);
 
   const latestImportRows = useMemo(() => {
     const rows = latestImportLeads
@@ -14451,7 +14455,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <div className="flex items-center justify-between border-b border-white/5 px-4 py-2">
               <span className="text-xs text-zinc-500 tabular-nums">
                 {t("showing_leads", locale)} {visibleAllLeads.length} {t("of", locale)}{" "}
-                {focusFiltered.length} {t("leads_word", locale)}
+                {segmentApplied.length} {t("leads_word", locale)}
               </span>
               <div className="flex items-center gap-4">
                 <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
@@ -14463,7 +14467,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   />
                   {t("select_all_visible", locale)}
                 </label>
-                {focusMode && (
+                {smartSegment ? (
+                  <span className="text-[11px] text-violet-300">
+                    {locale === "tr" ? "Segment görünümü — Odak modu uygulanmıyor" : "Segment view — Focus mode bypassed"}
+                  </span>
+                ) : focusMode && (
                   <span className="text-[11px] text-orange-300">{t("focus_hint", locale)}</span>
                 )}
               </div>
@@ -14653,14 +14661,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                     </div>
                   );
                 })}
-                {focusFiltered.length === 0 && (
+                {segmentApplied.length === 0 && (
                   <div className="col-span-full px-4 py-10 text-center text-sm text-zinc-500">
                     {t("no_leads_filters", locale)}
                   </div>
                 )}
               </div>
             </div>
-            {focusFiltered.length > 15 && (
+            {segmentApplied.length > 15 && (
               <div className="flex justify-center border-t border-white/5 px-4 py-3">
                 <button
                   onClick={() => setShowAllLeadsRows((v) => !v)}
