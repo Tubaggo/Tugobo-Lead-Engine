@@ -5254,6 +5254,175 @@ function commercialPackageBadgeClass(pkg: CommercialPackage): string {
   }
 }
 
+/** v5.0 — short package label. */
+function commercialPackageShortLabel(pkg: CommercialPackage): string {
+  switch (pkg) {
+    case "enterprise":
+      return "Enterprise";
+    case "growth":
+      return "Growth";
+    case "professional":
+      return "Professional";
+    default:
+      return "Starter";
+  }
+}
+
+/** v5.0 — primary communication channel label for a lead row. */
+function primaryChannelLabel(
+  row: LeadTableRow,
+  finder: ContactFinderResult | undefined,
+  tr: boolean,
+): { label: string; cls: string } {
+  const hasWa = whatsappLink(row.phone) !== null;
+  const hasMobile = getTurkishPhoneKind(row.phone) === "mobile";
+  const hasInsta = Boolean(row.instagram?.trim());
+  const hasWeb = Boolean(row.website?.trim());
+  if (hasWa) return { label: "WhatsApp", cls: "text-emerald-300" };
+  if (hasMobile || Boolean(row.phone?.trim())) return { label: tr ? "Telefon" : "Phone", cls: "text-sky-300" };
+  if (hasInsta) return { label: "Instagram", cls: "text-fuchsia-300" };
+  if (finder && finder.bestContactType) return { label: tr ? "Bulucu" : "Finder", cls: "text-violet-300" };
+  if (hasWeb) return { label: "Web", cls: "text-zinc-300" };
+  return { label: "—", cls: "text-zinc-600" };
+}
+
+/** v5.0 — row-level recommended action (mirrors queue actionRecommendationLabel, derived from row state). */
+function rowRecommendedAction(
+  row: LeadTableRow,
+  rp: ExpectedRevenueRankingResult | undefined,
+): { label: string; cls: string } {
+  const status = row._s.status;
+  const tier = rp?.revenuePriorityTier;
+  const hasWa = whatsappLink(row.phone) !== null;
+  const hasPhone = Boolean(row.phone?.trim());
+  const hasInsta = Boolean(row.instagram?.trim());
+  const make = (label: string, cls: string) => ({ label, cls });
+  if (status === "won") return make("Kazanıldı", "text-emerald-300 ring-emerald-400/30 bg-emerald-500/10");
+  if (status === "lost") return make("Kapandı", "text-zinc-400 ring-white/10 bg-white/5");
+  if (status === "meeting") return make("Demo Planla", "text-violet-300 ring-violet-400/30 bg-violet-500/10");
+  if (status === "replied") return make("Takip Yap", "text-amber-300 ring-amber-400/30 bg-amber-500/10");
+  if (tier === "critical" && hasWa) return make("WhatsApp Gönder", "text-emerald-300 ring-emerald-400/30 bg-emerald-500/10");
+  if (tier === "critical" && hasPhone) return make("Hemen Ara", "text-sky-300 ring-sky-400/30 bg-sky-500/10");
+  if (tier === "high" && hasInsta) return make("Instagram Temas", "text-fuchsia-300 ring-fuchsia-400/30 bg-fuchsia-500/10");
+  if (status === "contacted") return make("Yanıt Bekleniyor", "text-zinc-400 ring-white/10 bg-white/5");
+  if (hasWa || hasPhone) return make("İletişime Geç", "text-sky-300 ring-sky-400/30 bg-sky-500/10");
+  return make("İncele", "text-zinc-400 ring-white/10 bg-white/5");
+}
+
+/**
+ * v5.0 — Opportunity Table: the new default revenue-operations row view for the lead list.
+ * Compact, scannable rows. Pure presentation — all values come from existing engines
+ * (commercial packaging, expected revenue, revenue priority). Row click opens the
+ * existing lead detail drawer; no business logic changes.
+ */
+function LeadOpportunityTable({
+  rows,
+  packageMap,
+  expectedRevenueMap,
+  revenuePriorityMap,
+  contactFinderMap,
+  openId,
+  now,
+  onOpenDetail,
+  getActivityLabel,
+}: {
+  rows: LeadTableRow[];
+  packageMap: Map<string, CommercialPackage>;
+  expectedRevenueMap: Map<string, ExpectedRevenueResult>;
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>;
+  contactFinderMap: Record<string, ContactFinderResult | undefined>;
+  openId: string | null;
+  now: number;
+  onOpenDetail: (id: string) => void;
+  getActivityLabel: (id: string, s: LeadStatusUpdate, now: number) => string;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  if (rows.length === 0) {
+    return (
+      <div className="px-4 py-10 text-center text-sm text-zinc-500">
+        {tr ? "Filtrelere uygun lead bulunamadı." : "No leads match the filters."}
+      </div>
+    );
+  }
+
+  const headCls = "px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-zinc-500";
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[860px] border-collapse text-[11px]">
+        <thead>
+          <tr className="border-b border-white/10">
+            <th className={`${headCls} w-8 text-center`}>#</th>
+            <th className={headCls}>{tr ? "İşletme" : "Business"}</th>
+            <th className={headCls}>{tr ? "Şehir" : "City"}</th>
+            <th className={headCls}>{tr ? "Paket" : "Package"}</th>
+            <th className={`${headCls} text-right`}>{tr ? "Ağırlıklı MRR" : "Weighted MRR"}</th>
+            <th className={`${headCls} text-right`}>{tr ? "Dönüşüm" : "Conv."}</th>
+            <th className={`${headCls} text-right`}>{tr ? "Skor" : "Score"}</th>
+            <th className={headCls}>{tr ? "Önerilen Aksiyon" : "Action"}</th>
+            <th className={headCls}>{tr ? "Son Aktivite" : "Last Activity"}</th>
+            <th className={headCls}>{tr ? "Kanal" : "Channel"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            const pkg = packageMap.get(row.id) ?? "starter";
+            const er = expectedRevenueMap.get(row.id);
+            const rp = revenuePriorityMap.get(row.id);
+            const action = rowRecommendedAction(row, rp);
+            const channel = primaryChannelLabel(row, contactFinderMap[row.id], tr);
+            const tier = rp?.revenuePriorityTier;
+            const tierDot =
+              tier === "critical" ? "bg-rose-400" :
+              tier === "high" ? "bg-amber-400" :
+              tier === "medium" ? "bg-indigo-400" :
+              "bg-zinc-600";
+            return (
+              <tr
+                key={renderLeadKey("opp-table", row, index)}
+                onClick={() => onOpenDetail(row.id)}
+                className={`cursor-pointer border-b border-white/[0.04] transition hover:bg-white/[0.03] ${
+                  openId === row.id ? "bg-white/[0.04]" : ""
+                }`}
+              >
+                <td className="px-3 py-2 text-center tabular-nums text-zinc-600">{index + 1}</td>
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tierDot}`} aria-hidden="true" />
+                    <span className="font-medium text-zinc-100">{row.name}</span>
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-zinc-400">{row.city || "—"}</td>
+                <td className="px-3 py-2">
+                  <span className={commercialPackageBadgeClass(pkg)}>{commercialPackageShortLabel(pkg)}</span>
+                </td>
+                <td className="px-3 py-2 text-right font-semibold tabular-nums text-emerald-300">
+                  {er && er.weightedExpectedMonthlyRevenue > 0 ? formatTRY(er.weightedExpectedMonthlyRevenue) : "—"}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-sky-300">
+                  {er && er.expectedCustomerProbability > 0 ? `%${Math.round(er.expectedCustomerProbability * 100)}` : "—"}
+                </td>
+                <td className="px-3 py-2 text-right font-semibold tabular-nums text-indigo-300">
+                  {rp ? rp.revenuePriorityScore : "—"}
+                </td>
+                <td className="px-3 py-2">
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${action.cls}`}>
+                    {action.label}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-zinc-500">{getActivityLabel(row.id, row._s, now)}</td>
+                <td className={`px-3 py-2 ${channel.cls}`}>{channel.label}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** v3.7.1 — "Ticari Paketleme" commercial decision card. Placement: after Revenue Potential. */
 function CommercialPackagingCard({ lead }: { lead: LeadTableRow }) {
   const { locale } = useLocale();
@@ -6539,17 +6708,66 @@ function LeadDetailNotesSection({
 function DashboardSectionHeader({ title, titleTr }: { title: string; titleTr: string }) {
   const { locale } = useLocale();
   return (
-    <div className="mb-4 mt-7 flex items-center gap-3">
-      <div className="h-px flex-1 bg-white/[0.07]" />
-      <span className="shrink-0 text-[9px] font-bold uppercase tracking-[0.18em] text-zinc-600">
+    <div className="mb-5 mt-8 flex items-center gap-3">
+      <div className="h-px flex-1 bg-white/[0.08]" />
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
         {locale === "tr" ? titleTr : title}
       </span>
-      <div className="h-px flex-1 bg-white/[0.07]" />
+      <div className="h-px flex-1 bg-white/[0.08]" />
     </div>
   );
 }
 
 type WorkspaceTab = "overview" | "opportunity" | "revenue" | "execution";
+
+/**
+ * v4.2 — Shared workspace identity header. Establishes the Revenue Queue
+ * operating-workspace design language across every workspace: accent chip,
+ * title + operational subtitle, optional inline action cluster.
+ */
+type WorkspaceAccent = "indigo" | "emerald" | "orange" | "violet" | "amber" | "sky";
+
+function WorkspaceHeader({
+  icon,
+  title,
+  subtitle,
+  accent = "indigo",
+  actions,
+}: {
+  icon?: ReactNode;
+  title: string;
+  subtitle?: string;
+  accent?: WorkspaceAccent;
+  actions?: ReactNode;
+}) {
+  const accentMap: Record<WorkspaceAccent, { chip: string; text: string; border: string; glow: string }> = {
+    indigo: { chip: "bg-indigo-500/20", text: "text-indigo-100", border: "border-indigo-400/20", glow: "ring-indigo-400/10" },
+    emerald: { chip: "bg-emerald-500/20", text: "text-emerald-100", border: "border-emerald-400/20", glow: "ring-emerald-400/10" },
+    orange: { chip: "bg-orange-500/20", text: "text-orange-100", border: "border-orange-400/20", glow: "ring-orange-400/10" },
+    violet: { chip: "bg-violet-500/20", text: "text-violet-100", border: "border-violet-400/20", glow: "ring-violet-400/10" },
+    amber: { chip: "bg-amber-500/20", text: "text-amber-100", border: "border-amber-400/20", glow: "ring-amber-400/10" },
+    sky: { chip: "bg-sky-500/20", text: "text-sky-100", border: "border-sky-400/20", glow: "ring-sky-400/10" },
+  };
+  const a = accentMap[accent];
+  return (
+    <section
+      className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border ${a.border} bg-white/[0.02] px-5 py-4 backdrop-blur ring-1 ring-inset ${a.glow}`}
+    >
+      <div className="flex items-center gap-2.5">
+        {icon && (
+          <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${a.chip}`}>
+            {icon}
+          </div>
+        )}
+        <div className="min-w-0">
+          <h2 className={`text-sm font-bold tracking-tight ${a.text}`}>{title}</h2>
+          {subtitle && <p className="mt-0.5 text-[11px] text-zinc-500">{subtitle}</p>}
+        </div>
+      </div>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </section>
+  );
+}
 
 /** Single render tree for the open lead (one selected object, no list iteration). */
 function LeadDetailPanel({
@@ -7711,41 +7929,51 @@ function RevenueFocusStrip({
   if (top3.length === 0) return null;
 
   return (
-    <div className="rounded-xl border border-amber-400/15 bg-amber-500/[0.03] p-4">
-      <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-amber-300">
-        Bugünün Gelir Odağı
-      </div>
-      <div className="space-y-1.5">
-        {top3.map((c, i) => {
-          const er = expectedRevenueMap.get(c.row.id);
-          const rp = revenuePriorityMap.get(c.row.id);
-          return (
-            <button
-              key={c.row.id}
-              type="button"
-              onClick={() => onOpenDetail(c.row.id)}
-              className="flex w-full items-center gap-3 rounded-lg border border-white/8 bg-white/[0.015] px-3 py-2 text-left transition hover:bg-white/[0.04]"
-            >
-              <span className="w-4 shrink-0 text-center text-[11px] font-bold tabular-nums text-amber-400">
+    <div className="grid gap-2 sm:grid-cols-3">
+      {top3.map((c, i) => {
+        const er = expectedRevenueMap.get(c.row.id);
+        const rp = revenuePriorityMap.get(c.row.id);
+        return (
+          <button
+            key={c.row.id}
+            type="button"
+            onClick={() => onOpenDetail(c.row.id)}
+            className="flex flex-col gap-1.5 rounded-xl border border-amber-400/15 bg-amber-500/[0.04] px-4 py-3 text-left transition hover:bg-amber-500/[0.08] hover:border-amber-400/25"
+          >
+            <div className="flex items-center gap-2">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-[10px] font-bold tabular-nums text-amber-300">
                 {i + 1}
               </span>
-              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-zinc-100">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-zinc-100">
                 {c.row.name}
               </span>
+            </div>
+            <div className="flex items-center gap-2">
               {er && er.weightedExpectedMonthlyRevenue > 0 && (
-                <span className="shrink-0 text-[13px] font-semibold tabular-nums text-emerald-300">
+                <span className="text-[14px] font-bold tabular-nums text-emerald-300">
                   {formatTRY(er.weightedExpectedMonthlyRevenue)}
+                  <span className="ml-0.5 text-[10px] font-normal text-zinc-500">/ay</span>
                 </span>
               )}
               {rp && (
-                <span className="shrink-0 rounded bg-white/5 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-zinc-400 ring-1 ring-inset ring-white/10">
-                  {rp.revenuePriorityScore}
+                <span className="ml-auto rounded bg-white/5 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-zinc-400 ring-1 ring-inset ring-white/10">
+                  {rp.revenuePriorityScore} puan
                 </span>
               )}
-            </button>
-          );
-        })}
-      </div>
+            </div>
+            {rp?.revenuePriorityTier && (
+              <span className={`self-start rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
+                rp.revenuePriorityTier === "critical" ? "bg-rose-500/20 text-rose-300" :
+                rp.revenuePriorityTier === "high" ? "bg-orange-500/20 text-orange-300" :
+                rp.revenuePriorityTier === "medium" ? "bg-amber-500/20 text-amber-300" :
+                "bg-zinc-500/20 text-zinc-400"
+              }`}>
+                {rp.revenuePriorityTier === "critical" ? "Kritik" : rp.revenuePriorityTier === "high" ? "Yüksek" : rp.revenuePriorityTier === "medium" ? "Orta" : "Düşük"}
+              </span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -10276,12 +10504,12 @@ function FounderCommandCenter({
   if (cmd.priority === 5 && cmd.impactRevenue === 0) {
     return (
       <section className="overflow-hidden rounded-xl border border-zinc-700/40 bg-zinc-500/[0.03]">
-        <div className="border-b border-white/5 px-4 py-3">
-          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div className="border-b border-white/5 px-5 py-4">
+          <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-zinc-400">
             Komuta Merkezi
           </h2>
         </div>
-        <div className="px-4 py-6 text-center">
+        <div className="px-5 py-8 text-center">
           <p className="text-sm font-medium text-zinc-400">
             Operasyon planlandığı şekilde ilerliyor.
           </p>
@@ -10324,28 +10552,28 @@ function FounderCommandCenter({
       className={`overflow-hidden rounded-xl border ${priorityBorder[cmd.priority] ?? priorityBorder[5]}`}
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
-        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+      <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-zinc-300">
           Komuta Merkezi
         </h2>
-        <span className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${confidenceCls}`}>
+        <span className={`rounded-md border px-2.5 py-1 text-[11px] font-semibold ${confidenceCls}`}>
           Komut Güveni: {confidenceLabel}
         </span>
       </div>
 
       {/* Primary command */}
-      <div className="px-4 pt-4 pb-3">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">
+      <div className="px-5 pt-5 pb-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
           Bugünkü Birincil Komut
         </p>
         <p
-          className={`mt-1 text-2xl font-bold tracking-tight ${commandCls[cmd.priority] ?? "text-zinc-200"}`}
+          className={`mt-2 text-2xl font-bold leading-snug tracking-tight ${commandCls[cmd.priority] ?? "text-zinc-200"}`}
         >
           {cmd.command}
         </p>
         {cmd.impactRevenue > 0 && (
-          <p className="mt-1 text-[13px] font-medium text-zinc-400">
-            <span className="font-bold text-zinc-200">{formatTRY(cmd.impactRevenue)}</span>
+          <p className="mt-2 text-sm font-medium text-zinc-400">
+            <span className="font-bold text-zinc-100">{formatTRY(cmd.impactRevenue)}</span>
             {" "}gelir etkisi
           </p>
         )}
@@ -10353,16 +10581,16 @@ function FounderCommandCenter({
 
       {/* Critical lead */}
       {cmd.criticalLeadId && (
-        <div className="mx-4 mb-3 overflow-hidden rounded-lg border border-white/8 bg-white/[0.025]">
-          <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+        <div className="mx-5 mb-4 overflow-hidden rounded-xl border border-white/8 bg-white/[0.025]">
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
                 Kritik Lead
               </p>
-              <p className="mt-0.5 text-[13px] font-semibold text-zinc-100">
+              <p className="mt-1 text-sm font-semibold text-zinc-100">
                 {cmd.criticalLeadName}
                 {cmd.criticalLeadCity && (
-                  <span className="ml-1.5 text-[11px] font-normal text-zinc-500">
+                  <span className="ml-2 text-[11px] font-normal text-zinc-500">
                     {cmd.criticalLeadCity}
                   </span>
                 )}
@@ -10372,7 +10600,7 @@ function FounderCommandCenter({
             <button
               type="button"
               onClick={() => onOpenDetail(cmd.criticalLeadId!)}
-              className="shrink-0 rounded-md border border-zinc-600/50 bg-zinc-700/30 px-2.5 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-zinc-700/50"
+              className="shrink-0 rounded-md border border-zinc-600/50 bg-zinc-700/30 px-3 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-zinc-700/50"
             >
               Detay Aç
             </button>
@@ -10381,7 +10609,7 @@ function FounderCommandCenter({
       )}
 
       {/* Founder insight */}
-      <div className="border-t border-white/5 px-4 py-2.5">
+      <div className="border-t border-white/5 px-5 py-3">
         <p className="text-[11px] italic text-zinc-500">{cmd.insight}</p>
       </div>
     </section>
@@ -10553,11 +10781,11 @@ function WeeklyCommercialOutlook({
 
   return (
     <section className="overflow-hidden rounded-xl border border-indigo-500/20 bg-indigo-500/[0.03]">
-      <div className="border-b border-white/5 px-4 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+      <div className="border-b border-white/5 px-5 py-4">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-indigo-200">
           {tr ? "Bu Haftaki Ticari Görünüm" : "Weekly Commercial Outlook"}
         </h2>
-        <p className="mt-0.5 text-[11px] text-zinc-500">
+        <p className="mt-1 text-[11px] text-zinc-500">
           {tr
             ? "Pipeline zekası — anlık hesaplama, kalıcı değil"
             : "Runtime pipeline intelligence — not persisted"}
@@ -10682,14 +10910,14 @@ function ExecutionCounters({ rows, now }: { rows: LeadTableRow[]; now: number })
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {cards.map((c) => (
         <div
           key={c.label}
-          className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center"
+          className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4 text-center"
         >
           <div className={`text-2xl font-bold tabular-nums ${c.cls}`}>{c.value}</div>
-          <div className="mt-0.5 text-[11px] text-zinc-500">{c.label}</div>
+          <div className="mt-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">{c.label}</div>
         </div>
       ))}
     </div>
@@ -10730,11 +10958,11 @@ function ActionQueuePanel({
 
   return (
     <section className="overflow-hidden rounded-xl border border-orange-500/20 bg-orange-500/[0.03]">
-      <div className="border-b border-white/5 px-4 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-orange-200">
+      <div className="border-b border-white/5 px-5 py-4">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-orange-200">
           {tr ? "Günün Öncelikli Aksiyonları" : "Today's Priority Actions"}
         </h2>
-        <p className="mt-0.5 text-[11px] text-zinc-500">
+        <p className="mt-1 text-[11px] text-zinc-500">
           {tr
             ? "Bugün iletişime geçilmesi gereken işletmeler"
             : "Businesses to reach today"}
@@ -10744,7 +10972,7 @@ function ActionQueuePanel({
         {items.map(({ row, action }) => (
           <div
             key={row.id}
-            className="flex items-center justify-between gap-3 px-4 py-2.5 transition hover:bg-white/[0.02]"
+            className="flex items-center justify-between gap-3 px-5 py-3 transition hover:bg-white/[0.02]"
           >
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -11052,47 +11280,50 @@ function CommunicationStrategyCard({
   if (rec.channel === "none" && readyCount === 0) return null;
 
   return (
-    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.03] px-3 py-2.5">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-          {tr ? "İletişim Stratejisi" : "Communication Strategy"}
-        </span>
-        <span className={`text-[10px] font-medium ${readinessCls}`}>
-          %{readinessPct} · {readinessLabel}
-        </span>
+    <div className="overflow-hidden rounded-xl border border-sky-500/20 bg-sky-500/[0.03]">
+      <div className="border-b border-white/5 px-4 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold uppercase tracking-[0.12em] text-sky-200">
+            {tr ? "İletişim Stratejisi" : "Communication Strategy"}
+          </span>
+          <span className={`text-[10px] font-semibold ${readinessCls}`}>
+            %{readinessPct} · {readinessLabel}
+          </span>
+        </div>
       </div>
+      <div className="space-y-3 px-4 py-3">
+        {/* Recommended channel */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+            {tr ? "Önerilen Kanal" : "Channel"}
+          </span>
+          <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold ${channelBadgeCls}`}>
+            {channelLabel}
+            {rec.channel === "whatsapp_verified" && " ✓"}
+          </span>
+        </div>
 
-      {/* Recommended channel */}
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-wide text-zinc-600">
-          {tr ? "Önerilen Kanal" : "Channel"}
-        </span>
-        <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${channelBadgeCls}`}>
-          {channelLabel}
-          {rec.channel === "whatsapp_verified" && " ✓"}
-        </span>
-      </div>
+        {/* Communication reason */}
+        <p className="text-[11px] text-zinc-400">
+          <span className="text-zinc-500">{tr ? "Sebep: " : "Reason: "}</span>
+          {channelReason}
+        </p>
 
-      {/* Communication reason */}
-      <p className="mb-2 text-[11px] text-zinc-400">
-        <span className="text-zinc-600">{tr ? "Sebep: " : "Reason: "}</span>
-        {channelReason}
-      </p>
+        {/* First action playbook */}
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">{tr ? "İlk Aksiyon: " : "First Action: "}</span>
+          <span className="ml-1 text-[11px] font-semibold text-zinc-100">{playbook}</span>
+        </div>
 
-      {/* First action playbook */}
-      <div className="mb-3 rounded-md border border-white/5 bg-white/[0.02] px-2 py-1.5">
-        <span className="text-[10px] text-zinc-600">{tr ? "İlk Aksiyon: " : "First Action: "}</span>
-        <span className="text-[11px] font-medium text-zinc-200">{playbook}</span>
-      </div>
-
-      {/* Readiness checklist */}
-      <div className="space-y-1">
-        {checks.map((c) => (
-          <div key={c.label} className="flex items-center gap-2 text-[11px]">
-            <span className={c.ok ? "text-emerald-400" : "text-zinc-600"}>{c.ok ? "✓" : "—"}</span>
-            <span className={c.ok ? "text-zinc-300" : "text-zinc-500"}>{c.label}</span>
-          </div>
-        ))}
+        {/* Readiness checklist */}
+        <div className="space-y-1.5">
+          {checks.map((c) => (
+            <div key={c.label} className="flex items-center gap-2 text-[11px]">
+              <span className={c.ok ? "text-emerald-400" : "text-zinc-600"}>{c.ok ? "✓" : "—"}</span>
+              <span className={c.ok ? "text-zinc-300" : "text-zinc-500"}>{c.label}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -11583,14 +11814,14 @@ function PipelineCounters({ rows }: { rows: LeadTableRow[] }) {
     { label: tr ? "Kazanıldı" : "Won", value: counts.won, cls: "text-emerald-300" },
   ];
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {cards.map((c) => (
         <div
           key={c.label}
-          className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center"
+          className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4 text-center"
         >
           <div className={`text-2xl font-bold tabular-nums ${c.cls}`}>{c.value}</div>
-          <div className="mt-0.5 text-[11px] text-zinc-500">{c.label}</div>
+          <div className="mt-1 text-[11px] font-medium uppercase tracking-wider text-zinc-500">{c.label}</div>
         </div>
       ))}
     </div>
@@ -11724,11 +11955,11 @@ function SalesPipelineBoard({
 
   return (
     <section className="overflow-hidden rounded-xl border border-indigo-500/15 bg-indigo-500/[0.02]">
-      <div className="border-b border-white/5 px-4 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+      <div className="border-b border-white/5 px-5 py-4">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-indigo-200">
           {tr ? "Satış Boru Hattı" : "Sales Pipeline"}
         </h2>
-        <p className="mt-0.5 text-[11px] text-zinc-500">
+        <p className="mt-1 text-[11px] text-zinc-500">
           {tr
             ? "Aktif lead aşamalarına genel bakış — aşama değiştirmek için lead detayını aç"
             : "Active pipeline stages — open lead detail to change stage"}
@@ -11808,10 +12039,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [allLeadsTimeFilter, setAllLeadsTimeFilter] =
     useState<AllLeadsTimeFilter>("all_time");
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
-  const [workspaceTab, setWorkspaceTab] = useState<"opportunities" | "revenue" | "execution" | "intelligence" | "followups">("opportunities");
+  const [workspaceTab, setWorkspaceTab] = useState<"opportunities" | "revenue" | "execution" | "intelligence" | "followups" | "acquisition">("opportunities");
   const [queueSubTab, setQueueSubTab] = useState<QueueSubTab>("queue");
-  const workspaceSelectorRef = useRef<HTMLDivElement>(null);
+  const workspaceSelectorRef = useRef<HTMLElement>(null);
   const [smartSegment, setSmartSegment] = useState<SmartSegmentId | null>(null);
+  // v5.0 — Lead list view mode: row-based Opportunity Table (default) or legacy card grid.
+  const [leadViewMode, setLeadViewMode] = useState<"list" | "card">("list");
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [dailyOutreach, setDailyOutreach] = useState<DailyOutreachPersisted>({
@@ -14554,22 +14787,53 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           currentPath="/"
           showLocaleToggle
           activeWorkspace={workspaceTab}
-          onNavigate={(ws) => {
+          activeSubTab={
+            workspaceTab === "intelligence"
+              ? smartSegment === "icp"
+                ? "icp"
+                : smartSegment === "whatsapp"
+                  ? "comms"
+                  : undefined
+              : queueSubTab
+          }
+          onNavigate={(ws, subTab) => {
             setWorkspaceTab(ws);
+            // v5.0 — Pipeline sub-items map to existing smart segments (reuses segment logic, no new engine).
+            if (ws === "intelligence") {
+              if (subTab === "icp") {
+                setSmartSegment("icp");
+                setAllLeadsOpen(true);
+              } else if (subTab === "comms") {
+                setSmartSegment("whatsapp");
+                setAllLeadsOpen(true);
+              } else {
+                setSmartSegment(null);
+              }
+            } else if (
+              subTab === "queue" ||
+              subTab === "calls" ||
+              subTab === "messages" ||
+              subTab === "followups" ||
+              subTab === "waiting"
+            ) {
+              setQueueSubTab(subTab);
+            }
             workspaceSelectorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
           }}
         />
       </aside>
       <div className="flex min-w-0 flex-col gap-6">
-      <header className="flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <BrandLogo />
-            <h1 className="text-lg font-semibold tracking-tight text-zinc-50">
-              Tugobo <span className="text-zinc-400">Lead Engine</span>
+      <header className="flex flex-col gap-3 border-b border-white/5 pb-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <BrandLogo />
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-zinc-50">
+              Founder <span className="text-orange-300">Revenue OS</span>
             </h1>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              {locale === "tr" ? "Bugünün gelir fırsatlarını yönetin." : "Manage today's revenue opportunities."}
+            </p>
           </div>
-          <p className="mt-1 text-xs text-zinc-500">{t("app_tagline", locale)}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400">
           <LocaleToggle className="lg:hidden" />
@@ -14586,7 +14850,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </span>
           <button
             onClick={() => setSessionLeadIds([])}
-            className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200 transition hover:bg-white/10"
+            className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition hover:bg-white/10"
           >
             {t("start_new_session", locale)}
           </button>
@@ -14594,7 +14858,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       </header>
 
       {/* v3.9.3 Operation Header — Revenue Operating Desk KPIs */}
-      <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <section ref={workspaceSelectorRef} className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {(
           [
             {
@@ -14639,59 +14903,37 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         ))}
       </section>
 
-      {/* v3.8.3 Workspace Selector */}
-      <div ref={workspaceSelectorRef} className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
-        {(
-          [
-            { id: "opportunities", label: locale === "tr" ? "Fırsatlar" : "Opportunities", accent: "indigo" },
-            { id: "revenue", label: locale === "tr" ? "Gelir" : "Revenue", accent: "emerald" },
-            { id: "execution", label: locale === "tr" ? "Uygulama" : "Execution", accent: "orange" },
-            { id: "intelligence", label: locale === "tr" ? "İstihbarat" : "Intelligence", accent: "violet" },
-            { id: "followups", label: locale === "tr" ? "Takip" : "Follow-up", accent: "amber" },
-          ] as const
-        ).map(({ id, label, accent }) => {
-          const isActive = workspaceTab === id;
-          const accentClasses: Record<string, string> = {
-            indigo: "bg-indigo-500/20 text-indigo-200 ring-indigo-400/30",
-            emerald: "bg-emerald-500/20 text-emerald-200 ring-emerald-400/30",
-            orange: "bg-orange-500/20 text-orange-200 ring-orange-400/30",
-            violet: "bg-violet-500/20 text-violet-200 ring-violet-400/30",
-            amber: "bg-amber-500/20 text-amber-200 ring-amber-400/30",
-          };
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setWorkspaceTab(id)}
-              className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-all ring-1 ring-inset ${
-                isActive
-                  ? accentClasses[accent]
-                  : "text-zinc-500 ring-transparent hover:bg-white/5 hover:text-zinc-300"
-              }`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+      {/* v5.0 — Top workspace tab selector removed; the left sidebar is the single navigation system. */}
 
-      {/* EXECUTION workspace */}
+      {/* EXECUTION workspace — v4.2 Founder Command Workspace */}
       {workspaceTab === "execution" && (
       <>
 
+      {/* Workspace identity */}
+      <WorkspaceHeader
+        accent="orange"
+        icon={<IconSpark className="h-4 w-4 text-orange-200" />}
+        title={locale === "tr" ? "Operasyon Masası" : "Command Workspace"}
+        subtitle={
+          locale === "tr"
+            ? "Bugün dikkatini gerektiren komut, kritik işler ve satış akışı"
+            : "Today's command, critical tasks and execution flow"
+        }
+      />
+
       {/* Morning Outreach */}
-      <section className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.04] p-4 backdrop-blur ring-1 ring-inset ring-emerald-400/10">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <section className="overflow-hidden rounded-xl border border-emerald-400/20 bg-emerald-500/[0.04] backdrop-blur ring-1 ring-inset ring-emerald-400/10">
+        <div className="flex flex-wrap items-start justify-between gap-4 px-5 py-4">
           <div>
-            <div className="flex items-center gap-2">
-              <div className="flex h-5 w-5 items-center justify-center rounded bg-emerald-500/20">
-                <IconSpark className="h-3.5 w-3.5 text-emerald-200" />
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/20">
+                <IconSpark className="h-4 w-4 text-emerald-200" />
               </div>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-emerald-200">
+              <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-200">
                 {t("morning_outreach", locale)}
               </h2>
             </div>
-            <p className="mt-1 text-[11px] text-zinc-400">
+            <p className="mt-1.5 text-[11px] text-zinc-400">
               {t("queue_word", locale)} {safeActiveQueueCount}/{DAILY_OUTREACH_LIMIT} ·{" "}
               {t("follow_ups_due_label", locale)} {safeFollowUpDueCount} ·{" "}
               {t("contacted_today_label", locale)} {safeCompletedToday}
@@ -14776,69 +15018,76 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         />
       )}
 
-      {/* v2.4 Workflow Steps — "Operasyon Akışı" */}
+      {/* Primary Action Area (critical work + sales plan) + Execution Intelligence */}
       {mounted && allRows.length > 0 && (
-        <FounderWorkflowSteps
-          rows={allRows}
-          now={renderNow || Date.now()}
-        />
-      )}
-
-      {/* v2.3 Critical Tasks — "Kritik İşler" */}
-      {mounted && allRows.length > 0 && (
-        <TodayCriticalTasks
-          rows={allRows}
-          now={renderNow || Date.now()}
-          onOpenDetail={(id) => setOpenId(id)}
-        />
-      )}
-
-      {/* v2.4.1 Operation Status Strip — bridge between daily ops and commercial intelligence */}
-      {mounted && allRows.length > 0 && (
-        <OperationStatusStrip rows={allRows} now={renderNow || Date.now()} />
-      )}
-
-      {/* v3.0 Autonomous Sales Plan — "Bugünün Satış Planı" */}
-      {mounted && allRows.length > 0 && (
-        <AutonomousSalesPlan
-          rows={allRows}
-          now={renderNow || Date.now()}
-          contactFinderMap={contactFinderMap}
-          onOpenDetail={(id) => setOpenId(id)}
-        />
+        <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
+          {/* Left: what to execute now */}
+          <div className="space-y-4">
+            <TodayCriticalTasks
+              rows={allRows}
+              now={renderNow || Date.now()}
+              onOpenDetail={(id) => setOpenId(id)}
+            />
+            <AutonomousSalesPlan
+              rows={allRows}
+              now={renderNow || Date.now()}
+              contactFinderMap={contactFinderMap}
+              onOpenDetail={(id) => setOpenId(id)}
+            />
+          </div>
+          {/* Right: execution intelligence — workflow stage + status */}
+          <div className="space-y-4">
+            <FounderWorkflowSteps rows={allRows} now={renderNow || Date.now()} />
+            <OperationStatusStrip rows={allRows} now={renderNow || Date.now()} />
+          </div>
+        </div>
       )}
 
       </>)}
 
-      {/* REVENUE workspace */}
+      {/* REVENUE workspace — v4.2 Executive Revenue Intelligence Workspace */}
       {workspaceTab === "revenue" && (
       <>
 
-      {/* v3.9.1 Revenue Priority Ranking — critical/high counts + top lead */}
-      {mounted && allRows.length > 0 && (
-        <RevenueRankingCard
-          rows={allRows}
-          revenuePriorityMap={revenuePriorityByLeadId}
-          onOpenDetail={(id) => setOpenId(id)}
-        />
-      )}
+      {/* Workspace identity */}
+      <WorkspaceHeader
+        accent="emerald"
+        icon={<IconSpark className="h-4 w-4 text-emerald-200" />}
+        title={locale === "tr" ? "Gelir Analizi" : "Revenue Intelligence"}
+        subtitle={
+          locale === "tr"
+            ? "Ağırlıklı pipeline, 30 günlük tahmin, risk ve geri kazanım"
+            : "Weighted pipeline, 30-day forecast, risk and recovery"
+        }
+      />
 
-      {/* v3.9.0 Pipeline Expected Revenue — package price × probability */}
-      {mounted && allRows.length > 0 && (
-        <PipelineExpectedRevenueCard rows={allRows} />
-      )}
-
-      {/* v3.2.1 Revenue Pipeline Overview — KPI grid */}
+      {/* Operational Summary — pipeline KPI grid */}
       {mounted && allRows.length > 0 && (
         <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
       )}
 
-      {/* v3.3.0 Founder Forecast Engine — 30-day deterministic forecast */}
+      {/* Primary Area (revenue opportunities) + Intelligence (forecast / outlook) */}
       {mounted && allRows.length > 0 && (
-        <FounderForecastEngine rows={allRows} now={renderNow || Date.now()} />
+        <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
+          {/* Left: actionable revenue opportunities — the decision surface */}
+          <div className="space-y-4">
+            <RevenueRankingCard
+              rows={allRows}
+              revenuePriorityMap={revenuePriorityByLeadId}
+              onOpenDetail={(id) => setOpenId(id)}
+            />
+            <TopRevenueOpportunities rows={allRows} now={renderNow || Date.now()} />
+            <PipelineExpectedRevenueCard rows={allRows} />
+          </div>
+          {/* Right: revenue intelligence — forecast + weekly outlook */}
+          <div className="space-y-4">
+            <FounderForecastEngine rows={allRows} now={renderNow || Date.now()} />
+            <WeeklyCommercialOutlook rows={allRows} now={renderNow || Date.now()} />
+          </div>
+        </div>
       )}
 
-      {/* v3.4.0 Revenue Risk Engine — risk KPIs + top 5 risk rows */}
+      {/* Supporting — revenue protection (risk + recovery) */}
       {mounted && allRows.length > 0 && (
         <RevenueRiskEngine
           rows={allRows}
@@ -14846,8 +15095,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           contactFinderMap={contactFinderMap}
         />
       )}
-
-      {/* v3.5.0 Revenue Recovery Engine — recoverable revenue + top 5 recovery actions */}
       {mounted && allRows.length > 0 && (
         <RevenueRecoveryEngine
           rows={allRows}
@@ -14856,21 +15103,23 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         />
       )}
 
-      {/* v3.2.1 Top Revenue Opportunities — top 5 by expected value */}
-      {mounted && allRows.length > 0 && (
-        <TopRevenueOpportunities rows={allRows} now={renderNow || Date.now()} />
-      )}
-
-      {/* v2.0 Revenue Intelligence — "Bu Haftaki Ticari Görünüm" */}
-      {mounted && allRows.length > 0 && (
-        <WeeklyCommercialOutlook rows={allRows} now={renderNow || Date.now()} />
-      )}
-
       </>)}
 
       {/* OPPORTUNITIES workspace (part 1) — v3.9.4 Founder Daily Operating Desk */}
       {workspaceTab === "opportunities" && (
       <>
+
+      {/* Workspace identity */}
+      <WorkspaceHeader
+        accent="indigo"
+        icon={<IconSpark className="h-4 w-4 text-indigo-200" />}
+        title={locale === "tr" ? "Gelir Kuyruğu" : "Revenue Queue"}
+        subtitle={
+          locale === "tr"
+            ? "Bugünün gelir odaklı operasyon masası ve fırsat kuyruğu"
+            : "Today's revenue-first operating desk and opportunity queue"
+        }
+      />
 
       {/* v3.9.4 Founder Operating Desk: daily action metrics + revenue impact */}
       {mounted && allRows.length > 0 && (
@@ -14881,15 +15130,40 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         />
       )}
 
-      {/* v3.9.4 Action sub-tabs: filter queue by action category */}
+      {/* v4.0 BUGÜNÜN GELİR ODAĞI — top 3 revenue priorities, full-width before action tabs */}
+      {mounted && allRows.length > 0 && (
+        <section className="rounded-xl border border-amber-400/20 bg-amber-500/[0.03] p-5 backdrop-blur ring-1 ring-inset ring-amber-400/10">
+          <div className="mb-4 flex items-center gap-2">
+            <div className="flex h-5 w-5 items-center justify-center rounded bg-amber-500/20">
+              <svg className="h-3.5 w-3.5 text-amber-300" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 2l1.5 4.5H14l-3.75 2.75L11.5 14 8 11.25 4.5 14l1.25-4.75L2 6.5h4.5z" fill="currentColor" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200">
+                Bugünün Gelir Odağı
+              </h2>
+              <p className="text-[11px] text-zinc-500">En yüksek gelir öncelikli 3 fırsat</p>
+            </div>
+          </div>
+          <RevenueFocusStrip
+            candidates={revenueQueueCandidates}
+            revenuePriorityMap={revenuePriorityByLeadId}
+            expectedRevenueMap={expectedRevenueByLeadId}
+            onOpenDetail={(id) => setOpenId(id)}
+          />
+        </section>
+      )}
+
+      {/* v4.0 Daily Action Center — Operasyon sub-tabs */}
       {mounted && allRows.length > 0 && (
         <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
           {(
             [
-              { id: "queue" as QueueSubTab, label: "Fırsat Kuyruğu", count: revenueQueueCandidates.length },
+              { id: "queue" as QueueSubTab, label: "Gelir Kuyruğu", count: revenueQueueCandidates.length },
               { id: "calls" as QueueSubTab, label: "Aranacaklar", count: dailyOperationsDesk.calls.length },
               { id: "messages" as QueueSubTab, label: "Mesaj Atılacaklar", count: dailyOperationsDesk.messages.length },
-              { id: "followups" as QueueSubTab, label: "Takip Edilecekler", count: dailyOperationsDesk.followups.length },
+              { id: "followups" as QueueSubTab, label: "Takipler", count: dailyOperationsDesk.followups.length },
               { id: "waiting" as QueueSubTab, label: "Bekleyenler", count: dailyOperationsDesk.waiting.length },
             ]
           ).map(({ id, label, count }) => {
@@ -14913,27 +15187,39 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         </div>
       )}
 
-      {/* v3.9.4 Revenue Focus Strip + Queue + Right Panels (2-column) */}
+      {/* v5.0.1 Opportunity Table + Right Intelligence Panel (2-column) — table is the product core */}
       {mounted && allRows.length > 0 && (
         <div className="grid gap-4 xl:grid-cols-[1fr_300px]">
-          {/* Left: filtered queue by sub-tab */}
-          <RevenueOpportunityQueuePanel
-            candidates={activeQueueCandidates}
-            revenuePriorityMap={revenuePriorityByLeadId}
-            expectedRevenueMap={expectedRevenueByLeadId}
-            onOpenDetail={(id) => setOpenId(id)}
-            onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
-            onContact={contactFromDailyQueue}
-            queueLimitReached={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
-          />
-          {/* Right: revenue focus + reasoning + summary */}
-          <div className="space-y-4">
-            <RevenueFocusStrip
-              candidates={revenueQueueCandidates}
-              revenuePriorityMap={revenuePriorityByLeadId}
+          {/* Left: Opportunity Table — the default revenue-operations surface */}
+          <section className="rounded-xl border border-indigo-400/15 bg-white/[0.015] p-4 backdrop-blur ring-1 ring-inset ring-white/5">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="flex h-5 w-5 items-center justify-center rounded bg-indigo-500/20">
+                <IconSpark className="h-3.5 w-3.5 text-indigo-200" />
+              </div>
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
+                {locale === "tr" ? "Fırsat Tablosu" : "Opportunity Table"}
+              </h2>
+              <span className="text-[11px] text-zinc-500">
+                {locale === "tr" ? "Revenue Priority sırasına göre" : "Sorted by Revenue Priority"}
+              </span>
+              <span className="ml-auto tabular-nums text-[11px] text-zinc-600">
+                {activeQueueCandidates.length} {locale === "tr" ? "fırsat" : "leads"}
+              </span>
+            </div>
+            <LeadOpportunityTable
+              rows={activeQueueCandidates.map((c) => c.row)}
+              packageMap={packageByLeadId}
               expectedRevenueMap={expectedRevenueByLeadId}
+              revenuePriorityMap={revenuePriorityByLeadId}
+              contactFinderMap={contactFinderMap}
+              openId={openId}
+              now={renderNow}
               onOpenDetail={(id) => setOpenId(id)}
+              getActivityLabel={getLastOutreachActivityLabel}
             />
+          </section>
+          {/* Right: reasoning + summary */}
+          <div className="space-y-4">
             <QueueReasoningPanel
               topCandidate={activeQueueCandidates[0] ?? null}
               revenuePriorityMap={revenuePriorityByLeadId}
@@ -14990,52 +15276,71 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       </>)}
 
-      {/* OPPORTUNITIES workspace (part 3 — import) */}
-      {workspaceTab === "opportunities" && (
+      {/* ACQUISITION workspace (v5.0 — Lead Edinimi: import + sync + results, moved out of main ops) */}
+      {workspaceTab === "acquisition" && (
       <>
+
+      {/* Acquisition identity */}
+      <WorkspaceHeader
+        accent="indigo"
+        icon={<IconSpark className="h-4 w-4 text-indigo-200" />}
+        title={locale === "tr" ? "Lead Edinimi" : "Lead Acquisition"}
+        subtitle={
+          locale === "tr"
+            ? "Yeni fırsatları içe aktar, senkronize et ve kuyruğa al"
+            : "Import new opportunities, sync and queue them"
+        }
+      />
 
       {/* Import */}
       <ImportPanel onImport={handleImport} hasCachedResults={hasCachedImportResults} />
 
-      <section className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void syncLeadsToAirtable()}
-            disabled={airtableBusy !== null}
-            className="inline-flex items-center justify-center rounded-md border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {airtableBusy === "sync" ? t("syncing", locale) : t("sync_to_airtable", locale)}
-          </button>
-          <button
-            type="button"
-            onClick={() => void loadLeadsFromAirtable()}
-            disabled={airtableBusy !== null}
-            className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {airtableBusy === "load" ? t("loading", locale) : t("load_from_airtable", locale)}
-          </button>
-          {airtableConnected === true && (
-            <span className="text-xs text-emerald-300">{t("airtable_connected", locale)}</span>
-          )}
+      <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02]">
+        <div className="border-b border-white/5 px-5 py-3">
+          <h2 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+            {locale === "tr" ? "Senkronizasyon" : "Synchronization"}
+          </h2>
         </div>
-        {airtableWarning && <p className="mt-2 text-xs text-amber-300">{airtableWarning}</p>}
-        {airtableSyncStatus && <p className="mt-2 text-xs text-zinc-300">{airtableSyncStatus}</p>}
+        <div className="p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void syncLeadsToAirtable()}
+              disabled={airtableBusy !== null}
+              className="inline-flex items-center justify-center rounded-md border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {airtableBusy === "sync" ? t("syncing", locale) : t("sync_to_airtable", locale)}
+            </button>
+            <button
+              type="button"
+              onClick={() => void loadLeadsFromAirtable()}
+              disabled={airtableBusy !== null}
+              className="inline-flex items-center justify-center rounded-md border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {airtableBusy === "load" ? t("loading", locale) : t("load_from_airtable", locale)}
+            </button>
+            {airtableConnected === true && (
+              <span className="text-xs text-emerald-300">{t("airtable_connected", locale)}</span>
+            )}
+          </div>
+          {airtableWarning && <p className="mt-2 text-xs text-amber-300">{airtableWarning}</p>}
+          {airtableSyncStatus && <p className="mt-2 text-xs text-zinc-300">{airtableSyncStatus}</p>}
+        </div>
       </section>
 
       {/* Last Import Results */}
       <section className="overflow-hidden rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] backdrop-blur ring-1 ring-inset ring-indigo-500/10">
-        <div className="border-b border-white/5 px-4 py-3">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+        <div className="border-b border-white/5 px-5 py-4">
+          <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-indigo-200">
             {t("last_import_results", locale)}
           </h2>
-          <p className="mt-1 text-xs text-zinc-400">{t("last_import_sub", locale)}</p>
+          <p className="mt-1 text-[11px] text-zinc-400">{t("last_import_sub", locale)}</p>
         </div>
 
         {!hasImportRun ? (
-          <div className="px-4 py-6 text-xs text-zinc-500">{t("run_import_prompt", locale)}</div>
+          <div className="px-5 py-6 text-xs text-zinc-500">{t("run_import_prompt", locale)}</div>
         ) : latestImportRows.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-amber-300">{t("no_new_leads_import", locale)}</div>
+          <div className="px-5 py-6 text-sm text-amber-300">{t("no_new_leads_import", locale)}</div>
         ) : (
           <div className="p-4">
             <div className="mb-3 flex items-center justify-between">
@@ -15258,13 +15563,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {workspaceTab === "execution" && (
       <>
 
-      <section className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3 ring-1 ring-inset ring-emerald-500/10">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      <section className="overflow-hidden rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] ring-1 ring-inset ring-emerald-500/10">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-emerald-200">
+            <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-200">
               {t("todays_queue", locale)}
             </h2>
-            <p className="mt-0.5 text-[11px] text-zinc-500">
+            <p className="mt-1 text-[11px] text-zinc-500">
               {fillTemplate(t("queue_section_summary", locale), {
                 active: safeActiveQueueCount,
                 limit: DAILY_OUTREACH_LIMIT,
@@ -15294,7 +15599,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>
         </div>
         {dailyOutreach.todayLog.length > 0 ? (
-          <div className="mt-3 max-h-28 overflow-y-auto border-t border-white/5 pt-2">
+          <div className="max-h-28 overflow-y-auto p-4 pt-3">
             <ul className="space-y-1.5 text-[11px] text-zinc-300">
               {dedupeLeadIds(dailyOutreach.todayLog).map((qid, index) => {
                 const qrow = allRowsById.get(qid);
@@ -15344,26 +15649,26 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             </ul>
           </div>
         ) : (
-          <p className="mt-2 text-[11px] text-zinc-500">{t("queue_empty_hint", locale)}</p>
+          <p className="px-5 py-4 text-[11px] text-zinc-500">{t("queue_empty_hint", locale)}</p>
         )}
       </section>
 
-      <section className="rounded-xl border border-orange-500/20 bg-orange-500/[0.04] px-4 py-3 ring-1 ring-inset ring-orange-500/10">
-        <div className="flex items-center justify-between gap-2">
+      <section className="overflow-hidden rounded-xl border border-orange-500/20 bg-orange-500/[0.04] ring-1 ring-inset ring-orange-500/10">
+        <div className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-orange-200">
+            <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-orange-200">
               {t("follow_up_due_section", locale)}
             </h2>
-            <p className="mt-0.5 text-[11px] text-zinc-500">{t("follow_up_due_sub", locale)}</p>
+            <p className="mt-1 text-[11px] text-zinc-500">{t("follow_up_due_sub", locale)}</p>
           </div>
-          <span className="rounded-md bg-black/20 px-2 py-1 text-[11px] text-orange-200">
+          <span className="rounded-md bg-black/20 px-2.5 py-1 text-[11px] font-medium text-orange-200">
             {safeFollowUpDueCount} {t("due_count", locale)}
           </span>
         </div>
         {safeFollowUpDueCount === 0 ? (
-          <p className="mt-2 text-[11px] text-zinc-500">{t("no_follow_up_due", locale)}</p>
+          <p className="px-5 py-4 text-[11px] text-zinc-500">{t("no_follow_up_due", locale)}</p>
         ) : (
-          <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1">
+          <div className="max-h-44 space-y-2 overflow-y-auto p-4 pr-3">
             {followUpDueRows.map((row, index) => {
               const attempts = row._s.contactAttempts ?? 0;
               const dueAt = followUpTargetTimestamp(row._s);
@@ -15445,57 +15750,81 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         </section>
       )}
 
-      {/* OPPORTUNITIES workspace (part 4 — hot leads) */}
-      {workspaceTab === "opportunities" && (
+      {/* PIPELINE (intelligence) — Priority Opportunities (v5.0: Hot Leads moved out of main ops) */}
+      {workspaceTab === "intelligence" && (
       <>
 
+      {/* Priority opportunities identity */}
+      <WorkspaceHeader
+        accent="orange"
+        icon={<IconSpark className="h-4 w-4 text-orange-200" />}
+        title={locale === "tr" ? "Öncelikli Fırsatlar" : "Priority Opportunities"}
+        subtitle={
+          locale === "tr"
+            ? "En sıcak hedefler — bugün öne çıkan kritik fırsatlar"
+            : "Hottest targets — critical opportunities surfacing today"
+        }
+      />
+
       {/* Hot 10 */}
-      <section>
-        <div className="mb-3 flex items-end justify-between">
-          <div>
-            <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-zinc-300">
-              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
-              {useLatestImportHotLeads
-                ? t("hot_targets_import", locale)
-                : t("hot_targets", locale)}
-            </h2>
-            <p className="text-xs text-zinc-500">{t("hot_targets_sub", locale)}</p>
-          </div>
+      <section className="overflow-hidden rounded-xl border border-orange-400/15 bg-orange-500/[0.03] ring-1 ring-inset ring-orange-400/10">
+        <div className="border-b border-white/5 px-5 py-4">
+          <h2 className="flex items-center gap-2.5 text-xs font-bold uppercase tracking-[0.12em] text-orange-200">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
+            {useLatestImportHotLeads
+              ? t("hot_targets_import", locale)
+              : t("hot_targets", locale)}
+          </h2>
+          <p className="mt-1 text-[11px] text-zinc-500">{t("hot_targets_sub", locale)}</p>
         </div>
-        <div className="-mx-1 grid grid-flow-col auto-cols-[260px] gap-3 overflow-x-auto px-1 pb-2 sm:auto-cols-[280px]">
-          {hot5.map((lead, i) => (
-            <HotCard
-              key={renderLeadKey("hot", lead, i)}
-              rank={i + 1}
-              lead={lead}
-              status={lead._s.status}
-              onAction={(id) => setOpenId(id)}
-              onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
-              queueDisabled={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
-              fromLatestImport={useLatestImportHotLeads}
-              outreachActivityLabel={getLastOutreachActivityLabel(lead.id, lead._s, renderNow)}
-            />
-          ))}
+        <div className="p-4">
+          <div className="-mx-1 grid grid-flow-col auto-cols-[260px] gap-3 overflow-x-auto px-1 pb-2 sm:auto-cols-[280px]">
+            {hot5.map((lead, i) => (
+              <HotCard
+                key={renderLeadKey("hot", lead, i)}
+                rank={i + 1}
+                lead={lead}
+                status={lead._s.status}
+                onAction={(id) => setOpenId(id)}
+                onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
+                queueDisabled={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
+                fromLatestImport={useLatestImportHotLeads}
+                outreachActivityLabel={getLastOutreachActivityLabel(lead.id, lead._s, renderNow)}
+              />
+            ))}
+          </div>
         </div>
       </section>
 
       </>)}
 
-      {/* INTELLIGENCE workspace — All Leads */}
+      {/* INTELLIGENCE workspace — v4.2 Lead Intelligence Workspace */}
       {workspaceTab === "intelligence" && (
       <>
 
+      {/* Workspace identity */}
+      <WorkspaceHeader
+        accent="violet"
+        icon={<IconSpark className="h-4 w-4 text-violet-200" />}
+        title={locale === "tr" ? "Lead İstihbaratı" : "Lead Intelligence"}
+        subtitle={
+          locale === "tr"
+            ? "Akıllı segmentlerle keşfet, tüm lead havuzunu yönet"
+            : "Explore via smart segments, manage the full lead pool"
+        }
+      />
+
       {/* v3.8.7 Smart Lead Segments */}
       <section className="overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.03] backdrop-blur ring-1 ring-inset ring-violet-400/10">
-        <div className="border-b border-white/5 px-4 py-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-violet-200">
+        <div className="border-b border-white/5 px-5 py-4">
+          <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-violet-200">
             {locale === "tr" ? "Akıllı Lead Segmentleri" : "Smart Lead Segments"}
           </h2>
-          <p className="mt-0.5 text-[11px] text-zinc-500">
+          <p className="mt-1 text-[11px] text-zinc-500">
             {locale === "tr" ? "Tek tıkla lead gruplarını keşfet" : "Discover lead groups with one click"}
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-2 p-4 sm:grid-cols-3">
           {(
             [
               {
@@ -15598,7 +15927,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {/* Active segment filter bar */}
       {smartSegment && (
-        <div className="flex items-center justify-between rounded-lg border border-violet-400/20 bg-violet-500/[0.05] px-3 py-2">
+        <div className="flex items-center justify-between rounded-xl border border-violet-400/20 bg-violet-500/[0.05] px-4 py-3">
           <span className="text-[11px] text-zinc-400">
             {locale === "tr" ? "Filtre:" : "Filter:"}{" "}
             <span className="font-medium text-violet-200">
@@ -15625,17 +15954,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {/* All Leads (collapsible) */}
       <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur">
-        <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
           <div>
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
+            <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-zinc-200">
               {t("all_leads", locale)}
             </h2>
-            <p className="mt-0.5 text-xs text-zinc-500">{t("all_leads_sub", locale)}</p>
-            <p className="mt-1 text-[11px] text-zinc-500">{t("all_leads_explainer", locale)}</p>
+            <p className="mt-1 text-[11px] text-zinc-500">{t("all_leads_sub", locale)}</p>
           </div>
           <button
             onClick={() => setAllLeadsOpen((v) => !v)}
-            className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-200 transition hover:bg-white/10"
+            className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-white/10"
           >
             {allLeadsOpen ? t("hide", locale) : t("show", locale)}
           </button>
@@ -15643,7 +15971,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
         {allLeadsOpen && (
           <>
-            <section className="flex flex-col gap-3 border-b border-white/5 p-3 md:flex-row md:items-center md:justify-between">
+            <section className="flex flex-col gap-3 border-b border-white/5 p-4 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
                 <div className="relative flex-1">
                   <input
@@ -15830,6 +16158,26 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 {segmentApplied.length} {t("leads_word", locale)}
               </span>
               <div className="flex items-center gap-4">
+                {/* v5.0 — Liste / Kart view toggle (default Liste = Opportunity Table) */}
+                <div className="flex items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.02] p-0.5">
+                  {([
+                    { id: "list" as const, label: locale === "tr" ? "Liste" : "List" },
+                    { id: "card" as const, label: locale === "tr" ? "Kart" : "Card" },
+                  ]).map(({ id, label }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setLeadViewMode(id)}
+                      className={`rounded px-2 py-1 text-[11px] font-medium transition ${
+                        leadViewMode === id
+                          ? "bg-indigo-500/20 text-indigo-200 ring-1 ring-inset ring-indigo-400/30"
+                          : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
                   <input
                     type="checkbox"
@@ -15850,6 +16198,19 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             </div>
 
             <div className="p-4">
+              {leadViewMode === "list" ? (
+                <LeadOpportunityTable
+                  rows={visibleAllLeads}
+                  packageMap={packageByLeadId}
+                  expectedRevenueMap={expectedRevenueByLeadId}
+                  revenuePriorityMap={revenuePriorityByLeadId}
+                  contactFinderMap={contactFinderMap}
+                  openId={openId}
+                  now={renderNow}
+                  onOpenDetail={(id) => setOpenId(id)}
+                  getActivityLabel={getLastOutreachActivityLabel}
+                />
+              ) : (
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {visibleAllLeads.map((row, index) => {
                   const s = row._s;
@@ -16076,6 +16437,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   </div>
                 )}
               </div>
+              )}
             </div>
             {segmentApplied.length > 15 && (
               <div className="flex justify-center border-t border-white/5 px-4 py-3">

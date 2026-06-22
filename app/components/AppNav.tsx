@@ -4,12 +4,19 @@ import { useState } from "react";
 import Link from "next/link";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 
-type WorkspaceId = "opportunities" | "revenue" | "execution" | "intelligence" | "followups";
+type WorkspaceId =
+  | "opportunities"
+  | "revenue"
+  | "execution"
+  | "intelligence"
+  | "followups"
+  | "acquisition";
 
 type NavItem = {
   label: { en: string; tr: string };
   href?: string;
   workspace?: WorkspaceId;
+  subTab?: string;
   isSoon?: boolean;
 };
 
@@ -19,59 +26,42 @@ type NavGroup = {
   items: NavItem[];
 };
 
+// v5.0 — sidebar is the single navigation system (top workspace tabs removed).
 const NAV_GROUPS: NavGroup[] = [
   {
     id: "overview",
     label: { en: "Overview", tr: "Genel Bakış" },
     items: [
       { label: { en: "Command Center", tr: "Komuta Merkezi" }, workspace: "execution" },
-      { label: { en: "Revenue Pipeline", tr: "Gelir Hattı" }, workspace: "revenue" },
-      { label: { en: "Commercial Overview", tr: "Ticari Bakış" }, workspace: "revenue" },
+      { label: { en: "Revenue Queue", tr: "Gelir Kuyruğu" }, workspace: "opportunities", subTab: "queue" },
+      { label: { en: "Revenue Analysis", tr: "Gelir Analizi" }, workspace: "revenue" },
     ],
   },
   {
-    id: "opportunities",
-    label: { en: "Opportunities", tr: "Fırsatlar" },
+    id: "pipeline",
+    label: { en: "Pipeline", tr: "Pipeline" },
     items: [
       { label: { en: "Lead List", tr: "Lead Listesi" }, workspace: "intelligence" },
-      { label: { en: "ICP Analysis", tr: "ICP Analizi" }, workspace: "opportunities" },
-      { label: { en: "Opportunity Queue", tr: "Fırsat Kuyruğu" }, workspace: "opportunities" },
-      { label: { en: "Contact Intel", tr: "İletişim Zekası" }, workspace: "execution" },
+      { label: { en: "ICP Analysis", tr: "ICP Analizi" }, workspace: "intelligence", subTab: "icp" },
+      { label: { en: "Contact Intelligence", tr: "İletişim Zekası" }, workspace: "intelligence", subTab: "comms" },
     ],
   },
   {
-    id: "revenue",
-    label: { en: "Revenue", tr: "Gelir" },
+    id: "operation",
+    label: { en: "Operations", tr: "Operasyon" },
     items: [
-      { label: { en: "Revenue Potential", tr: "Gelir Potansiyeli" }, workspace: "revenue" },
-      { label: { en: "Forecast", tr: "Tahmin" }, workspace: "revenue" },
-      { label: { en: "Risk", tr: "Risk" }, workspace: "revenue" },
-      { label: { en: "Recovery", tr: "Toparlanma" }, workspace: "revenue" },
-    ],
-  },
-  {
-    id: "execution",
-    label: { en: "Execution", tr: "Uygulama" },
-    items: [
-      { label: { en: "Sales Plan", tr: "Satış Planı" }, workspace: "execution" },
-      { label: { en: "Activity Timeline", tr: "Aktivite Geçmişi" }, workspace: "execution" },
-      { label: { en: "Founder Assistant", tr: "Kurucu Asistanı" }, workspace: "execution" },
-    ],
-  },
-  {
-    id: "followups",
-    label: { en: "Follow-up", tr: "Takip" },
-    items: [
-      { label: { en: "Today's Follow-ups", tr: "Bugünün Takipleri" }, workspace: "followups" },
+      { label: { en: "Calls", tr: "Aranacaklar" }, workspace: "opportunities", subTab: "calls" },
+      { label: { en: "Messages", tr: "Mesaj Atılacaklar" }, workspace: "opportunities", subTab: "messages" },
+      { label: { en: "Follow-ups", tr: "Takipler" }, workspace: "followups" },
+      { label: { en: "Waiting", tr: "Bekleyenler" }, workspace: "opportunities", subTab: "waiting" },
     ],
   },
   {
     id: "settings",
     label: { en: "Settings", tr: "Ayarlar" },
     items: [
-      { label: { en: "Integrations", tr: "Entegrasyonlar" }, isSoon: true },
-      { label: { en: "Configuration", tr: "Yapılandırma" }, isSoon: true },
-      { label: { en: "System Settings", tr: "Sistem Ayarları" }, isSoon: true },
+      { label: { en: "Lead Acquisition", tr: "Entegrasyonlar" }, workspace: "acquisition" },
+      { label: { en: "Settings", tr: "Ayarlar" }, isSoon: true },
     ],
   },
 ];
@@ -80,17 +70,19 @@ export default function AppNav({
   currentPath,
   showLocaleToggle = false,
   activeWorkspace,
+  activeSubTab,
   onNavigate,
 }: {
   currentPath: string;
   showLocaleToggle?: boolean;
   activeWorkspace?: WorkspaceId;
-  onNavigate?: (workspace: WorkspaceId) => void;
+  activeSubTab?: string;
+  onNavigate?: (workspace: WorkspaceId, subTab?: string) => void;
 }) {
   const { locale } = useLocale();
 
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => {
-    const initial = new Set<string>(["overview", "opportunities"]);
+    const initial = new Set<string>(["overview", "pipeline", "operation"]);
     for (const group of NAV_GROUPS) {
       if (
         group.items.some(
@@ -112,11 +104,20 @@ export default function AppNav({
     });
   }
 
+  function isItemActive(item: NavItem): boolean {
+    if (item.isSoon) return false;
+    if (item.href) return item.href === currentPath && currentPath !== "/";
+    if (!item.workspace) return false;
+    if (item.workspace !== activeWorkspace) return false;
+    if (item.subTab) return item.subTab === activeSubTab;
+    return true;
+  }
+
   return (
     <nav className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-zinc-600">
-          {locale === "tr" ? "Navigasyon" : "Navigation"}
+      <div className="mb-4 flex items-center justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-zinc-500">
+          {locale === "tr" ? "Founder Revenue OS" : "Founder Revenue OS"}
         </span>
         {showLocaleToggle && <LocaleToggle />}
       </div>
@@ -124,20 +125,14 @@ export default function AppNav({
       <div className="space-y-0.5">
         {NAV_GROUPS.map((group) => {
           const isOpen = openGroups.has(group.id);
-          const hasActive = group.items.some(
-            (item) =>
-              !item.isSoon &&
-              (item.href
-                ? item.href === currentPath && currentPath !== "/"
-                : item.workspace === activeWorkspace),
-          );
+          const hasActive = group.items.some((item) => isItemActive(item));
 
           return (
             <div key={group.id}>
               <button
                 type="button"
                 onClick={() => toggleGroup(group.id)}
-                className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] transition-colors ${
+                className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-[10px] font-bold uppercase tracking-[0.14em] transition-colors ${
                   hasActive
                     ? "bg-indigo-500/15 text-indigo-300"
                     : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
@@ -180,9 +175,9 @@ export default function AppNav({
                     }
 
                     if (item.workspace) {
-                      const isActive = item.workspace === activeWorkspace;
+                      const active = isItemActive(item);
                       const sharedClass = `block w-full rounded px-2 py-1 text-left text-[11px] transition-colors ${
-                        isActive
+                        active
                           ? "bg-orange-500/15 font-medium text-orange-200"
                           : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
                       }`;
@@ -191,7 +186,7 @@ export default function AppNav({
                           <button
                             key={label}
                             type="button"
-                            onClick={() => onNavigate(item.workspace!)}
+                            onClick={() => onNavigate(item.workspace!, item.subTab)}
                             className={sharedClass}
                           >
                             {label}

@@ -172,9 +172,9 @@ export default function ImportPanel({
     result && !loading ? formatImportSummary(result, locale) : null;
 
   return (
-    <section className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] p-4 backdrop-blur ring-1 ring-inset ring-indigo-500/10">
-      <div className="mb-3 flex items-center gap-2">
-        <div className="flex h-5 w-5 items-center justify-center rounded bg-indigo-500/20">
+    <section className="overflow-hidden rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] backdrop-blur ring-1 ring-inset ring-indigo-500/10">
+      <div className="flex items-center gap-3 border-b border-white/5 px-5 py-4">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-indigo-500/20">
           <svg
             viewBox="0 0 24 24"
             fill="none"
@@ -182,13 +182,13 @@ export default function ImportPanel({
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className="h-3.5 w-3.5 text-indigo-300"
+            className="h-4 w-4 text-indigo-300"
             aria-hidden="true"
           >
             <path d="M12 5v14M5 12l7-7 7 7" />
           </svg>
         </div>
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
+        <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-indigo-200">
           {t("import_leads", locale)}
         </h2>
         <div className="ml-auto flex items-center gap-2">
@@ -202,7 +202,7 @@ export default function ImportPanel({
       <form
         onSubmit={handleSubmit}
         aria-busy={loading}
-        className="flex flex-col gap-3"
+        className="flex flex-col gap-3 p-5"
       >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap">
           <div className="flex min-w-[160px] flex-1 flex-col gap-1">
@@ -381,7 +381,7 @@ export default function ImportPanel({
         </div>
       </form>
 
-      <p className="mt-1 text-[10px] text-zinc-500">
+      <p className="px-5 pb-4 text-[10px] text-zinc-500">
         {SOURCES.find((s) => s.value === source)?.hint}
         {" · "}
         {t("import_hint_footer", locale)}
