@@ -7040,6 +7040,493 @@ function DailyOpportunityQueue({
   );
 }
 
+// ─── v3.9.3 Revenue-Aware Opportunity Queue ─────────────────────────────────
+
+/** v3.9.3 — Revenue-prioritized queue grouped by tier (Critical / High / Medium / Low). */
+function RevenueOpportunityQueuePanel({
+  candidates,
+  revenuePriorityMap,
+  expectedRevenueMap,
+  onOpenDetail,
+  onAddToQueue,
+  onContact,
+  queueLimitReached,
+}: {
+  candidates: QueueCandidate[];
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>;
+  expectedRevenueMap: Map<string, ExpectedRevenueResult>;
+  onOpenDetail: (id: string) => void;
+  onAddToQueue: (id: string) => void;
+  onContact: (id: string, channel: "whatsapp" | "phone" | "website", url: string) => void;
+  queueLimitReached: boolean;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const critical = candidates.filter((c) => revenuePriorityMap.get(c.row.id)?.revenuePriorityTier === "critical");
+  const high = candidates.filter((c) => revenuePriorityMap.get(c.row.id)?.revenuePriorityTier === "high");
+  const medium = candidates.filter((c) => revenuePriorityMap.get(c.row.id)?.revenuePriorityTier === "medium");
+  const low = candidates.filter((c) => revenuePriorityMap.get(c.row.id)?.revenuePriorityTier === "low");
+
+  const renderTierSection = (
+    title: string,
+    subtitle: string,
+    items: QueueCandidate[],
+    accentClass: string,
+    borderBgClass: string,
+    limit = 10,
+  ) => {
+    if (items.length === 0) return null;
+    const shown = items.slice(0, limit);
+    const more = items.length - shown.length;
+    return (
+      <div className={`rounded-lg border p-3 ${borderBgClass}`}>
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className={`text-xs font-semibold uppercase tracking-wider ${accentClass}`}>
+            {title}
+            <span className="ml-1.5 text-[10px] font-normal tabular-nums text-zinc-500">({items.length})</span>
+          </h3>
+          <span className="text-[10px] text-zinc-500">{subtitle}</span>
+        </div>
+        <div className="space-y-1.5">
+          {shown.map((c, i) => {
+            const er = expectedRevenueMap.get(c.row.id);
+            const rp = revenuePriorityMap.get(c.row.id);
+            return (
+              <div
+                key={c.row.id}
+                className="flex items-center gap-2 rounded-md border border-white/8 bg-white/[0.015] px-2.5 py-2 transition hover:bg-white/[0.03]"
+              >
+                <span className="w-4 shrink-0 text-center text-[10px] font-bold tabular-nums text-zinc-600">
+                  {i + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="truncate text-[13px] font-medium text-zinc-100">{c.row.name}</span>
+                    {c.row.city && (
+                      <span className="shrink-0 text-[10px] text-zinc-500">· {c.row.city}</span>
+                    )}
+                    {rp && (
+                      <span className="rounded bg-white/5 px-1 py-0.5 text-[10px] font-medium tabular-nums text-zinc-300 ring-1 ring-inset ring-white/10">
+                        {rp.revenuePriorityScore}
+                      </span>
+                    )}
+                    {er && er.weightedExpectedMonthlyRevenue > 0 && (
+                      <span className="shrink-0 text-[10px] font-medium text-emerald-300">
+                        {formatTRY(er.weightedExpectedMonthlyRevenue)}/ay
+                      </span>
+                    )}
+                    {c.inOutreachQueue && (
+                      <span className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] text-indigo-200 ring-1 ring-inset ring-indigo-400/30">
+                        {tr ? "Kuyrukta" : "In queue"}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[10px]">
+                    <span className="truncate text-zinc-500">{c.reasonText}</span>
+                    {er && er.expectedCustomerProbability > 0 && (
+                      <span className="shrink-0 text-[10px] text-zinc-500">
+                        %{Math.round(er.expectedCustomerProbability * 100)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onOpenDetail(c.row.id)}
+                    className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-zinc-300 transition hover:bg-white/10"
+                  >
+                    {tr ? "Detay" : "Detail"}
+                  </button>
+                  {c.channels.waUrl && (
+                    <button
+                      type="button"
+                      onClick={() => onContact(c.row.id, "whatsapp", c.channels.waUrl!)}
+                      className="rounded border border-emerald-400/30 bg-emerald-500/10 px-1.5 py-1 text-[10px] font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+                    >
+                      WA
+                    </button>
+                  )}
+                  {!c.channels.waUrl && c.channels.phone && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onContact(c.row.id, "phone", `tel:${c.channels.phone!.replace(/\s+/g, "")}`)
+                      }
+                      className="rounded border border-sky-400/30 bg-sky-500/10 px-1.5 py-1 text-[10px] font-medium text-sky-200 transition hover:bg-sky-500/20"
+                    >
+                      {tr ? "Ara" : "Call"}
+                    </button>
+                  )}
+                  {!c.channels.waUrl && !c.channels.phone && c.channels.websiteUrl && (
+                    <button
+                      type="button"
+                      onClick={() => onContact(c.row.id, "website", c.channels.websiteUrl!)}
+                      className="rounded border border-white/10 bg-white/5 px-1.5 py-1 text-[10px] text-zinc-300 transition hover:bg-white/10"
+                    >
+                      Web
+                    </button>
+                  )}
+                  {!c.inOutreachQueue && !c.followUpScheduled && (
+                    <button
+                      type="button"
+                      onClick={() => onAddToQueue(c.row.id)}
+                      disabled={queueLimitReached}
+                      className="rounded border border-fuchsia-400/25 bg-fuchsia-500/10 px-1.5 py-1 text-[10px] font-medium text-fuchsia-200 transition hover:bg-fuchsia-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {tr ? "Kuyruk" : "Queue"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {more > 0 && (
+            <div className="px-1 pt-1 text-[11px] text-zinc-600">
+              {tr ? `+${more} daha` : `+${more} more`}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if (candidates.length === 0) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-8 text-center text-sm text-zinc-500">
+        {tr ? "Kuyruğa eklenecek fırsat bulunamadı." : "No opportunities for the queue."}
+      </div>
+    );
+  }
+
+  return (
+    <section className="rounded-xl border border-indigo-400/15 bg-white/[0.015] p-5 backdrop-blur ring-1 ring-inset ring-white/5">
+      <div className="mb-5 flex items-center gap-2">
+        <div className="flex h-5 w-5 items-center justify-center rounded bg-indigo-500/20">
+          <IconSpark className="h-3.5 w-3.5 text-indigo-200" />
+        </div>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
+          {tr ? "Fırsat Kuyruğu" : "Opportunity Queue"}
+        </h2>
+        <span className="text-[11px] text-zinc-500">
+          {tr ? "Revenue Priority sırasına göre" : "Sorted by Revenue Priority"}
+        </span>
+        <span className="ml-auto tabular-nums text-[11px] text-zinc-600">
+          {candidates.length} {tr ? "fırsat" : "leads"}
+        </span>
+      </div>
+      <div className="space-y-3">
+        {renderTierSection(
+          tr ? "Kritik" : "Critical",
+          tr ? "Hemen harekete geç" : "Act immediately",
+          critical,
+          "text-rose-300",
+          "border-rose-400/25 bg-rose-500/[0.04]",
+          10,
+        )}
+        {renderTierSection(
+          tr ? "Yüksek" : "High",
+          tr ? "Bugün iletişime geç" : "Contact today",
+          high,
+          "text-amber-300",
+          "border-amber-400/20 bg-amber-500/[0.03]",
+          10,
+        )}
+        {renderTierSection(
+          tr ? "Orta" : "Medium",
+          tr ? "Bu hafta takip et" : "Follow up this week",
+          medium,
+          "text-indigo-300",
+          "border-indigo-400/15 bg-indigo-500/[0.03]",
+          8,
+        )}
+        {renderTierSection(
+          tr ? "Düşük" : "Low",
+          tr ? "Uzun vadeli fırsatlar" : "Long-term",
+          low,
+          "text-zinc-400",
+          "border-white/8 bg-white/[0.01]",
+          5,
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** v3.9.3 — "Neden Bu Sıralama?" — queue sorting explanation panel (right side). */
+function QueueReasoningPanel({
+  topCandidate,
+  revenuePriorityMap,
+  expectedRevenueMap,
+}: {
+  topCandidate: QueueCandidate | null;
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>;
+  expectedRevenueMap: Map<string, ExpectedRevenueResult>;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+  const row = topCandidate?.row ?? null;
+  const er = row ? expectedRevenueMap.get(row.id) ?? null : null;
+  const rp = row ? revenuePriorityMap.get(row.id) ?? null : null;
+
+  const factors: { label: string; desc: string; accent: string }[] = [
+    {
+      label: tr ? "Ağırlıklı MRR" : "Weighted MRR",
+      desc: tr ? "Paket fiyatı × dönüşüm olasılığı" : "Package price × conversion probability",
+      accent: "text-emerald-300",
+    },
+    {
+      label: tr ? "Dönüşüm Olasılığı" : "Conv. Probability",
+      desc: tr ? "Sinyal ve pipeline verisiyle hesaplanır" : "Derived from signals and pipeline",
+      accent: "text-sky-300",
+    },
+    {
+      label: tr ? "Revenue Priority Skoru" : "Revenue Priority Score",
+      desc: tr ? "0–100 birleşik skor" : "0–100 composite score",
+      accent: "text-indigo-300",
+    },
+    {
+      label: tr ? "Hazırlık Skoru" : "Readiness Score",
+      desc: tr ? "İletişim kanalı ve veri kalitesi" : "Contact channel + data quality",
+      accent: "text-violet-300",
+    },
+    {
+      label: tr ? "Son Aktivite" : "Last Activity",
+      desc: tr ? "En son temas veya takip tarihi" : "Latest contact or follow-up date",
+      accent: "text-amber-300",
+    },
+    {
+      label: tr ? "İletişim Hazırlığı" : "Contact Readiness",
+      desc: tr ? "WhatsApp, telefon veya web" : "WhatsApp, phone or web",
+      accent: "text-fuchsia-300",
+    },
+  ];
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-300">
+        {tr ? "Neden Bu Sıralama?" : "Why This Order?"}
+      </div>
+      {row && er && rp && (
+        <div className="mb-3 rounded-lg border border-indigo-400/20 bg-indigo-500/[0.04] p-2.5">
+          <div className="text-[11px] font-semibold text-zinc-200">{row.name}</div>
+          <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1">
+            <div className="text-[10px]">
+              <span className="text-zinc-500">{tr ? "Ağırlıklı MRR" : "W-MRR"}: </span>
+              <span className="font-medium text-emerald-300">{formatTRY(er.weightedExpectedMonthlyRevenue)}</span>
+            </div>
+            <div className="text-[10px]">
+              <span className="text-zinc-500">{tr ? "Olasılık" : "Prob."}: </span>
+              <span className="font-medium text-sky-300">%{Math.round(er.expectedCustomerProbability * 100)}</span>
+            </div>
+            <div className="text-[10px]">
+              <span className="text-zinc-500">{tr ? "R.Priority" : "R.Priority"}: </span>
+              <span className="font-medium text-indigo-300">{rp.revenuePriorityScore}</span>
+            </div>
+            <div className="text-[10px]">
+              <span className="text-zinc-500">{tr ? "Hazırlık" : "Readiness"}: </span>
+              <span className="font-medium text-violet-300">{row.contactReadinessScore ?? "—"}</span>
+            </div>
+          </div>
+          {rp.rankingReasoning.length > 0 && (
+            <div className="mt-2 space-y-0.5">
+              {rp.rankingReasoning.slice(0, 3).map((r, i) => (
+                <div key={i} className="text-[10px] text-zinc-500">· {r}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="space-y-2.5">
+        {factors.map((f, i) => (
+          <div key={i} className="flex items-start gap-2">
+            <span className={`mt-0.5 w-3.5 shrink-0 text-center text-[11px] font-bold tabular-nums ${f.accent}`}>
+              {i + 1}
+            </span>
+            <div>
+              <div className={`text-[11px] font-semibold ${f.accent}`}>{f.label}</div>
+              <div className="text-[10px] text-zinc-500">{f.desc}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** v3.9.3 — "Günün Operasyon Planı" daily action breakdown panel. */
+function DailyActionPanel({
+  candidates,
+  revenuePriorityMap,
+  onOpenDetail,
+  onContact,
+}: {
+  candidates: QueueCandidate[];
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>;
+  onOpenDetail: (id: string) => void;
+  onContact: (id: string, channel: "whatsapp" | "phone" | "website", url: string) => void;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  const callReady = candidates.filter((c) => {
+    const rp = revenuePriorityMap.get(c.row.id);
+    if (!rp || (rp.revenuePriorityTier !== "critical" && rp.revenuePriorityTier !== "high")) return false;
+    return Boolean(c.channels.phone) || Boolean(c.channels.waUrl);
+  });
+
+  const msgReady = candidates.filter((c) => {
+    const rp = revenuePriorityMap.get(c.row.id);
+    if (!rp || (rp.revenuePriorityTier !== "critical" && rp.revenuePriorityTier !== "high")) return false;
+    return Boolean(c.channels.waUrl) || Boolean(c.row.instagram?.trim());
+  });
+
+  const followUpsDue = candidates.filter((c) => c.followUpDue);
+  const awaitingReply = candidates.filter(
+    (c) => c.row._s.status === "contacted" || c.row._s.status === "replied",
+  );
+
+  const renderMiniRow = (c: QueueCandidate) => (
+    <div key={c.row.id} className="flex items-center gap-1.5 py-1.5">
+      <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-200">{c.row.name}</span>
+      <div className="ml-auto flex shrink-0 gap-1">
+        {c.channels.waUrl && (
+          <button
+            type="button"
+            onClick={() => onContact(c.row.id, "whatsapp", c.channels.waUrl!)}
+            className="rounded border border-emerald-400/30 bg-emerald-500/10 px-1 py-0.5 text-[9px] font-medium text-emerald-200 transition hover:bg-emerald-500/20"
+          >
+            WA
+          </button>
+        )}
+        {!c.channels.waUrl && c.channels.phone && (
+          <button
+            type="button"
+            onClick={() =>
+              onContact(c.row.id, "phone", `tel:${c.channels.phone!.replace(/\s+/g, "")}`)
+            }
+            className="rounded border border-sky-400/30 bg-sky-500/10 px-1 py-0.5 text-[9px] font-medium text-sky-200 transition hover:bg-sky-500/20"
+          >
+            {tr ? "Ara" : "Call"}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onOpenDetail(c.row.id)}
+          className="rounded border border-white/10 bg-white/5 px-1 py-0.5 text-[9px] text-zinc-400 transition hover:bg-white/10"
+        >
+          →
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderSection = (
+    title: string,
+    count: number,
+    items: QueueCandidate[],
+    accent: string,
+    limit = 4,
+  ) => (
+    <div>
+      <div className={`mb-1 flex items-baseline gap-1.5 text-[11px] font-semibold ${accent}`}>
+        {title}
+        <span className="text-[10px] font-normal text-zinc-500">({count})</span>
+      </div>
+      {items.length === 0 ? (
+        <div className="text-[10px] text-zinc-600">{tr ? "Yok" : "None"}</div>
+      ) : (
+        <div className="divide-y divide-white/[0.04]">
+          {items.slice(0, limit).map(renderMiniRow)}
+          {items.length > limit && (
+            <div className="pt-1 text-[10px] text-zinc-600">
+              +{items.length - limit} {tr ? "daha" : "more"}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-300">
+        {tr ? "Günün Operasyon Planı" : "Daily Action Plan"}
+      </div>
+      <div className="space-y-4">
+        {renderSection(tr ? "Aranacaklar" : "To Call", callReady.length, callReady, "text-sky-300")}
+        {renderSection(tr ? "Mesaj Atılacaklar" : "To Message", msgReady.length, msgReady, "text-emerald-300")}
+        {renderSection(
+          tr ? "Takip Zamanı Gelenler" : "Follow-ups Due",
+          followUpsDue.length,
+          followUpsDue,
+          "text-amber-300",
+        )}
+        {renderSection(
+          tr ? "Bekleyen Yanıtlar" : "Awaiting Reply",
+          awaitingReply.length,
+          awaitingReply,
+          "text-violet-300",
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** v3.9.3 — Revenue summary for queue sourced from v3.9.0 / v3.9.1 engines. */
+function RevenueSummaryPanel({
+  candidates,
+  revenuePriorityMap,
+  expectedRevenueMap,
+}: {
+  candidates: QueueCandidate[];
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>;
+  expectedRevenueMap: Map<string, ExpectedRevenueResult>;
+}) {
+  const { locale } = useLocale();
+  const tr = locale === "tr";
+
+  let queueMRR = 0;
+  let queueARR = 0;
+  let criticalCount = 0;
+  let highCount = 0;
+
+  for (const c of candidates) {
+    const rp = revenuePriorityMap.get(c.row.id);
+    const er = expectedRevenueMap.get(c.row.id);
+    if (rp?.revenuePriorityTier === "critical") criticalCount++;
+    if (rp?.revenuePriorityTier === "high") highCount++;
+    if (er) {
+      queueMRR += er.weightedExpectedMonthlyRevenue;
+      queueARR += er.weightedExpectedAnnualRevenue;
+    }
+  }
+
+  const items = [
+    { label: tr ? "Kuyruk Ağırlıklı MRR" : "Queue Weighted MRR", value: formatTRY(queueMRR), accent: "text-emerald-300" },
+    { label: tr ? "Kuyruk Ağırlıklı ARR" : "Queue Weighted ARR", value: formatTRY(queueARR), accent: "text-emerald-200" },
+    { label: tr ? "Kritik Fırsat" : "Critical", value: String(criticalCount), accent: "text-rose-300" },
+    { label: tr ? "Yüksek Öncelikli" : "High Priority", value: String(highCount), accent: "text-amber-300" },
+  ];
+
+  return (
+    <div className="rounded-xl border border-emerald-400/15 bg-emerald-500/[0.03] p-4">
+      <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-emerald-300">
+        {tr ? "Kuyruk Gelir Özeti" : "Queue Revenue Summary"}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {items.map((item) => (
+          <div key={item.label} className="rounded-lg border border-white/8 bg-white/[0.02] p-2.5">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">{item.label}</div>
+            <div className={`mt-0.5 text-sm font-semibold tabular-nums ${item.accent}`}>{item.value}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── v2.1 Founder Focus Engine ──────────────────────────────────────────────
 
 /**
@@ -11777,6 +12264,74 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return m;
   }, [allRows, expectedRevenueByLeadId, packageByLeadId]);
 
+  /** v3.9.3 — Aggregate revenue KPIs for the Operation Header (6 cards). */
+  const operationHeaderStats = useMemo(() => {
+    let totalWeightedMRR = 0;
+    let totalWeightedARR = 0;
+    let totalProb = 0;
+    let opportunityCount = 0;
+    let callReadyCount = 0;
+    let msgReadyCount = 0;
+    for (const r of allRows) {
+      if (r._s.doNotContact || r._s.status === "lost" || r._s.status === "won") continue;
+      const er = expectedRevenueByLeadId.get(r.id);
+      if (!er) continue;
+      opportunityCount++;
+      totalWeightedMRR += er.weightedExpectedMonthlyRevenue;
+      totalWeightedARR += er.weightedExpectedAnnualRevenue;
+      totalProb += er.expectedCustomerProbability;
+      const rp = revenuePriorityByLeadId.get(r.id);
+      if (rp && (rp.revenuePriorityTier === "critical" || rp.revenuePriorityTier === "high")) {
+        const hasPhone = Boolean(r.phone?.trim());
+        const hasWhatsApp = Boolean(r.phone?.trim()) && !r._s.whatsappInvalid;
+        const hasInsta = Boolean(r.instagram?.trim());
+        if (hasPhone) callReadyCount++;
+        if (hasWhatsApp || hasInsta) msgReadyCount++;
+      }
+    }
+    return {
+      totalWeightedMRR,
+      totalWeightedARR,
+      opportunityCount,
+      avgProbability: opportunityCount > 0 ? totalProb / opportunityCount : 0,
+      callReadyCount,
+      msgReadyCount,
+    };
+  }, [allRows, expectedRevenueByLeadId, revenuePriorityByLeadId]);
+
+  /** v3.9.3 — Revenue-sorted QueueCandidates for the Opportunity workspace queue. */
+  const revenueQueueCandidates = useMemo<QueueCandidate[]>(() => {
+    const now = renderNow || Date.now();
+    const queuedSet = new Set(dailyOutreach.todayQueue);
+    const candidates: QueueCandidate[] = [];
+    for (const row of allRows) {
+      const finder = contactFinderMap[row.id];
+      if (isExcludedFromDailyQueue(row, finder, now)) continue;
+      candidates.push({
+        row,
+        priority: computeDailyQueuePriority(row, finder, now),
+        reasonText: dailyQueueReasonText(row, finder, now, locale),
+        channels: resolveQuickChannels(row, finder, locale),
+        inOutreachQueue: queuedSet.has(row.id),
+        followUpScheduled: hasScheduledFollowUp(row._s),
+        followUpDue: isFollowUpDue(row._s, now),
+        dueAt: followUpTargetTimestamp(row._s),
+      });
+    }
+    return candidates.sort((a, b) => {
+      const rpA = revenuePriorityByLeadId.get(a.row.id)?.revenuePriorityScore ?? 0;
+      const rpB = revenuePriorityByLeadId.get(b.row.id)?.revenuePriorityScore ?? 0;
+      if (rpB !== rpA) return rpB - rpA;
+      const mrrA = expectedRevenueByLeadId.get(a.row.id)?.weightedExpectedMonthlyRevenue ?? 0;
+      const mrrB = expectedRevenueByLeadId.get(b.row.id)?.weightedExpectedMonthlyRevenue ?? 0;
+      if (mrrB !== mrrA) return mrrB - mrrA;
+      const pA = expectedRevenueByLeadId.get(a.row.id)?.expectedCustomerProbability ?? 0;
+      const pB = expectedRevenueByLeadId.get(b.row.id)?.expectedCustomerProbability ?? 0;
+      if (pB !== pA) return pB - pA;
+      return (b.row.contactReadinessScore ?? 0) - (a.row.contactReadinessScore ?? 0);
+    });
+  }, [allRows, contactFinderMap, dailyOutreach.todayQueue, renderNow, locale, revenuePriorityByLeadId, expectedRevenueByLeadId]);
+
   const segmentCounts = useMemo((): Record<SmartSegmentId, number> => ({
     hot: allRows.filter((r) => r.hotScore >= 70).length,
     icp: allRows.filter((r) => (r.icpAlignment?.tugoboFitScore ?? r.icpFitScore ?? 0) >= 75).length,
@@ -13797,40 +14352,50 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         </div>
       </header>
 
-      {/* Stats */}
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <StatCard
-          label={t("stat_session_leads", locale)}
-          value={stats.sessionLeads}
-          hint={t("stat_session_leads_hint", locale)}
-          accent="indigo"
-        />
-        <StatCard
-          label={t("stat_hot_leads", locale)}
-          value={stats.hotToday}
-          hint={t("stat_hot_leads_hint", locale)}
-          accent="orange"
-        />
-        <StatCard
-          label={t("stat_contacted", locale)}
-          value={stats.contacted}
-          hint={t("stat_session", locale)}
-          accent="sky"
-        />
-        <StatCard
-          label={t("stat_replied", locale)}
-          value={stats.replied}
-          hint={t("stat_session", locale)}
-          accent="emerald"
-        />
-        <StatCard
-          label={t("stat_won", locale)}
-          value={stats.won}
-          hint={fillTemplate(t("stat_won_hint", locale), {
-            amount: formatTRY(stats.totalRevenuePotential),
-          })}
-          accent="emerald"
-        />
+      {/* v3.9.3 Operation Header — Revenue Operating Desk KPIs */}
+      <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        {(
+          [
+            {
+              label: locale === "tr" ? "Ağırlıklı MRR" : "Weighted MRR",
+              value: formatTRY(operationHeaderStats.totalWeightedMRR),
+              accent: "emerald" as const,
+              hint: locale === "tr" ? "Tüm aktif fırsatlar" : "All active opportunities",
+            },
+            {
+              label: locale === "tr" ? "Ağırlıklı ARR" : "Weighted ARR",
+              value: formatTRY(operationHeaderStats.totalWeightedARR),
+              accent: "emerald" as const,
+              hint: locale === "tr" ? "Yıllık projeksiyon" : "Annual projection",
+            },
+            {
+              label: locale === "tr" ? "Fırsat Sayısı" : "Opportunities",
+              value: operationHeaderStats.opportunityCount,
+              accent: "indigo" as const,
+              hint: locale === "tr" ? "Aktif pipeline" : "Active pipeline",
+            },
+            {
+              label: locale === "tr" ? "Ort. Dönüşüm" : "Avg. Conversion",
+              value: `%${Math.round(operationHeaderStats.avgProbability * 100)}`,
+              accent: "sky" as const,
+              hint: locale === "tr" ? "Ortalama olasılık" : "Average probability",
+            },
+            {
+              label: locale === "tr" ? "Bugün Aranacak" : "To Call Today",
+              value: operationHeaderStats.callReadyCount,
+              accent: "orange" as const,
+              hint: locale === "tr" ? "Kritik + Yüksek, telefon hazır" : "Critical + High, phone ready",
+            },
+            {
+              label: locale === "tr" ? "Bugün Mesaj" : "To Message",
+              value: operationHeaderStats.msgReadyCount,
+              accent: "sky" as const,
+              hint: locale === "tr" ? "Kritik + Yüksek, WA/IG hazır" : "Critical + High, WA/IG ready",
+            },
+          ] satisfies { label: string; value: string | number; accent: "emerald" | "indigo" | "sky" | "orange"; hint: string }[]
+        ).map(({ label, value, accent, hint }) => (
+          <StatCard key={label} label={label} value={value} hint={hint} accent={accent} />
+        ))}
       </section>
 
       {/* v3.8.3 Workspace Selector */}
@@ -14062,19 +14627,43 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       </>)}
 
-      {/* OPPORTUNITIES workspace (part 1) */}
+      {/* OPPORTUNITIES workspace (part 1) — v3.9.3 Revenue Operating Desk */}
       {workspaceTab === "opportunities" && (
       <>
 
-      {/* v2.1 Founder Focus — "Bugünün En Öncelikli Fırsatları" */}
+      {/* v3.9.3 Revenue-Aware Opportunity Queue + Right Panels (2-column) */}
       {mounted && allRows.length > 0 && (
-        <TodayTopPrioritiesPanel
-          rows={allRows}
-          now={renderNow || Date.now()}
-          onOpenDetail={(id) => setOpenId(id)}
-          onBuildQueue={(ids) => addLeadIdsToDailyQueue(ids)}
-          queueFull={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
-        />
+        <div className="grid gap-4 xl:grid-cols-[1fr_300px]">
+          {/* Left: Revenue-sorted queue */}
+          <RevenueOpportunityQueuePanel
+            candidates={revenueQueueCandidates}
+            revenuePriorityMap={revenuePriorityByLeadId}
+            expectedRevenueMap={expectedRevenueByLeadId}
+            onOpenDetail={(id) => setOpenId(id)}
+            onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
+            onContact={contactFromDailyQueue}
+            queueLimitReached={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
+          />
+          {/* Right: reasoning + action + summary panels */}
+          <div className="space-y-4">
+            <QueueReasoningPanel
+              topCandidate={revenueQueueCandidates[0] ?? null}
+              revenuePriorityMap={revenuePriorityByLeadId}
+              expectedRevenueMap={expectedRevenueByLeadId}
+            />
+            <DailyActionPanel
+              candidates={revenueQueueCandidates}
+              revenuePriorityMap={revenuePriorityByLeadId}
+              onOpenDetail={(id) => setOpenId(id)}
+              onContact={contactFromDailyQueue}
+            />
+            <RevenueSummaryPanel
+              candidates={revenueQueueCandidates}
+              revenuePriorityMap={revenuePriorityByLeadId}
+              expectedRevenueMap={expectedRevenueByLeadId}
+            />
+          </div>
+        </div>
       )}
 
       </>)}
@@ -14088,21 +14677,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       )}
       </>)}
 
-      {/* OPPORTUNITIES workspace (part 2) */}
-      {workspaceTab === "opportunities" && (
-      <>
-      {/* v1.6 Daily Opportunity Queue — "Bugünün Fırsatları" */}
-      {mounted && dailyQueuePartition.total > 0 && (
-        <DailyOpportunityQueue
-          partition={dailyQueuePartition}
-          onOpenDetail={(id) => setOpenId(id)}
-          onAddToQueue={(id) => addLeadIdsToDailyQueue([id])}
-          onContact={contactFromDailyQueue}
-          queueLimitReached={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
-        />
-      )}
-
-      </>)}
+      {/* OPPORTUNITIES workspace (part 2) — DailyOpportunityQueue replaced by v3.9.3 Revenue Queue in part 1 */}
 
       {/* EXECUTION workspace (part 3 — pipeline & action queue) */}
       {workspaceTab === "execution" && (
