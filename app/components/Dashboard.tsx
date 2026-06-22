@@ -7121,6 +7121,22 @@ function RevenueOpportunityQueuePanel({
                         {tr ? "Kuyrukta" : "In queue"}
                       </span>
                     )}
+                    {(() => {
+                      const label = actionRecommendationLabel(c, rp);
+                      if (!label) return null;
+                      const labelColor =
+                        label === "Hemen Ara" ? "text-sky-300 ring-sky-400/30 bg-sky-500/10" :
+                        label === "WhatsApp Gönder" ? "text-emerald-300 ring-emerald-400/30 bg-emerald-500/10" :
+                        label === "Instagram Temas" ? "text-fuchsia-300 ring-fuchsia-400/30 bg-fuchsia-500/10" :
+                        label === "Demo Planla" ? "text-violet-300 ring-violet-400/30 bg-violet-500/10" :
+                        label === "Takip Yap" ? "text-amber-300 ring-amber-400/30 bg-amber-500/10" :
+                        "text-zinc-400 ring-white/10 bg-white/5";
+                      return (
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${labelColor}`}>
+                          {label}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[10px]">
                     <span className="truncate text-zinc-500">{c.reasonText}</span>
@@ -7522,6 +7538,213 @@ function RevenueSummaryPanel({
             <div className={`mt-0.5 text-sm font-semibold tabular-nums ${item.accent}`}>{item.value}</div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── v3.9.4 Daily Operations Desk ──────────────────────────────────────────
+
+type DailyOperationsDesk = {
+  calls: QueueCandidate[];
+  messages: QueueCandidate[];
+  followups: QueueCandidate[];
+  waiting: QueueCandidate[];
+  dailyRevenueImpact: number;
+};
+
+type QueueSubTab = "queue" | "calls" | "messages" | "followups" | "waiting";
+
+function computeDailyOperationsDesk(
+  candidates: QueueCandidate[],
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>,
+  expectedRevenueMap: Map<string, ExpectedRevenueResult>,
+): DailyOperationsDesk {
+  const calls: QueueCandidate[] = [];
+  const messages: QueueCandidate[] = [];
+  const followups: QueueCandidate[] = [];
+  const waiting: QueueCandidate[] = [];
+
+  for (const c of candidates) {
+    const rp = revenuePriorityMap.get(c.row.id);
+    const status = c.row._s.status;
+    const tier = rp?.revenuePriorityTier;
+    const isCriticalOrHigh = tier === "critical" || tier === "high";
+
+    if (isCriticalOrHigh && (c.row.contactReadinessScore ?? 0) >= 60 && Boolean(c.channels.phone)) {
+      calls.push(c);
+    }
+    if (isCriticalOrHigh && (Boolean(c.channels.waUrl) || Boolean(c.row.instagram?.trim()))) {
+      messages.push(c);
+    }
+    if (status === "contacted" || status === "replied" || status === "meeting") {
+      followups.push(c);
+    }
+    if (status === "replied" || status === "meeting") {
+      waiting.push(c);
+    }
+  }
+
+  const impactIds = new Set<string>();
+  let dailyRevenueImpact = 0;
+  for (const c of [...calls, ...messages]) {
+    if (!impactIds.has(c.row.id)) {
+      impactIds.add(c.row.id);
+      const er = expectedRevenueMap.get(c.row.id);
+      if (er) dailyRevenueImpact += er.weightedExpectedMonthlyRevenue;
+    }
+  }
+
+  return { calls, messages, followups, waiting, dailyRevenueImpact };
+}
+
+function actionRecommendationLabel(
+  c: QueueCandidate,
+  rp: ExpectedRevenueRankingResult | undefined,
+): string {
+  const status = c.row._s.status;
+  const tier = rp?.revenuePriorityTier;
+  if (status === "meeting") return "Demo Planla";
+  if (status === "replied") return "Takip Yap";
+  if (tier === "critical" && c.channels.waUrl) return "WhatsApp Gönder";
+  if (tier === "critical" && c.channels.phone) return "Hemen Ara";
+  if (tier === "high" && Boolean(c.row.instagram?.trim())) return "Instagram Temas";
+  if (status === "contacted") return "Yanıt Bekleniyor";
+  return "";
+}
+
+/** v3.9.4 — Founder daily operating desk: 4 action metrics + daily revenue impact. */
+function FounderOperatingDeskCard({
+  dailyDesk,
+  activeTab,
+  onTabChange,
+}: {
+  dailyDesk: DailyOperationsDesk;
+  activeTab: QueueSubTab;
+  onTabChange: (tab: QueueSubTab) => void;
+}) {
+  const metrics: { label: string; count: number; tab: QueueSubTab; accent: string }[] = [
+    { label: "Aranacaklar", count: dailyDesk.calls.length, tab: "calls", accent: "sky" },
+    { label: "Mesaj Atılacaklar", count: dailyDesk.messages.length, tab: "messages", accent: "emerald" },
+    { label: "Takip Edilecekler", count: dailyDesk.followups.length, tab: "followups", accent: "amber" },
+    { label: "Bekleyenler", count: dailyDesk.waiting.length, tab: "waiting", accent: "violet" },
+  ];
+
+  const accentConfig: Record<string, { border: string; text: string; activeBg: string; ring: string }> = {
+    sky: { border: "border-sky-400/30", text: "text-sky-200", activeBg: "bg-sky-500/20", ring: "ring-sky-400/30" },
+    emerald: { border: "border-emerald-400/30", text: "text-emerald-200", activeBg: "bg-emerald-500/20", ring: "ring-emerald-400/30" },
+    amber: { border: "border-amber-400/30", text: "text-amber-200", activeBg: "bg-amber-500/20", ring: "ring-amber-400/30" },
+    violet: { border: "border-violet-400/30", text: "text-violet-200", activeBg: "bg-violet-500/20", ring: "ring-violet-400/30" },
+  };
+
+  return (
+    <section className="rounded-xl border border-orange-400/20 bg-orange-500/[0.04] p-5 ring-1 ring-inset ring-orange-400/10">
+      <div className="mb-4 flex items-center gap-2">
+        <div className="flex h-5 w-5 items-center justify-center rounded bg-orange-500/20">
+          <IconSpark className="h-3.5 w-3.5 text-orange-200" />
+        </div>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-orange-200">
+          Bugünün Operasyon Masası
+        </h2>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {metrics.map(({ label, count, tab, accent }) => {
+          const cfg = accentConfig[accent];
+          const isActive = activeTab === tab;
+          return (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => onTabChange(isActive ? "queue" : tab)}
+              className={`flex flex-col gap-1 rounded-lg border p-3 text-left transition ring-1 ring-inset ${
+                isActive
+                  ? `${cfg.border} ${cfg.activeBg} ${cfg.ring}`
+                  : "border-white/10 bg-white/[0.02] ring-transparent hover:bg-white/[0.05]"
+              }`}
+            >
+              <span className={`text-2xl font-bold tabular-nums ${isActive ? cfg.text : "text-zinc-200"}`}>
+                {count}
+              </span>
+              <span className={`text-[10px] font-semibold uppercase tracking-wider ${isActive ? cfg.text : "text-zinc-500"}`}>
+                {label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-4 rounded-lg border border-emerald-400/20 bg-emerald-500/[0.04] p-3">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          Tahmini Günlük Gelir Etkisi
+        </div>
+        <div className="mt-0.5 text-2xl font-bold tabular-nums text-emerald-300">
+          {formatTRY(dailyDesk.dailyRevenueImpact)}
+        </div>
+        <div className="mt-0.5 text-[10px] text-zinc-500">
+          Bugün aksiyon alınacak fırsatların toplam ağırlıklı MRR etkisi
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** v3.9.4 — Top 3 revenue priority leads, clickable to open lead detail. */
+function RevenueFocusStrip({
+  candidates,
+  revenuePriorityMap,
+  expectedRevenueMap,
+  onOpenDetail,
+}: {
+  candidates: QueueCandidate[];
+  revenuePriorityMap: Map<string, ExpectedRevenueRankingResult>;
+  expectedRevenueMap: Map<string, ExpectedRevenueResult>;
+  onOpenDetail: (id: string) => void;
+}) {
+  const top3 = candidates
+    .slice()
+    .sort((a, b) => {
+      const rA = revenuePriorityMap.get(a.row.id)?.revenuePriorityScore ?? 0;
+      const rB = revenuePriorityMap.get(b.row.id)?.revenuePriorityScore ?? 0;
+      return rB - rA;
+    })
+    .slice(0, 3);
+
+  if (top3.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-amber-400/15 bg-amber-500/[0.03] p-4">
+      <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+        Bugünün Gelir Odağı
+      </div>
+      <div className="space-y-1.5">
+        {top3.map((c, i) => {
+          const er = expectedRevenueMap.get(c.row.id);
+          const rp = revenuePriorityMap.get(c.row.id);
+          return (
+            <button
+              key={c.row.id}
+              type="button"
+              onClick={() => onOpenDetail(c.row.id)}
+              className="flex w-full items-center gap-3 rounded-lg border border-white/8 bg-white/[0.015] px-3 py-2 text-left transition hover:bg-white/[0.04]"
+            >
+              <span className="w-4 shrink-0 text-center text-[11px] font-bold tabular-nums text-amber-400">
+                {i + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-zinc-100">
+                {c.row.name}
+              </span>
+              {er && er.weightedExpectedMonthlyRevenue > 0 && (
+                <span className="shrink-0 text-[13px] font-semibold tabular-nums text-emerald-300">
+                  {formatTRY(er.weightedExpectedMonthlyRevenue)}
+                </span>
+              )}
+              {rp && (
+                <span className="shrink-0 rounded bg-white/5 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-zinc-400 ring-1 ring-inset ring-white/10">
+                  {rp.revenuePriorityScore}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -11586,6 +11809,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     useState<AllLeadsTimeFilter>("all_time");
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
   const [workspaceTab, setWorkspaceTab] = useState<"opportunities" | "revenue" | "execution" | "intelligence" | "followups">("opportunities");
+  const [queueSubTab, setQueueSubTab] = useState<QueueSubTab>("queue");
   const workspaceSelectorRef = useRef<HTMLDivElement>(null);
   const [smartSegment, setSmartSegment] = useState<SmartSegmentId | null>(null);
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
@@ -12331,6 +12555,23 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       return (b.row.contactReadinessScore ?? 0) - (a.row.contactReadinessScore ?? 0);
     });
   }, [allRows, contactFinderMap, dailyOutreach.todayQueue, renderNow, locale, revenuePriorityByLeadId, expectedRevenueByLeadId]);
+
+  /** v3.9.4 — Daily operations desk: categorized candidate lists + revenue impact. */
+  const dailyOperationsDesk = useMemo(
+    () => computeDailyOperationsDesk(revenueQueueCandidates, revenuePriorityByLeadId, expectedRevenueByLeadId),
+    [revenueQueueCandidates, revenuePriorityByLeadId, expectedRevenueByLeadId],
+  );
+
+  /** v3.9.4 — Active queue filtered by sub-tab selection. */
+  const activeQueueCandidates = useMemo<QueueCandidate[]>(() => {
+    switch (queueSubTab) {
+      case "calls": return dailyOperationsDesk.calls;
+      case "messages": return dailyOperationsDesk.messages;
+      case "followups": return dailyOperationsDesk.followups;
+      case "waiting": return dailyOperationsDesk.waiting;
+      default: return revenueQueueCandidates;
+    }
+  }, [queueSubTab, revenueQueueCandidates, dailyOperationsDesk]);
 
   const segmentCounts = useMemo((): Record<SmartSegmentId, number> => ({
     hot: allRows.filter((r) => r.hotScore >= 70).length,
@@ -14627,16 +14868,57 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       </>)}
 
-      {/* OPPORTUNITIES workspace (part 1) — v3.9.3 Revenue Operating Desk */}
+      {/* OPPORTUNITIES workspace (part 1) — v3.9.4 Founder Daily Operating Desk */}
       {workspaceTab === "opportunities" && (
       <>
 
-      {/* v3.9.3 Revenue-Aware Opportunity Queue + Right Panels (2-column) */}
+      {/* v3.9.4 Founder Operating Desk: daily action metrics + revenue impact */}
+      {mounted && allRows.length > 0 && (
+        <FounderOperatingDeskCard
+          dailyDesk={dailyOperationsDesk}
+          activeTab={queueSubTab}
+          onTabChange={setQueueSubTab}
+        />
+      )}
+
+      {/* v3.9.4 Action sub-tabs: filter queue by action category */}
+      {mounted && allRows.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
+          {(
+            [
+              { id: "queue" as QueueSubTab, label: "Fırsat Kuyruğu", count: revenueQueueCandidates.length },
+              { id: "calls" as QueueSubTab, label: "Aranacaklar", count: dailyOperationsDesk.calls.length },
+              { id: "messages" as QueueSubTab, label: "Mesaj Atılacaklar", count: dailyOperationsDesk.messages.length },
+              { id: "followups" as QueueSubTab, label: "Takip Edilecekler", count: dailyOperationsDesk.followups.length },
+              { id: "waiting" as QueueSubTab, label: "Bekleyenler", count: dailyOperationsDesk.waiting.length },
+            ]
+          ).map(({ id, label, count }) => {
+            const isActive = queueSubTab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setQueueSubTab(id)}
+                className={`flex-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-all ring-1 ring-inset ${
+                  isActive
+                    ? "bg-indigo-500/20 text-indigo-200 ring-indigo-400/30"
+                    : "text-zinc-500 ring-transparent hover:bg-white/5 hover:text-zinc-300"
+                }`}
+              >
+                {label}
+                <span className="ml-1 text-[10px] font-normal tabular-nums opacity-60">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* v3.9.4 Revenue Focus Strip + Queue + Right Panels (2-column) */}
       {mounted && allRows.length > 0 && (
         <div className="grid gap-4 xl:grid-cols-[1fr_300px]">
-          {/* Left: Revenue-sorted queue */}
+          {/* Left: filtered queue by sub-tab */}
           <RevenueOpportunityQueuePanel
-            candidates={revenueQueueCandidates}
+            candidates={activeQueueCandidates}
             revenuePriorityMap={revenuePriorityByLeadId}
             expectedRevenueMap={expectedRevenueByLeadId}
             onOpenDetail={(id) => setOpenId(id)}
@@ -14644,21 +14926,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             onContact={contactFromDailyQueue}
             queueLimitReached={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
           />
-          {/* Right: reasoning + action + summary panels */}
+          {/* Right: revenue focus + reasoning + summary */}
           <div className="space-y-4">
+            <RevenueFocusStrip
+              candidates={revenueQueueCandidates}
+              revenuePriorityMap={revenuePriorityByLeadId}
+              expectedRevenueMap={expectedRevenueByLeadId}
+              onOpenDetail={(id) => setOpenId(id)}
+            />
             <QueueReasoningPanel
-              topCandidate={revenueQueueCandidates[0] ?? null}
+              topCandidate={activeQueueCandidates[0] ?? null}
               revenuePriorityMap={revenuePriorityByLeadId}
               expectedRevenueMap={expectedRevenueByLeadId}
             />
-            <DailyActionPanel
-              candidates={revenueQueueCandidates}
-              revenuePriorityMap={revenuePriorityByLeadId}
-              onOpenDetail={(id) => setOpenId(id)}
-              onContact={contactFromDailyQueue}
-            />
             <RevenueSummaryPanel
-              candidates={revenueQueueCandidates}
+              candidates={activeQueueCandidates}
               revenuePriorityMap={revenuePriorityByLeadId}
               expectedRevenueMap={expectedRevenueByLeadId}
             />
