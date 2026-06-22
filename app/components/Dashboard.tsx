@@ -5181,13 +5181,18 @@ function RevenuePotentialCard({ lead }: { lead: LeadTableRow }) {
 
   return (
     <div className="space-y-3 rounded-xl border border-amber-400/15 bg-amber-500/[0.03] p-3.5">
-      <div className="text-[11px] font-medium uppercase tracking-wider text-amber-200/80">
-        {tr ? "Gelir Potansiyeli" : "Revenue Potential"}
+      <div className="space-y-0.5">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-amber-200/80">
+          {tr ? "Fırsat Sinyali" : "Opportunity Signal"}
+        </div>
+        <div className="text-[10px] text-zinc-600">
+          {tr ? "Paket MRR için Ticari Paketleme kartına bakın" : "See Commercial Packaging for package MRR"}
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded-lg bg-white/5 p-2">
           <div className="text-[9px] uppercase tracking-wider text-zinc-500">
-            {tr ? "MRR Tahmini" : "Est. MRR"}
+            {tr ? "Fırsat Değeri" : "Opportunity Value"}
           </div>
           <div className="mt-0.5 text-sm font-bold tabular-nums text-amber-200">
             {formatTRY(rp.estimatedMrr)}
@@ -5195,7 +5200,7 @@ function RevenuePotentialCard({ lead }: { lead: LeadTableRow }) {
         </div>
         <div className="rounded-lg bg-white/5 p-2">
           <div className="text-[9px] uppercase tracking-wider text-zinc-500">
-            {tr ? "ARR Tahmini" : "Est. ARR"}
+            {tr ? "Yıllık Fırsat" : "Annual Opportunity"}
           </div>
           <div className="mt-0.5 text-sm font-bold tabular-nums text-amber-200">
             {formatTRY(rp.estimatedArr)}
@@ -8325,7 +8330,7 @@ function PipelineExpectedRevenueCard({ rows }: { rows: LeadTableRow[] }) {
   );
 }
 
-/** v3.2.1 — Pipeline KPI grid: total ARR, weighted expected value, actionable revenue, avg close probability. Read-only. */
+/** v3.9.2 — Pipeline KPI grid: package ARR, weighted expected ARR, actionable ARR, avg conversion probability. Uses v3.9 revenue truth. Read-only. */
 function RevenuePipelineOverview({
   rows,
   now,
@@ -8334,20 +8339,50 @@ function RevenuePipelineOverview({
   now: number;
 }) {
   const kpis = useMemo(() => {
-    let totalPipeline = 0;
-    let weightedPipeline = 0;
-    let actionableRevenue = 0;
-    let closeProbabilitySum = 0;
+    let totalPackageArr = 0;
+    let weightedArr = 0;
+    let actionableArr = 0;
+    let probSum = 0;
     let activeCount = 0;
 
     for (const row of rows) {
       const s = row._s;
       if (s.status === "won" || s.status === "lost") continue;
 
-      const rp = computeRevenuePotential(row);
-      totalPipeline += rp.estimatedArr;
-      weightedPipeline += rp.expectedValue;
-      closeProbabilitySum += rp.closeProbability;
+      const pkg = computeCommercialPackaging({
+        icpFitScore: row.icpFitScore ?? 0,
+        icpAlignment: row.icpAlignment,
+        verifiedOpportunityScore: row.verifiedOpportunityScore ?? 0,
+        signalVerification: row.signalVerification,
+        hasOwnWebsite: row.hasOwnWebsite,
+        hasInstagram: row.hasInstagram,
+        phone: row.phone,
+        adsLikelihood: row.adsLikelihood,
+        acquisitionIntelligence: row.acquisitionIntelligence,
+        digitalMaturity: row.digitalMaturity,
+        leadScore: row.leadScore,
+      });
+
+      const er = computeExpectedRevenue({
+        commercialPackaging: pkg,
+        hotScore: row.hotScore,
+        leadScore: row.leadScore,
+        verifiedOpportunityScore: row.verifiedOpportunityScore ?? 0,
+        icpFitScore: row.icpFitScore ?? 0,
+        contactReadinessScore: row.contactReadinessScore,
+        signalVerification: row.signalVerification,
+        phone: row.phone,
+        hasOwnWebsite: row.hasOwnWebsite,
+        hasInstagram: row.hasInstagram,
+        pipelineStatus: s.status,
+        doNotContact: s.doNotContact,
+        adsLikelihood: row.adsLikelihood,
+        acquisitionIntelligence: row.acquisitionIntelligence,
+      });
+
+      totalPackageArr += pkg.annualRevenue;
+      weightedArr += er.weightedExpectedAnnualRevenue;
+      probSum += er.expectedCustomerProbability;
       activeCount++;
 
       const action = computeTodayActionStatus(row, s, now);
@@ -8357,12 +8392,12 @@ function RevenuePipelineOverview({
         action === "DEMO_READY" ||
         s.status === "meeting"
       ) {
-        actionableRevenue += rp.expectedValue;
+        actionableArr += er.weightedExpectedAnnualRevenue;
       }
     }
 
-    const avgCloseProbability = activeCount > 0 ? closeProbabilitySum / activeCount : 0;
-    return { totalPipeline, weightedPipeline, actionableRevenue, avgCloseProbability };
+    const avgProbability = activeCount > 0 ? probSum / activeCount : 0;
+    return { totalPackageArr, weightedArr, actionableArr, avgProbability };
   }, [rows, now]);
 
   if (rows.length === 0) return null;
@@ -8374,29 +8409,29 @@ function RevenuePipelineOverview({
           Pipeline Gelir Değeri
         </h2>
         <p className="mt-0.5 text-[11px] text-zinc-500">
-          Aktif leadlerin toplam ve ağırlıklı gelir potansiyeli — won/lost hariç.
+          Paket ARR × dönüşüm olasılığı — won/lost hariç aktif leadler.
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-px bg-white/5 sm:grid-cols-4">
         <div className="bg-zinc-900 px-4 py-4">
           <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-            Toplam Pipeline
+            Paket ARR
           </p>
           <p className="mt-1.5 text-xl font-bold tabular-nums text-zinc-100">
-            {formatTRY(kpis.totalPipeline)}
+            {formatTRY(kpis.totalPackageArr)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">Toplam ARR (aktif leadler)</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Toplam paket ARR (aktif leadler)</p>
         </div>
 
         <div className="bg-zinc-900 px-4 py-4">
           <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-            Weighted Pipeline
+            Ağırlıklı ARR
           </p>
           <p className="mt-1.5 text-xl font-bold tabular-nums text-sky-300">
-            {formatTRY(kpis.weightedPipeline)}
+            {formatTRY(kpis.weightedArr)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">Beklenen değer toplamı</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Paket ARR × dönüşüm olasılığı</p>
         </div>
 
         <div className="bg-zinc-900 px-4 py-4">
@@ -8404,26 +8439,26 @@ function RevenuePipelineOverview({
             Bu Ay Hedeflenebilir
           </p>
           <p className="mt-1.5 text-xl font-bold tabular-nums text-fuchsia-300">
-            {formatTRY(kpis.actionableRevenue)}
+            {formatTRY(kpis.actionableArr)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">Aksiyon leadlerden weighted EV</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Aksiyon leadlerden ağırlıklı ARR</p>
         </div>
 
         <div className="bg-zinc-900 px-4 py-4">
           <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-            Ort. Kapanma
+            Ort. Dönüşüm
           </p>
           <p className="mt-1.5 text-xl font-bold tabular-nums text-amber-300">
-            %{Math.round(kpis.avgCloseProbability * 100)}
+            %{Math.round(kpis.avgProbability * 100)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">Ortalama kapanma olasılığı</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Ortalama dönüşüm olasılığı</p>
         </div>
       </div>
     </section>
   );
 }
 
-/** v3.2.1 — Top 5 active leads ranked by expected value. Read-only. */
+/** v3.9.2 — Top 5 active leads ranked by weighted expected ARR (v3.9 revenue truth). Read-only. */
 function TopRevenueOpportunities({
   rows,
   now,
@@ -8435,11 +8470,39 @@ function TopRevenueOpportunities({
     return rows
       .filter((row) => row._s.status !== "won" && row._s.status !== "lost")
       .map((row) => {
-        const rp = computeRevenuePotential(row);
+        const pkg = computeCommercialPackaging({
+          icpFitScore: row.icpFitScore ?? 0,
+          icpAlignment: row.icpAlignment,
+          verifiedOpportunityScore: row.verifiedOpportunityScore ?? 0,
+          signalVerification: row.signalVerification,
+          hasOwnWebsite: row.hasOwnWebsite,
+          hasInstagram: row.hasInstagram,
+          phone: row.phone,
+          adsLikelihood: row.adsLikelihood,
+          acquisitionIntelligence: row.acquisitionIntelligence,
+          digitalMaturity: row.digitalMaturity,
+          leadScore: row.leadScore,
+        });
+        const er = computeExpectedRevenue({
+          commercialPackaging: pkg,
+          hotScore: row.hotScore,
+          leadScore: row.leadScore,
+          verifiedOpportunityScore: row.verifiedOpportunityScore ?? 0,
+          icpFitScore: row.icpFitScore ?? 0,
+          contactReadinessScore: row.contactReadinessScore,
+          signalVerification: row.signalVerification,
+          phone: row.phone,
+          hasOwnWebsite: row.hasOwnWebsite,
+          hasInstagram: row.hasInstagram,
+          pipelineStatus: row._s.status,
+          doNotContact: row._s.doNotContact,
+          adsLikelihood: row.adsLikelihood,
+          acquisitionIntelligence: row.acquisitionIntelligence,
+        });
         const action = computeTodayActionStatus(row, row._s, now);
-        return { row, rp, action };
+        return { row, er, action };
       })
-      .sort((a, b) => b.rp.expectedValue - a.rp.expectedValue)
+      .sort((a, b) => b.er.weightedExpectedAnnualRevenue - a.er.weightedExpectedAnnualRevenue)
       .slice(0, 5);
   }, [rows, now]);
 
@@ -8457,7 +8520,7 @@ function TopRevenueOpportunities({
       </div>
 
       <div className="divide-y divide-white/[0.04]">
-        {top5.map(({ row, rp, action }, idx) => {
+        {top5.map(({ row, er, action }, idx) => {
           const actionLabel =
             action === "HOT_NOW"
               ? "Sıcak Fırsat"
@@ -8491,13 +8554,13 @@ function TopRevenueOpportunities({
                   {row.name}
                 </p>
                 <p className="text-[11px] text-zinc-500">
-                  {formatTRY(rp.estimatedMrr)} MRR &middot; %{Math.round(rp.closeProbability * 100)} kapanma
+                  {formatTRY(er.weightedExpectedMonthlyRevenue)} Ağırlıklı MRR &middot; %{Math.round(er.expectedCustomerProbability * 100)} dönüşüm
                 </p>
               </div>
 
               <div className="shrink-0 text-right">
                 <p className="text-[13px] font-bold tabular-nums text-emerald-300">
-                  {formatTRY(rp.expectedValue)}
+                  {formatTRY(er.weightedExpectedAnnualRevenue)}
                 </p>
                 <span
                   className={`mt-0.5 inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium ${actionCls}`}
@@ -8517,7 +8580,7 @@ function TopRevenueOpportunities({
 
 // ─── v3.3.0 — Founder Forecast Engine ───────────────────────────────────────
 
-/** v3.3.0 — 30-day deterministic sales forecast with three bands and confidence rating. Read-only. */
+/** v3.9.2 — 30-day deterministic sales forecast with three bands and confidence rating. Uses v3.9 revenue truth. Read-only. */
 function FounderForecastEngine({
   rows,
   now,
@@ -8527,7 +8590,7 @@ function FounderForecastEngine({
 }) {
   const forecast = useMemo(() => {
     let baseSum = 0;
-    let closeProbSum = 0;
+    let probSum = 0;
     let activeCount = 0;
     let demoReady = 0;
     let meetingCount = 0;
@@ -8547,9 +8610,37 @@ function FounderForecastEngine({
 
       if (!isCommerciallyActive) continue;
 
-      const rp = computeRevenuePotential(row);
-      baseSum += rp.expectedValue;
-      closeProbSum += rp.closeProbability;
+      const pkg = computeCommercialPackaging({
+        icpFitScore: row.icpFitScore ?? 0,
+        icpAlignment: row.icpAlignment,
+        verifiedOpportunityScore: row.verifiedOpportunityScore ?? 0,
+        signalVerification: row.signalVerification,
+        hasOwnWebsite: row.hasOwnWebsite,
+        hasInstagram: row.hasInstagram,
+        phone: row.phone,
+        adsLikelihood: row.adsLikelihood,
+        acquisitionIntelligence: row.acquisitionIntelligence,
+        digitalMaturity: row.digitalMaturity,
+        leadScore: row.leadScore,
+      });
+      const er = computeExpectedRevenue({
+        commercialPackaging: pkg,
+        hotScore: row.hotScore,
+        leadScore: row.leadScore,
+        verifiedOpportunityScore: row.verifiedOpportunityScore ?? 0,
+        icpFitScore: row.icpFitScore ?? 0,
+        contactReadinessScore: row.contactReadinessScore,
+        signalVerification: row.signalVerification,
+        phone: row.phone,
+        hasOwnWebsite: row.hasOwnWebsite,
+        hasInstagram: row.hasInstagram,
+        pipelineStatus: s.status,
+        doNotContact: s.doNotContact,
+        adsLikelihood: row.adsLikelihood,
+        acquisitionIntelligence: row.acquisitionIntelligence,
+      });
+      baseSum += er.weightedExpectedAnnualRevenue;
+      probSum += er.expectedCustomerProbability;
       activeCount++;
 
       if (action === "DEMO_READY") demoReady++;
@@ -8558,14 +8649,14 @@ function FounderForecastEngine({
       if (action === "FOLLOW_UP_DUE") followUpDue++;
     }
 
-    const avgCloseProbability = activeCount > 0 ? closeProbSum / activeCount : 0;
+    const avgProbability = activeCount > 0 ? probSum / activeCount : 0;
 
     const conservative = Math.round((baseSum * 0.55) / 500) * 500;
     const expected = Math.round(baseSum / 500) * 500;
     const aggressive = Math.round((baseSum * 1.35) / 500) * 500;
 
     let confidence: "high" | "medium" | "low";
-    if (demoReady + meetingCount >= 2 || avgCloseProbability >= 0.65) {
+    if (demoReady + meetingCount >= 2 || avgProbability >= 0.65) {
       confidence = "high";
     } else if (hotNow + followUpDue + demoReady >= 3) {
       confidence = "medium";
@@ -8591,7 +8682,7 @@ function FounderForecastEngine({
       meetingCount,
       hotNow,
       followUpDue,
-      avgCloseProbability,
+      avgProbability,
     };
   }, [rows, now]);
 
@@ -8638,7 +8729,7 @@ function FounderForecastEngine({
           30 Günlük Satış Tahmini
         </h2>
         <p className="mt-0.5 text-[11px] text-zinc-500">
-          Aktif fırsatların ağırlıklı değerine göre deterministik tahmin.
+          Paket ARR × dönüşüm olasılığı — aktif fırsatlardan deterministik tahmin.
         </p>
       </div>
 
@@ -8650,7 +8741,7 @@ function FounderForecastEngine({
           <p className="mt-1.5 text-xl font-bold tabular-nums text-zinc-300">
             {formatTRY(forecast.conservative)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">×0.55 beklenen değer</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">×0.55 ağırlıklı ARR</p>
         </div>
 
         <div className="bg-zinc-900 px-4 py-4">
@@ -8660,7 +8751,7 @@ function FounderForecastEngine({
           <p className="mt-1.5 text-xl font-bold tabular-nums text-sky-300">
             {formatTRY(forecast.expected)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">Ağırlıklı beklenen değer</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Ağırlıklı ARR toplamı</p>
         </div>
 
         <div className="bg-zinc-900 px-4 py-4">
@@ -8670,7 +8761,7 @@ function FounderForecastEngine({
           <p className="mt-1.5 text-xl font-bold tabular-nums text-fuchsia-300">
             {formatTRY(forecast.aggressive)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">×1.35 beklenen değer</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">×1.35 ağırlıklı ARR</p>
         </div>
       </div>
 
@@ -8706,7 +8797,7 @@ function FounderForecastEngine({
             </span>
           )}
           <span className="rounded border border-zinc-700/40 bg-zinc-700/20 px-2.5 py-1 text-[11px] text-zinc-400">
-            Ort. kapanma %{Math.round(forecast.avgCloseProbability * 100)}
+            Ort. dönüşüm %{Math.round(forecast.avgProbability * 100)}
           </span>
         </div>
       </div>
@@ -8930,7 +9021,7 @@ function RevenueRiskEngine({
           <p className="mt-1.5 text-xl font-bold tabular-nums text-rose-300">
             {formatTRY(risk.riskedRevenue)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">Riskli fırsatların EV toplamı</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Riskli fırsatların beklenen değer toplamı</p>
         </div>
 
         <div className="bg-zinc-900 px-4 py-4">
@@ -9232,7 +9323,7 @@ function RevenueRecoveryEngine({
           <p className="mt-1.5 text-xl font-bold tabular-nums text-emerald-300">
             {formatTRY(recovery.recoverableRevenue)}
           </p>
-          <p className="mt-0.5 text-[11px] text-zinc-600">Recovery değeri toplamı</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600">Kurtarılabilir fırsat değeri toplamı</p>
         </div>
 
         <div className="bg-zinc-900 px-4 py-4">
