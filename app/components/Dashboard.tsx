@@ -13703,12 +13703,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           >
             {t("start_new_session", locale)}
           </button>
-          <a
-            href="/dashboard/follow-ups"
-            className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2 py-1 text-[11px] text-orange-200 transition hover:bg-orange-500/20"
-          >
-            {t("follow_ups", locale)}
-          </a>
         </div>
       </header>
 
@@ -13834,12 +13828,16 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             >
               {t("start_outreach_session", locale)}
             </button>
-            <a
-              href="/dashboard/follow-ups"
+            <button
+              type="button"
+              onClick={() => {
+                setWorkspaceTab("followups");
+                workspaceSelectorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
               className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2.5 py-1.5 text-xs font-medium text-orange-200 transition hover:bg-orange-500/20"
             >
               {t("open_follow_ups_today", locale)}
-            </a>
+            </button>
             <button
               type="button"
               onClick={() => void syncLeadsToAirtable()}
