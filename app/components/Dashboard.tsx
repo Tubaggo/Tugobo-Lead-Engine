@@ -3563,17 +3563,17 @@ function StatCard({
     zinc: "from-zinc-500/20 to-transparent",
   };
   return (
-    <div className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur">
+    <div className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] p-3 backdrop-blur">
       <div
         className={`pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r ${accentRing[accent]}`}
       />
-      <div className="text-[11px] font-medium uppercase tracking-wider text-zinc-400">
+      <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">
         {label}
       </div>
-      <div className="mt-1 text-2xl font-semibold tabular-nums text-zinc-50">
+      <div className="mt-0.5 text-xl font-semibold tabular-nums text-zinc-50">
         {value}
       </div>
-      {hint && <div className="mt-1 text-xs text-zinc-500">{hint}</div>}
+      {hint && <div className="mt-0.5 truncate text-[11px] text-zinc-500">{hint}</div>}
     </div>
   );
 }
@@ -5350,9 +5350,9 @@ function LeadOpportunityTable({
   const headCls = "px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-zinc-500";
 
   return (
-    <div className="overflow-x-auto">
+    <div className="h-full overflow-auto">
       <table className="w-full min-w-[860px] border-collapse text-[11px]">
-        <thead>
+        <thead className="sticky top-0 z-10 bg-zinc-950/95 backdrop-blur">
           <tr className="border-b border-white/10">
             <th className={`${headCls} w-8 text-center`}>#</th>
             <th className={headCls}>{tr ? "İşletme" : "Business"}</th>
@@ -6769,6 +6769,69 @@ function WorkspaceHeader({
   );
 }
 
+/**
+ * v5.5 — Unified Founder Console shell. Every major workspace uses this single pattern:
+ * compact header (identity + optional actions) → 2-col body [main content | right intelligence].
+ * Viewport-constrained on desktop: the whole shell fills the content region (lg:h-full) and the
+ * main + right slots scroll internally, so switching workspaces feels like switching views of one app.
+ * Pure layout — no data/engine logic.
+ */
+function FounderConsoleShell({
+  icon,
+  title,
+  subtitle,
+  accent = "indigo",
+  actions,
+  tabs,
+  left,
+  right,
+}: {
+  icon?: ReactNode;
+  title: string;
+  subtitle?: string;
+  accent?: WorkspaceAccent;
+  actions?: ReactNode;
+  tabs?: ReactNode;
+  left: ReactNode;
+  right: ReactNode;
+}) {
+  const accentMap: Record<WorkspaceAccent, { chip: string; text: string; border: string; glow: string }> = {
+    indigo: { chip: "bg-indigo-500/20", text: "text-indigo-100", border: "border-indigo-400/20", glow: "ring-indigo-400/10" },
+    emerald: { chip: "bg-emerald-500/20", text: "text-emerald-100", border: "border-emerald-400/20", glow: "ring-emerald-400/10" },
+    orange: { chip: "bg-orange-500/20", text: "text-orange-100", border: "border-orange-400/20", glow: "ring-orange-400/10" },
+    violet: { chip: "bg-violet-500/20", text: "text-violet-100", border: "border-violet-400/20", glow: "ring-violet-400/10" },
+    amber: { chip: "bg-amber-500/20", text: "text-amber-100", border: "border-amber-400/20", glow: "ring-amber-400/10" },
+    sky: { chip: "bg-sky-500/20", text: "text-sky-100", border: "border-sky-400/20", glow: "ring-sky-400/10" },
+  };
+  const a = accentMap[accent];
+  return (
+    <div className="flex flex-col gap-3 lg:h-full lg:min-h-0">
+      {/* Compact console identity */}
+      <section
+        className={`flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border ${a.border} bg-white/[0.02] px-4 py-2.5 backdrop-blur ring-1 ring-inset ${a.glow}`}
+      >
+        <div className="flex min-w-0 items-center gap-2.5">
+          {icon && (
+            <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${a.chip}`}>
+              {icon}
+            </div>
+          )}
+          <h2 className={`shrink-0 text-sm font-bold tracking-tight ${a.text}`}>{title}</h2>
+          {subtitle && <p className="hidden truncate text-[11px] text-zinc-500 lg:block">{subtitle}</p>}
+        </div>
+        {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      </section>
+      {/* v6.0 — optional queue tabs strip (filtered views of the same console) */}
+      {tabs && <div className="shrink-0">{tabs}</div>}
+      {/* Body: main content (left) + right intelligence */}
+      <div className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_360px]">
+        {left}
+        <div className="flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1">{right}</div>
+      </div>
+    </div>
+  );
+}
+
 /** Single render tree for the open lead (one selected object, no list iteration). */
 function LeadDetailPanel({
   selectedLead,
@@ -7929,7 +7992,7 @@ function RevenueFocusStrip({
   if (top3.length === 0) return null;
 
   return (
-    <div className="grid gap-2 sm:grid-cols-3">
+    <div className="grid gap-2">
       {top3.map((c, i) => {
         const er = expectedRevenueMap.get(c.row.id);
         const rp = revenuePriorityMap.get(c.row.id);
@@ -14781,49 +14844,23 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   return (
-    <div className="relative mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 px-4 py-6 sm:px-6 lg:grid-cols-[188px_1fr] lg:gap-6 lg:px-8">
-      <aside className="lg:sticky lg:top-4 lg:self-start">
+    <div className="relative mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 px-4 py-6 sm:px-6 lg:grid-cols-[176px_1fr] lg:gap-5 lg:px-8 lg:h-screen lg:max-h-screen lg:overflow-hidden lg:py-4">
+      <aside className="lg:h-full lg:min-h-0 lg:self-stretch lg:overflow-y-auto lg:pr-0.5">
         <AppNav
           currentPath="/"
           showLocaleToggle
           activeWorkspace={workspaceTab}
-          activeSubTab={
-            workspaceTab === "intelligence"
-              ? smartSegment === "icp"
-                ? "icp"
-                : smartSegment === "whatsapp"
-                  ? "comms"
-                  : undefined
-              : queueSubTab
-          }
-          onNavigate={(ws, subTab) => {
+          onNavigate={(ws) => {
             setWorkspaceTab(ws);
-            // v5.0 — Pipeline sub-items map to existing smart segments (reuses segment logic, no new engine).
-            if (ws === "intelligence") {
-              if (subTab === "icp") {
-                setSmartSegment("icp");
-                setAllLeadsOpen(true);
-              } else if (subTab === "comms") {
-                setSmartSegment("whatsapp");
-                setAllLeadsOpen(true);
-              } else {
-                setSmartSegment(null);
-              }
-            } else if (
-              subTab === "queue" ||
-              subTab === "calls" ||
-              subTab === "messages" ||
-              subTab === "followups" ||
-              subTab === "waiting"
-            ) {
-              setQueueSubTab(subTab);
-            }
+            // v6.0 — primary views only; queue sub-tabs live inside Gelir Kuyruğu now.
+            if (ws === "opportunities") setQueueSubTab("queue");
+            if (ws === "intelligence") setSmartSegment(null);
             workspaceSelectorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
           }}
         />
       </aside>
-      <div className="flex min-w-0 flex-col gap-6">
-      <header className="flex flex-col gap-3 border-b border-white/5 pb-6 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-col gap-4 lg:h-full lg:min-h-0 lg:overflow-hidden">
+      <header className="flex flex-col gap-3 border-b border-white/5 pb-3 sm:flex-row sm:items-center sm:justify-between lg:shrink-0">
         <div className="flex items-center gap-3">
           <BrandLogo />
           <div>
@@ -14858,7 +14895,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       </header>
 
       {/* v3.9.3 Operation Header — Revenue Operating Desk KPIs */}
-      <section ref={workspaceSelectorRef} className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <section ref={workspaceSelectorRef} className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:shrink-0 lg:grid-cols-6">
         {(
           [
             {
@@ -14905,376 +14942,273 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {/* v5.0 — Top workspace tab selector removed; the left sidebar is the single navigation system. */}
 
-      {/* EXECUTION workspace — v4.2 Founder Command Workspace */}
-      {workspaceTab === "execution" && (
-      <>
+      {/* v5.3 App-shell content region — workspace content scrolls internally; header + KPI stay fixed. */}
+      <div className="flex flex-col gap-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
 
-      {/* Workspace identity */}
-      <WorkspaceHeader
-        accent="orange"
-        icon={<IconSpark className="h-4 w-4 text-orange-200" />}
-        title={locale === "tr" ? "Operasyon Masası" : "Command Workspace"}
-        subtitle={
-          locale === "tr"
-            ? "Bugün dikkatini gerektiren komut, kritik işler ve satış akışı"
-            : "Today's command, critical tasks and execution flow"
-        }
-      />
-
-      {/* Morning Outreach */}
-      <section className="overflow-hidden rounded-xl border border-emerald-400/20 bg-emerald-500/[0.04] backdrop-blur ring-1 ring-inset ring-emerald-400/10">
-        <div className="flex flex-wrap items-start justify-between gap-4 px-5 py-4">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/20">
-                <IconSpark className="h-4 w-4 text-emerald-200" />
-              </div>
-              <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-200">
-                {t("morning_outreach", locale)}
-              </h2>
-            </div>
-            <p className="mt-1.5 text-[11px] text-zinc-400">
-              {t("queue_word", locale)} {safeActiveQueueCount}/{DAILY_OUTREACH_LIMIT} ·{" "}
-              {t("follow_ups_due_label", locale)} {safeFollowUpDueCount} ·{" "}
-              {t("contacted_today_label", locale)} {safeCompletedToday}
-            </p>
-            {safeActiveQueueCount > 0 && (
-              <p className="mt-0.5 text-[11px] text-zinc-500">
-                {locale === "tr" ? "Hazır" : "Ready"}{" "}
-                <span className="text-emerald-400">{safeQueueHealth.ready}</span>
-                {" · "}
-                {locale === "tr" ? "Eksik veri" : "Missing data"}{" "}
-                <span className="text-amber-400">{safeQueueHealth.missingData}</span>
-                {" · "}
-                {locale === "tr" ? "Tahmini süre" : "Est. session"}{" "}
-                <span className="text-zinc-300">~{safeQueueHealth.estimatedMinutes} dk</span>
-              </p>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={autoBuildTodayQueue}
-              className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25"
-            >
-              {t("auto_build_queue", locale)}
-            </button>
-            <button
-              type="button"
-              onClick={startDailyOutreachSession}
-              disabled={safeActiveQueueCount === 0}
-              className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {t("start_outreach_session", locale)}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setWorkspaceTab("followups");
-                workspaceSelectorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-              }}
-              className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2.5 py-1.5 text-xs font-medium text-orange-200 transition hover:bg-orange-500/20"
-            >
-              {t("open_follow_ups_today", locale)}
-            </button>
-            <button
-              type="button"
-              onClick={() => void syncLeadsToAirtable()}
-              disabled={airtableBusy !== null}
-              className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {t("sync_airtable_short", locale)}
-            </button>
-          </div>
-        </div>
-      </section>
-
-      {/* v3.6.0 Founder Command Center — single primary command */}
-      {mounted && allRows.length > 0 && (
-        <FounderCommandCenter
-          rows={allRows}
-          now={renderNow || Date.now()}
-          contactFinderMap={contactFinderMap}
-          onOpenDetail={(id) => setOpenId(id)}
-        />
-      )}
-
-      {/* v2.3 Daily Operating Brief — "Bugünün Operasyonu" */}
-      {mounted && allRows.length > 0 && (
-        <DailyOperatingBrief
-          rows={allRows}
-          now={renderNow || Date.now()}
-          completedToday={safeCompletedToday}
-          activeQueueCount={safeActiveQueueCount}
-        />
-      )}
-
-      {/* v2.3 Daily Progress Strip — "Günlük İlerleme" */}
-      {mounted && allRows.length > 0 && (
-        <DailyProgressStrip
-          rows={allRows}
-          completedToday={safeCompletedToday}
-          activeQueueCount={safeActiveQueueCount}
-        />
-      )}
-
-      {/* Primary Action Area (critical work + sales plan) + Execution Intelligence */}
-      {mounted && allRows.length > 0 && (
-        <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
-          {/* Left: what to execute now */}
-          <div className="space-y-4">
-            <TodayCriticalTasks
-              rows={allRows}
-              now={renderNow || Date.now()}
-              onOpenDetail={(id) => setOpenId(id)}
-            />
-            <AutonomousSalesPlan
-              rows={allRows}
-              now={renderNow || Date.now()}
-              contactFinderMap={contactFinderMap}
-              onOpenDetail={(id) => setOpenId(id)}
-            />
-          </div>
-          {/* Right: execution intelligence — workflow stage + status */}
-          <div className="space-y-4">
-            <FounderWorkflowSteps rows={allRows} now={renderNow || Date.now()} />
-            <OperationStatusStrip rows={allRows} now={renderNow || Date.now()} />
-          </div>
-        </div>
-      )}
-
-      </>)}
-
-      {/* REVENUE workspace — v4.2 Executive Revenue Intelligence Workspace */}
-      {workspaceTab === "revenue" && (
-      <>
-
-      {/* Workspace identity */}
-      <WorkspaceHeader
-        accent="emerald"
-        icon={<IconSpark className="h-4 w-4 text-emerald-200" />}
-        title={locale === "tr" ? "Gelir Analizi" : "Revenue Intelligence"}
-        subtitle={
-          locale === "tr"
-            ? "Ağırlıklı pipeline, 30 günlük tahmin, risk ve geri kazanım"
-            : "Weighted pipeline, 30-day forecast, risk and recovery"
-        }
-      />
-
-      {/* Operational Summary — pipeline KPI grid */}
-      {mounted && allRows.length > 0 && (
-        <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
-      )}
-
-      {/* Primary Area (revenue opportunities) + Intelligence (forecast / outlook) */}
-      {mounted && allRows.length > 0 && (
-        <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
-          {/* Left: actionable revenue opportunities — the decision surface */}
-          <div className="space-y-4">
-            <RevenueRankingCard
-              rows={allRows}
-              revenuePriorityMap={revenuePriorityByLeadId}
-              onOpenDetail={(id) => setOpenId(id)}
-            />
-            <TopRevenueOpportunities rows={allRows} now={renderNow || Date.now()} />
-            <PipelineExpectedRevenueCard rows={allRows} />
-          </div>
-          {/* Right: revenue intelligence — forecast + weekly outlook */}
-          <div className="space-y-4">
-            <FounderForecastEngine rows={allRows} now={renderNow || Date.now()} />
-            <WeeklyCommercialOutlook rows={allRows} now={renderNow || Date.now()} />
-          </div>
-        </div>
-      )}
-
-      {/* Supporting — revenue protection (risk + recovery) */}
-      {mounted && allRows.length > 0 && (
-        <RevenueRiskEngine
-          rows={allRows}
-          now={renderNow || Date.now()}
-          contactFinderMap={contactFinderMap}
-        />
-      )}
-      {mounted && allRows.length > 0 && (
-        <RevenueRecoveryEngine
-          rows={allRows}
-          now={renderNow || Date.now()}
-          contactFinderMap={contactFinderMap}
-        />
-      )}
-
-      </>)}
-
-      {/* OPPORTUNITIES workspace (part 1) — v3.9.4 Founder Daily Operating Desk */}
-      {workspaceTab === "opportunities" && (
-      <>
-
-      {/* Workspace identity */}
-      <WorkspaceHeader
-        accent="indigo"
-        icon={<IconSpark className="h-4 w-4 text-indigo-200" />}
-        title={locale === "tr" ? "Gelir Kuyruğu" : "Revenue Queue"}
-        subtitle={
-          locale === "tr"
-            ? "Bugünün gelir odaklı operasyon masası ve fırsat kuyruğu"
-            : "Today's revenue-first operating desk and opportunity queue"
-        }
-      />
-
-      {/* v3.9.4 Founder Operating Desk: daily action metrics + revenue impact */}
-      {mounted && allRows.length > 0 && (
-        <FounderOperatingDeskCard
-          dailyDesk={dailyOperationsDesk}
-          activeTab={queueSubTab}
-          onTabChange={setQueueSubTab}
-        />
-      )}
-
-      {/* v4.0 BUGÜNÜN GELİR ODAĞI — top 3 revenue priorities, full-width before action tabs */}
-      {mounted && allRows.length > 0 && (
-        <section className="rounded-xl border border-amber-400/20 bg-amber-500/[0.03] p-5 backdrop-blur ring-1 ring-inset ring-amber-400/10">
-          <div className="mb-4 flex items-center gap-2">
-            <div className="flex h-5 w-5 items-center justify-center rounded bg-amber-500/20">
-              <svg className="h-3.5 w-3.5 text-amber-300" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M8 2l1.5 4.5H14l-3.75 2.75L11.5 14 8 11.25 4.5 14l1.25-4.75L2 6.5h4.5z" fill="currentColor" />
-              </svg>
-            </div>
-            <div>
-              <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200">
-                Bugünün Gelir Odağı
-              </h2>
-              <p className="text-[11px] text-zinc-500">En yüksek gelir öncelikli 3 fırsat</p>
-            </div>
-          </div>
-          <RevenueFocusStrip
-            candidates={revenueQueueCandidates}
-            revenuePriorityMap={revenuePriorityByLeadId}
-            expectedRevenueMap={expectedRevenueByLeadId}
-            onOpenDetail={(id) => setOpenId(id)}
-          />
-        </section>
-      )}
-
-      {/* v4.0 Daily Action Center — Operasyon sub-tabs */}
-      {mounted && allRows.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-white/10 bg-white/[0.02] p-1">
-          {(
-            [
-              { id: "queue" as QueueSubTab, label: "Gelir Kuyruğu", count: revenueQueueCandidates.length },
-              { id: "calls" as QueueSubTab, label: "Aranacaklar", count: dailyOperationsDesk.calls.length },
-              { id: "messages" as QueueSubTab, label: "Mesaj Atılacaklar", count: dailyOperationsDesk.messages.length },
-              { id: "followups" as QueueSubTab, label: "Takipler", count: dailyOperationsDesk.followups.length },
-              { id: "waiting" as QueueSubTab, label: "Bekleyenler", count: dailyOperationsDesk.waiting.length },
-            ]
-          ).map(({ id, label, count }) => {
-            const isActive = queueSubTab === id;
-            return (
+      {/* EXECUTION workspace — v5.5 unified Founder Console (Command Center) */}
+      {workspaceTab === "execution" && mounted && allRows.length > 0 && (
+        <FounderConsoleShell
+          accent="orange"
+          icon={<IconSpark className="h-4 w-4 text-orange-200" />}
+          title={locale === "tr" ? "Komuta Merkezi" : "Command Center"}
+          subtitle={
+            locale === "tr"
+              ? "Kritik işler, satış planı ve operasyon akışı"
+              : "Critical tasks, sales plan and execution flow"
+          }
+          actions={
+            <>
               <button
-                key={id}
                 type="button"
-                onClick={() => setQueueSubTab(id)}
-                className={`flex-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-all ring-1 ring-inset ${
-                  isActive
-                    ? "bg-indigo-500/20 text-indigo-200 ring-indigo-400/30"
-                    : "text-zinc-500 ring-transparent hover:bg-white/5 hover:text-zinc-300"
-                }`}
+                onClick={autoBuildTodayQueue}
+                className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-medium text-emerald-100 transition hover:bg-emerald-500/25"
               >
-                {label}
-                <span className="ml-1 text-[10px] font-normal tabular-nums opacity-60">({count})</span>
+                {t("auto_build_queue", locale)}
               </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* v5.0.1 Opportunity Table + Right Intelligence Panel (2-column) — table is the product core */}
-      {mounted && allRows.length > 0 && (
-        <div className="grid gap-4 xl:grid-cols-[1fr_300px]">
-          {/* Left: Opportunity Table — the default revenue-operations surface */}
-          <section className="rounded-xl border border-indigo-400/15 bg-white/[0.015] p-4 backdrop-blur ring-1 ring-inset ring-white/5">
-            <div className="mb-3 flex items-center gap-2">
-              <div className="flex h-5 w-5 items-center justify-center rounded bg-indigo-500/20">
-                <IconSpark className="h-3.5 w-3.5 text-indigo-200" />
-              </div>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
-                {locale === "tr" ? "Fırsat Tablosu" : "Opportunity Table"}
-              </h2>
-              <span className="text-[11px] text-zinc-500">
-                {locale === "tr" ? "Revenue Priority sırasına göre" : "Sorted by Revenue Priority"}
-              </span>
-              <span className="ml-auto tabular-nums text-[11px] text-zinc-600">
-                {activeQueueCandidates.length} {locale === "tr" ? "fırsat" : "leads"}
-              </span>
+              <button
+                type="button"
+                onClick={startDailyOutreachSession}
+                disabled={safeActiveQueueCount === 0}
+                className="rounded-md border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t("start_outreach_session", locale)}
+              </button>
+            </>
+          }
+          left={
+            <div className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
+              <TodayCriticalTasks
+                rows={allRows}
+                now={renderNow || Date.now()}
+                onOpenDetail={(id) => setOpenId(id)}
+              />
+              <AutonomousSalesPlan
+                rows={allRows}
+                now={renderNow || Date.now()}
+                contactFinderMap={contactFinderMap}
+                onOpenDetail={(id) => setOpenId(id)}
+              />
+              <ActionQueuePanel
+                rows={allRows}
+                now={renderNow || Date.now()}
+                onOpenDetail={(id) => setOpenId(id)}
+              />
+              <SalesPipelineBoard
+                rows={allRows}
+                now={renderNow || Date.now()}
+                onOpenDetail={(id) => setOpenId(id)}
+              />
             </div>
-            <LeadOpportunityTable
-              rows={activeQueueCandidates.map((c) => c.row)}
-              packageMap={packageByLeadId}
-              expectedRevenueMap={expectedRevenueByLeadId}
-              revenuePriorityMap={revenuePriorityByLeadId}
-              contactFinderMap={contactFinderMap}
-              openId={openId}
-              now={renderNow}
-              onOpenDetail={(id) => setOpenId(id)}
-              getActivityLabel={getLastOutreachActivityLabel}
-            />
-          </section>
-          {/* Right: reasoning + summary */}
-          <div className="space-y-4">
-            <QueueReasoningPanel
-              topCandidate={activeQueueCandidates[0] ?? null}
-              revenuePriorityMap={revenuePriorityByLeadId}
-              expectedRevenueMap={expectedRevenueByLeadId}
-            />
-            <RevenueSummaryPanel
-              candidates={activeQueueCandidates}
-              revenuePriorityMap={revenuePriorityByLeadId}
-              expectedRevenueMap={expectedRevenueByLeadId}
-            />
-          </div>
-        </div>
-      )}
-
-      </>)}
-
-      {/* EXECUTION workspace (part 2 — counters) */}
-      {workspaceTab === "execution" && (
-      <>
-      {/* v1.8 Execution counters — Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan */}
-      {mounted && allRows.length > 0 && (
-        <ExecutionCounters rows={allRows} now={renderNow || Date.now()} />
-      )}
-      </>)}
-
-      {/* OPPORTUNITIES workspace (part 2) — DailyOpportunityQueue replaced by v3.9.3 Revenue Queue in part 1 */}
-
-      {/* EXECUTION workspace (part 3 — pipeline & action queue) */}
-      {workspaceTab === "execution" && (
-      <>
-
-      {/* v1.8 "Günün Öncelikli Aksiyonları" action queue panel */}
-      {mounted && (
-        <ActionQueuePanel
-          rows={allRows}
-          now={renderNow || Date.now()}
-          onOpenDetail={(id) => setOpenId(id)}
+          }
+          right={
+            <>
+              <FounderCommandCenter
+                rows={allRows}
+                now={renderNow || Date.now()}
+                contactFinderMap={contactFinderMap}
+                onOpenDetail={(id) => setOpenId(id)}
+              />
+              <DailyOperatingBrief
+                rows={allRows}
+                now={renderNow || Date.now()}
+                completedToday={safeCompletedToday}
+                activeQueueCount={safeActiveQueueCount}
+              />
+              <FounderWorkflowSteps rows={allRows} now={renderNow || Date.now()} />
+              <OperationStatusStrip rows={allRows} now={renderNow || Date.now()} />
+              <DailyProgressStrip
+                rows={allRows}
+                completedToday={safeCompletedToday}
+                activeQueueCount={safeActiveQueueCount}
+              />
+            </>
+          }
         />
       )}
 
-      {/* v1.9 Pipeline Counters — Temas Kuruldu / Takipte / Demo Aşamasında / Kazanıldı */}
-      {mounted && allRows.length > 0 && (
-        <PipelineCounters rows={allRows} />
-      )}
-
-      {/* v1.9 "Satış Boru Hattı" pipeline board */}
-      {mounted && (
-        <SalesPipelineBoard
-          rows={allRows}
-          now={renderNow || Date.now()}
-          onOpenDetail={(id) => setOpenId(id)}
+      {/* REVENUE workspace — v5.5 unified Founder Console (Revenue Intelligence) */}
+      {workspaceTab === "revenue" && mounted && allRows.length > 0 && (
+        <FounderConsoleShell
+          accent="emerald"
+          icon={<IconSpark className="h-4 w-4 text-emerald-200" />}
+          title={locale === "tr" ? "Gelir Analizi" : "Revenue Intelligence"}
+          subtitle={
+            locale === "tr"
+              ? "Ağırlıklı pipeline, 30 günlük tahmin, risk ve geri kazanım"
+              : "Weighted pipeline, 30-day forecast, risk and recovery"
+          }
+          left={
+            <div className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
+              <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
+              <RevenueRankingCard
+                rows={allRows}
+                revenuePriorityMap={revenuePriorityByLeadId}
+                onOpenDetail={(id) => setOpenId(id)}
+              />
+              <TopRevenueOpportunities rows={allRows} now={renderNow || Date.now()} />
+              <RevenueRiskEngine
+                rows={allRows}
+                now={renderNow || Date.now()}
+                contactFinderMap={contactFinderMap}
+              />
+              <RevenueRecoveryEngine
+                rows={allRows}
+                now={renderNow || Date.now()}
+                contactFinderMap={contactFinderMap}
+              />
+            </div>
+          }
+          right={
+            <>
+              <FounderForecastEngine rows={allRows} now={renderNow || Date.now()} />
+              <WeeklyCommercialOutlook rows={allRows} now={renderNow || Date.now()} />
+            </>
+          }
         />
       )}
 
-      </>)}
+      {/* OPPORTUNITIES workspace — v5.5 unified Founder Console (Revenue Queue, benchmark; also serves Operasyon filtered views) */}
+      {workspaceTab === "opportunities" && mounted && allRows.length > 0 && (
+        <FounderConsoleShell
+          accent="indigo"
+          icon={<IconSpark className="h-4 w-4 text-indigo-200" />}
+          title={
+            locale === "tr"
+              ? queueSubTab === "calls"
+                ? "Aranacaklar"
+                : queueSubTab === "messages"
+                  ? "Mesajlar"
+                  : queueSubTab === "followups"
+                    ? "Takipler"
+                    : queueSubTab === "waiting"
+                      ? "Bekleyenler"
+                      : "Gelir Kuyruğu"
+              : queueSubTab === "calls"
+                ? "Calls"
+                : queueSubTab === "messages"
+                  ? "Messages"
+                  : queueSubTab === "followups"
+                    ? "Follow-ups"
+                    : queueSubTab === "waiting"
+                      ? "Waiting"
+                      : "Revenue Queue"
+          }
+          subtitle={
+            locale === "tr"
+              ? "Fırsat tablosu ve gelir zekası — tek konsol"
+              : "Opportunity table and revenue intelligence — one console"
+          }
+          tabs={
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { tab: "queue", label: locale === "tr" ? "Fırsat Kuyruğu" : "Opportunity Queue", count: revenueQueueCandidates.length },
+                  { tab: "calls", label: locale === "tr" ? "Aranacaklar" : "Calls", count: dailyOperationsDesk.calls.length },
+                  { tab: "messages", label: locale === "tr" ? "Mesajlar" : "Messages", count: dailyOperationsDesk.messages.length },
+                  { tab: "followups", label: locale === "tr" ? "Takipler" : "Follow-ups", count: dailyOperationsDesk.followups.length },
+                  { tab: "waiting", label: locale === "tr" ? "Bekleyenler" : "Waiting", count: dailyOperationsDesk.waiting.length },
+                ] satisfies { tab: QueueSubTab; label: string; count: number }[]
+              ).map(({ tab, label, count }) => {
+                const isActive = queueSubTab === tab;
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setQueueSubTab(tab)}
+                    className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-medium transition ${
+                      isActive
+                        ? "border-indigo-400/40 bg-indigo-500/15 text-indigo-100 ring-1 ring-inset ring-indigo-400/20"
+                        : "border-white/10 bg-white/[0.02] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
+                    }`}
+                  >
+                    <span>{label}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] tabular-nums ${
+                        isActive ? "bg-indigo-500/25 text-indigo-100" : "bg-white/5 text-zinc-500"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          }
+          left={
+            <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-indigo-400/20 bg-white/[0.015] backdrop-blur ring-1 ring-inset ring-indigo-400/10">
+              <div className="flex shrink-0 items-center gap-2 border-b border-white/5 px-4 py-2.5">
+                <div className="flex h-5 w-5 items-center justify-center rounded bg-indigo-500/20">
+                  <IconSpark className="h-3.5 w-3.5 text-indigo-200" />
+                </div>
+                <h2 className="text-sm font-bold uppercase tracking-wider text-indigo-100">
+                  {locale === "tr" ? "Fırsat Tablosu" : "Opportunity Table"}
+                </h2>
+                <span className="hidden text-[11px] text-zinc-500 sm:inline">
+                  {locale === "tr" ? "Revenue Priority sırasına göre" : "Sorted by Revenue Priority"}
+                </span>
+                <span className="ml-auto tabular-nums text-[11px] text-zinc-600">
+                  {activeQueueCandidates.length} {locale === "tr" ? "fırsat" : "leads"}
+                </span>
+              </div>
+              <div className="min-h-0 flex-1">
+                <LeadOpportunityTable
+                  rows={activeQueueCandidates.map((c) => c.row)}
+                  packageMap={packageByLeadId}
+                  expectedRevenueMap={expectedRevenueByLeadId}
+                  revenuePriorityMap={revenuePriorityByLeadId}
+                  contactFinderMap={contactFinderMap}
+                  openId={openId}
+                  now={renderNow}
+                  onOpenDetail={(id) => setOpenId(id)}
+                  getActivityLabel={getLastOutreachActivityLabel}
+                />
+              </div>
+            </section>
+          }
+          right={
+            <>
+              <QueueReasoningPanel
+                topCandidate={activeQueueCandidates[0] ?? null}
+                revenuePriorityMap={revenuePriorityByLeadId}
+                expectedRevenueMap={expectedRevenueByLeadId}
+              />
+              <RevenueSummaryPanel
+                candidates={activeQueueCandidates}
+                revenuePriorityMap={revenuePriorityByLeadId}
+                expectedRevenueMap={expectedRevenueByLeadId}
+              />
+              {/* v3.9.4 Bugünün Gelir Odağı — top 3 revenue priorities */}
+              <section className="rounded-xl border border-amber-400/20 bg-amber-500/[0.03] p-4 backdrop-blur ring-1 ring-inset ring-amber-400/10">
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="flex h-5 w-5 items-center justify-center rounded bg-amber-500/20">
+                    <svg className="h-3.5 w-3.5 text-amber-300" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M8 2l1.5 4.5H14l-3.75 2.75L11.5 14 8 11.25 4.5 14l1.25-4.75L2 6.5h4.5z" fill="currentColor" />
+                    </svg>
+                  </div>
+                  <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200">
+                    Bugünün Gelir Odağı
+                  </h2>
+                </div>
+                <RevenueFocusStrip
+                  candidates={revenueQueueCandidates}
+                  revenuePriorityMap={revenuePriorityByLeadId}
+                  expectedRevenueMap={expectedRevenueByLeadId}
+                  onOpenDetail={(id) => setOpenId(id)}
+                />
+              </section>
+              {/* v3.9.4 Günlük Operasyon Planı — daily action plan */}
+              <DailyActionPanel
+                candidates={activeQueueCandidates}
+                revenuePriorityMap={revenuePriorityByLeadId}
+                onOpenDetail={(id) => setOpenId(id)}
+                onContact={contactFromDailyQueue}
+              />
+            </>
+          }
+        />
+      )}
+
+      {/* v5.5 — execution counters & pipeline board consolidated into the Command Center console above. */}
 
       {/* ACQUISITION workspace (v5.0 — Lead Edinimi: import + sync + results, moved out of main ops) */}
       {workspaceTab === "acquisition" && (
@@ -15750,35 +15684,32 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         </section>
       )}
 
-      {/* PIPELINE (intelligence) — Priority Opportunities (v5.0: Hot Leads moved out of main ops) */}
-      {workspaceTab === "intelligence" && (
-      <>
+      {/* INTELLIGENCE workspace — v5.5 unified Founder Console (Lead List) */}
+      {workspaceTab === "intelligence" && mounted && allRows.length > 0 && (
+        <FounderConsoleShell
+          accent="violet"
+          icon={<IconSpark className="h-4 w-4 text-violet-200" />}
+          title={locale === "tr" ? "Lead Havuzu" : "Lead Pool"}
+          subtitle={
+            locale === "tr"
+              ? "Akıllı segmentler, sıcak fırsatlar ve tüm lead havuzu"
+              : "Smart segments, hot opportunities and the full lead pool"
+          }
+          right={
+            <>
 
-      {/* Priority opportunities identity */}
-      <WorkspaceHeader
-        accent="orange"
-        icon={<IconSpark className="h-4 w-4 text-orange-200" />}
-        title={locale === "tr" ? "Öncelikli Fırsatlar" : "Priority Opportunities"}
-        subtitle={
-          locale === "tr"
-            ? "En sıcak hedefler — bugün öne çıkan kritik fırsatlar"
-            : "Hottest targets — critical opportunities surfacing today"
-        }
-      />
-
-      {/* Hot 10 */}
+      {/* Hot opportunities — moved into right intelligence panel */}
       <section className="overflow-hidden rounded-xl border border-orange-400/15 bg-orange-500/[0.03] ring-1 ring-inset ring-orange-400/10">
-        <div className="border-b border-white/5 px-5 py-4">
+        <div className="border-b border-white/5 px-4 py-3">
           <h2 className="flex items-center gap-2.5 text-xs font-bold uppercase tracking-[0.12em] text-orange-200">
             <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
             {useLatestImportHotLeads
               ? t("hot_targets_import", locale)
               : t("hot_targets", locale)}
           </h2>
-          <p className="mt-1 text-[11px] text-zinc-500">{t("hot_targets_sub", locale)}</p>
         </div>
-        <div className="p-4">
-          <div className="-mx-1 grid grid-flow-col auto-cols-[260px] gap-3 overflow-x-auto px-1 pb-2 sm:auto-cols-[280px]">
+        <div className="p-3">
+          <div className="-mx-1 grid grid-flow-col auto-cols-[240px] gap-3 overflow-x-auto px-1 pb-2">
             {hot5.map((lead, i) => (
               <HotCard
                 key={renderLeadKey("hot", lead, i)}
@@ -15795,24 +15726,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>
         </div>
       </section>
-
-      </>)}
-
-      {/* INTELLIGENCE workspace — v4.2 Lead Intelligence Workspace */}
-      {workspaceTab === "intelligence" && (
-      <>
-
-      {/* Workspace identity */}
-      <WorkspaceHeader
-        accent="violet"
-        icon={<IconSpark className="h-4 w-4 text-violet-200" />}
-        title={locale === "tr" ? "Lead İstihbaratı" : "Lead Intelligence"}
-        subtitle={
-          locale === "tr"
-            ? "Akıllı segmentlerle keşfet, tüm lead havuzunu yönet"
-            : "Explore via smart segments, manage the full lead pool"
-        }
-      />
 
       {/* v3.8.7 Smart Lead Segments */}
       <section className="overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.03] backdrop-blur ring-1 ring-inset ring-violet-400/10">
@@ -15924,6 +15837,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           })}
         </div>
       </section>
+
+            </>
+          }
+          left={
+            <div className="flex min-h-0 flex-col gap-3 lg:overflow-y-auto lg:pr-1">
 
       {/* Active segment filter bar */}
       {smartSegment && (
@@ -16453,7 +16371,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         )}
       </section>
 
-      </>)}
+            </div>
+          }
+        />
+      )}
 
       {/* FOLLOWUPS workspace — Bugünün Takipleri */}
       {workspaceTab === "followups" && (
@@ -16463,6 +16384,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       <footer className="pb-8 pt-2 text-center text-[11px] text-zinc-600">
         {t("footer_mvp", locale)}
       </footer>
+
+      </div>
+      {/* /v5.3 App-shell content region */}
 
       <AiMessageModal
         state={aiMessageModal}
