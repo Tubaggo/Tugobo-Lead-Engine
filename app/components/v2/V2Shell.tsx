@@ -13,6 +13,8 @@ import IcpAnalysisScreen from "@/app/components/v2/screens/IcpAnalysisScreen";
 import IcpAnalysisContextPanel from "@/app/components/v2/screens/IcpAnalysisContextPanel";
 import CommunicationIntelligenceScreen from "@/app/components/v2/screens/CommunicationIntelligenceScreen";
 import CommunicationIntelligenceContextPanel from "@/app/components/v2/screens/CommunicationIntelligenceContextPanel";
+import FollowUpsScreen from "@/app/components/v2/screens/FollowUpsScreen";
+import FollowUpsContextPanel from "@/app/components/v2/screens/FollowUpsContextPanel";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -20,6 +22,7 @@ import type { QueueRow, MockKpi, MockContext } from "@/app/components/v2/mock/mo
 import type { LeadCard } from "@/app/components/v2/adapters/lead-list-adapter";
 import type { IcpCard } from "@/app/components/v2/adapters/icp-analysis-adapter";
 import type { CommCard } from "@/app/components/v2/adapters/communication-intelligence-adapter";
+import type { FollowUpCard } from "@/app/components/v2/adapters/follow-ups-adapter";
 
 export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> = {
   "revenue-queue": {
@@ -75,19 +78,22 @@ type Props = {
   cards: LeadCard[];
   icpCards: IcpCard[];
   commCards: CommCard[];
+  followUpCards: FollowUpCard[];
 };
 
-export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards }: Props) {
+export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards }: Props) {
   const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
   const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
   const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
   const [selectedCommCard, setSelectedCommCard] = useState<CommCard | null>(null);
+  const [selectedFollowUpCard, setSelectedFollowUpCard] = useState<FollowUpCard | null>(null);
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
     setSelectedLeadCard(null);
     setSelectedIcpCard(null);
     setSelectedCommCard(null);
+    setSelectedFollowUpCard(null);
   }
 
   const meta = SCREEN_META[activeScreen];
@@ -95,6 +101,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards }: 
   const isLeadList = activeScreen === "lead-list";
   const isIcpAnalysis = activeScreen === "icp-analysis";
   const isCommIntelligence = activeScreen === "communication-intelligence";
+  const isFollowUps = activeScreen === "follow-ups";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -144,13 +151,29 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards }: 
                 allCards={commCards}
               />
             </>
+          ) : isFollowUps ? (
+            <>
+              <FollowUpsScreen
+                cards={followUpCards}
+                selectedId={selectedFollowUpCard?.id ?? null}
+                onSelect={setSelectedFollowUpCard}
+              />
+              <FollowUpsContextPanel
+                selectedCard={selectedFollowUpCard}
+                allCards={followUpCards}
+              />
+            </>
           ) : (
             <>
               <PlaceholderScreen
                 screen={
                   activeScreen as Exclude<
                     V2Screen,
-                    "revenue-queue" | "lead-list" | "icp-analysis" | "communication-intelligence"
+                    | "revenue-queue"
+                    | "lead-list"
+                    | "icp-analysis"
+                    | "communication-intelligence"
+                    | "follow-ups"
                   >
                 }
               />
@@ -158,7 +181,11 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards }: 
                 screen={
                   activeScreen as Exclude<
                     V2Screen,
-                    "revenue-queue" | "lead-list" | "icp-analysis" | "communication-intelligence"
+                    | "revenue-queue"
+                    | "lead-list"
+                    | "icp-analysis"
+                    | "communication-intelligence"
+                    | "follow-ups"
                   >
                 }
               />

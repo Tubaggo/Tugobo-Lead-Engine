@@ -4,6 +4,7 @@ import { adaptV2Data } from "@/app/components/v2/adapters/revenue-queue-adapter"
 import { adaptScoredLeadsToCards } from "@/app/components/v2/adapters/lead-list-adapter";
 import { adaptScoredLeadsToIcpCards } from "@/app/components/v2/adapters/icp-analysis-adapter";
 import { adaptScoredLeadsToCommCards } from "@/app/components/v2/adapters/communication-intelligence-adapter";
+import { adaptScoredLeadsToFollowUpCards } from "@/app/components/v2/adapters/follow-ups-adapter";
 import V2Shell from "@/app/components/v2/V2Shell";
 
 export const metadata: Metadata = {
@@ -16,5 +17,6 @@ export default function V2Page() {
   const cards = adaptScoredLeadsToCards(scored);
   const icpCards = adaptScoredLeadsToIcpCards(scored);
   const commCards = adaptScoredLeadsToCommCards(scored);
-  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} />;
+  const followUpCards = adaptScoredLeadsToFollowUpCards(scored);
+  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} />;
 }
