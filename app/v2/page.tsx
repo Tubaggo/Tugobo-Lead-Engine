@@ -5,6 +5,7 @@ import { adaptScoredLeadsToCards } from "@/app/components/v2/adapters/lead-list-
 import { adaptScoredLeadsToIcpCards } from "@/app/components/v2/adapters/icp-analysis-adapter";
 import { adaptScoredLeadsToCommCards } from "@/app/components/v2/adapters/communication-intelligence-adapter";
 import { adaptScoredLeadsToFollowUpCards } from "@/app/components/v2/adapters/follow-ups-adapter";
+import { adaptScoredLeadsToPipelineCards } from "@/app/components/v2/adapters/revenue-pipeline-adapter";
 import V2Shell from "@/app/components/v2/V2Shell";
 
 export const metadata: Metadata = {
@@ -18,5 +19,6 @@ export default function V2Page() {
   const icpCards = adaptScoredLeadsToIcpCards(scored);
   const commCards = adaptScoredLeadsToCommCards(scored);
   const followUpCards = adaptScoredLeadsToFollowUpCards(scored);
-  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} />;
+  const pipelineCards = adaptScoredLeadsToPipelineCards(scored);
+  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} pipelineCards={pipelineCards} />;
 }

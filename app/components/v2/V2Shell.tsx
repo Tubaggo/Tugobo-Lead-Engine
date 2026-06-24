@@ -15,6 +15,8 @@ import CommunicationIntelligenceScreen from "@/app/components/v2/screens/Communi
 import CommunicationIntelligenceContextPanel from "@/app/components/v2/screens/CommunicationIntelligenceContextPanel";
 import FollowUpsScreen from "@/app/components/v2/screens/FollowUpsScreen";
 import FollowUpsContextPanel from "@/app/components/v2/screens/FollowUpsContextPanel";
+import RevenuePipelineScreen from "@/app/components/v2/screens/RevenuePipelineScreen";
+import RevenuePipelineContextPanel from "@/app/components/v2/screens/RevenuePipelineContextPanel";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -23,6 +25,7 @@ import type { LeadCard } from "@/app/components/v2/adapters/lead-list-adapter";
 import type { IcpCard } from "@/app/components/v2/adapters/icp-analysis-adapter";
 import type { CommCard } from "@/app/components/v2/adapters/communication-intelligence-adapter";
 import type { FollowUpCard } from "@/app/components/v2/adapters/follow-ups-adapter";
+import type { PipelineCard } from "@/app/components/v2/adapters/revenue-pipeline-adapter";
 
 export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> = {
   "revenue-queue": {
@@ -79,14 +82,16 @@ type Props = {
   icpCards: IcpCard[];
   commCards: CommCard[];
   followUpCards: FollowUpCard[];
+  pipelineCards: PipelineCard[];
 };
 
-export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards }: Props) {
+export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards }: Props) {
   const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
   const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
   const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
   const [selectedCommCard, setSelectedCommCard] = useState<CommCard | null>(null);
   const [selectedFollowUpCard, setSelectedFollowUpCard] = useState<FollowUpCard | null>(null);
+  const [selectedPipelineCard, setSelectedPipelineCard] = useState<PipelineCard | null>(null);
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
@@ -94,6 +99,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
     setSelectedIcpCard(null);
     setSelectedCommCard(null);
     setSelectedFollowUpCard(null);
+    setSelectedPipelineCard(null);
   }
 
   const meta = SCREEN_META[activeScreen];
@@ -102,6 +108,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
   const isIcpAnalysis = activeScreen === "icp-analysis";
   const isCommIntelligence = activeScreen === "communication-intelligence";
   const isFollowUps = activeScreen === "follow-ups";
+  const isPipeline = activeScreen === "revenue-pipeline";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -163,6 +170,18 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                 allCards={followUpCards}
               />
             </>
+          ) : isPipeline ? (
+            <>
+              <RevenuePipelineScreen
+                cards={pipelineCards}
+                selectedId={selectedPipelineCard?.id ?? null}
+                onSelect={setSelectedPipelineCard}
+              />
+              <RevenuePipelineContextPanel
+                selectedCard={selectedPipelineCard}
+                allCards={pipelineCards}
+              />
+            </>
           ) : (
             <>
               <PlaceholderScreen
@@ -174,6 +193,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "icp-analysis"
                     | "communication-intelligence"
                     | "follow-ups"
+                    | "revenue-pipeline"
                   >
                 }
               />
@@ -186,6 +206,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "icp-analysis"
                     | "communication-intelligence"
                     | "follow-ups"
+                    | "revenue-pipeline"
                   >
                 }
               />
