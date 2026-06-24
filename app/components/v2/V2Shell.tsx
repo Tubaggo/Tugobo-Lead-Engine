@@ -7,10 +7,19 @@ import V2Header from "@/app/components/v2/layout/V2Header";
 import V2KpiStrip from "@/app/components/v2/layout/V2KpiStrip";
 import V2ContextPanel from "@/app/components/v2/layout/V2ContextPanel";
 import RevenueQueueScreen from "@/app/components/v2/screens/RevenueQueueScreen";
+import LeadListScreen from "@/app/components/v2/screens/LeadListScreen";
+import LeadListContextPanel from "@/app/components/v2/screens/LeadListContextPanel";
+import IcpAnalysisScreen from "@/app/components/v2/screens/IcpAnalysisScreen";
+import IcpAnalysisContextPanel from "@/app/components/v2/screens/IcpAnalysisContextPanel";
+import CommunicationIntelligenceScreen from "@/app/components/v2/screens/CommunicationIntelligenceScreen";
+import CommunicationIntelligenceContextPanel from "@/app/components/v2/screens/CommunicationIntelligenceContextPanel";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
 import type { QueueRow, MockKpi, MockContext } from "@/app/components/v2/mock/mock-queue";
+import type { LeadCard } from "@/app/components/v2/adapters/lead-list-adapter";
+import type { IcpCard } from "@/app/components/v2/adapters/icp-analysis-adapter";
+import type { CommCard } from "@/app/components/v2/adapters/communication-intelligence-adapter";
 
 export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> = {
   "revenue-queue": {
@@ -63,17 +72,33 @@ type Props = {
   rows: QueueRow[];
   kpi: MockKpi;
   ctx: MockContext;
+  cards: LeadCard[];
+  icpCards: IcpCard[];
+  commCards: CommCard[];
 };
 
-export default function V2Shell({ rows, kpi, ctx }: Props) {
+export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards }: Props) {
   const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
+  const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
+  const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
+  const [selectedCommCard, setSelectedCommCard] = useState<CommCard | null>(null);
+
+  function handleNavigate(screen: V2Screen) {
+    setActiveScreen(screen);
+    setSelectedLeadCard(null);
+    setSelectedIcpCard(null);
+    setSelectedCommCard(null);
+  }
 
   const meta = SCREEN_META[activeScreen];
   const isQueue = activeScreen === "revenue-queue";
+  const isLeadList = activeScreen === "lead-list";
+  const isIcpAnalysis = activeScreen === "icp-analysis";
+  const isCommIntelligence = activeScreen === "communication-intelligence";
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <V2Sidebar activeScreen={activeScreen} onNavigate={setActiveScreen} />
+      <V2Sidebar activeScreen={activeScreen} onNavigate={handleNavigate} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <V2Header title={meta.title} subtitle={meta.subtitle} />
         {isQueue && <V2KpiStrip kpi={kpi} />}
@@ -83,13 +108,59 @@ export default function V2Shell({ rows, kpi, ctx }: Props) {
               <RevenueQueueScreen rows={rows} kpi={kpi} />
               <V2ContextPanel kpi={kpi} ctx={ctx} />
             </>
+          ) : isLeadList ? (
+            <>
+              <LeadListScreen
+                cards={cards}
+                selectedId={selectedLeadCard?.id ?? null}
+                onSelect={setSelectedLeadCard}
+              />
+              <LeadListContextPanel
+                selectedCard={selectedLeadCard}
+                allCards={cards}
+              />
+            </>
+          ) : isIcpAnalysis ? (
+            <>
+              <IcpAnalysisScreen
+                cards={icpCards}
+                selectedId={selectedIcpCard?.id ?? null}
+                onSelect={setSelectedIcpCard}
+              />
+              <IcpAnalysisContextPanel
+                selectedCard={selectedIcpCard}
+                allCards={icpCards}
+              />
+            </>
+          ) : isCommIntelligence ? (
+            <>
+              <CommunicationIntelligenceScreen
+                cards={commCards}
+                selectedId={selectedCommCard?.id ?? null}
+                onSelect={setSelectedCommCard}
+              />
+              <CommunicationIntelligenceContextPanel
+                selectedCard={selectedCommCard}
+                allCards={commCards}
+              />
+            </>
           ) : (
             <>
               <PlaceholderScreen
-                screen={activeScreen as Exclude<V2Screen, "revenue-queue">}
+                screen={
+                  activeScreen as Exclude<
+                    V2Screen,
+                    "revenue-queue" | "lead-list" | "icp-analysis" | "communication-intelligence"
+                  >
+                }
               />
               <PlaceholderContextPanel
-                screen={activeScreen as Exclude<V2Screen, "revenue-queue">}
+                screen={
+                  activeScreen as Exclude<
+                    V2Screen,
+                    "revenue-queue" | "lead-list" | "icp-analysis" | "communication-intelligence"
+                  >
+                }
               />
             </>
           )}
