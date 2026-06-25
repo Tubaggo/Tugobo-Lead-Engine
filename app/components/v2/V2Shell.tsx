@@ -17,6 +17,12 @@ import FollowUpsScreen from "@/app/components/v2/screens/FollowUpsScreen";
 import FollowUpsContextPanel from "@/app/components/v2/screens/FollowUpsContextPanel";
 import RevenuePipelineScreen from "@/app/components/v2/screens/RevenuePipelineScreen";
 import RevenuePipelineContextPanel from "@/app/components/v2/screens/RevenuePipelineContextPanel";
+import RevenueForecastScreen from "@/app/components/v2/screens/RevenueForecastScreen";
+import RevenueForecastContextPanel from "@/app/components/v2/screens/RevenueForecastContextPanel";
+import RevenueRiskScreen from "@/app/components/v2/screens/RevenueRiskScreen";
+import RevenueRiskContextPanel from "@/app/components/v2/screens/RevenueRiskContextPanel";
+import RevenueRecoveryScreen from "@/app/components/v2/screens/RevenueRecoveryScreen";
+import RevenueRecoveryContextPanel from "@/app/components/v2/screens/RevenueRecoveryContextPanel";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -26,6 +32,9 @@ import type { IcpCard } from "@/app/components/v2/adapters/icp-analysis-adapter"
 import type { CommCard } from "@/app/components/v2/adapters/communication-intelligence-adapter";
 import type { FollowUpCard } from "@/app/components/v2/adapters/follow-ups-adapter";
 import type { PipelineCard } from "@/app/components/v2/adapters/revenue-pipeline-adapter";
+import type { ForecastCard } from "@/app/components/v2/adapters/revenue-forecast-adapter";
+import type { RiskCard } from "@/app/components/v2/adapters/revenue-risk-adapter";
+import type { RecoveryCard } from "@/app/components/v2/adapters/revenue-recovery-adapter";
 
 export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> = {
   "revenue-queue": {
@@ -83,15 +92,21 @@ type Props = {
   commCards: CommCard[];
   followUpCards: FollowUpCard[];
   pipelineCards: PipelineCard[];
+  forecastCards: ForecastCard[];
+  riskCards: RiskCard[];
+  recoveryCards: RecoveryCard[];
 };
 
-export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards }: Props) {
+export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards }: Props) {
   const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
   const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
   const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
   const [selectedCommCard, setSelectedCommCard] = useState<CommCard | null>(null);
   const [selectedFollowUpCard, setSelectedFollowUpCard] = useState<FollowUpCard | null>(null);
   const [selectedPipelineCard, setSelectedPipelineCard] = useState<PipelineCard | null>(null);
+  const [selectedForecastCard, setSelectedForecastCard] = useState<ForecastCard | null>(null);
+  const [selectedRiskCard, setSelectedRiskCard] = useState<RiskCard | null>(null);
+  const [selectedRecoveryCard, setSelectedRecoveryCard] = useState<RecoveryCard | null>(null);
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
@@ -100,6 +115,9 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
     setSelectedCommCard(null);
     setSelectedFollowUpCard(null);
     setSelectedPipelineCard(null);
+    setSelectedForecastCard(null);
+    setSelectedRiskCard(null);
+    setSelectedRecoveryCard(null);
   }
 
   const meta = SCREEN_META[activeScreen];
@@ -109,6 +127,9 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
   const isCommIntelligence = activeScreen === "communication-intelligence";
   const isFollowUps = activeScreen === "follow-ups";
   const isPipeline = activeScreen === "revenue-pipeline";
+  const isForecast = activeScreen === "revenue-forecast";
+  const isRisk = activeScreen === "revenue-risk";
+  const isRecovery = activeScreen === "revenue-recovery";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -182,6 +203,42 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                 allCards={pipelineCards}
               />
             </>
+          ) : isForecast ? (
+            <>
+              <RevenueForecastScreen
+                cards={forecastCards}
+                selectedId={selectedForecastCard?.id ?? null}
+                onSelect={setSelectedForecastCard}
+              />
+              <RevenueForecastContextPanel
+                selectedCard={selectedForecastCard}
+                allCards={forecastCards}
+              />
+            </>
+          ) : isRisk ? (
+            <>
+              <RevenueRiskScreen
+                cards={riskCards}
+                selectedId={selectedRiskCard?.id ?? null}
+                onSelect={setSelectedRiskCard}
+              />
+              <RevenueRiskContextPanel
+                selectedCard={selectedRiskCard}
+                allCards={riskCards}
+              />
+            </>
+          ) : isRecovery ? (
+            <>
+              <RevenueRecoveryScreen
+                cards={recoveryCards}
+                selectedId={selectedRecoveryCard?.id ?? null}
+                onSelect={setSelectedRecoveryCard}
+              />
+              <RevenueRecoveryContextPanel
+                selectedCard={selectedRecoveryCard}
+                allCards={recoveryCards}
+              />
+            </>
           ) : (
             <>
               <PlaceholderScreen
@@ -194,6 +251,9 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "communication-intelligence"
                     | "follow-ups"
                     | "revenue-pipeline"
+                    | "revenue-forecast"
+                    | "revenue-risk"
+                    | "revenue-recovery"
                   >
                 }
               />
@@ -207,6 +267,9 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "communication-intelligence"
                     | "follow-ups"
                     | "revenue-pipeline"
+                    | "revenue-forecast"
+                    | "revenue-risk"
+                    | "revenue-recovery"
                   >
                 }
               />

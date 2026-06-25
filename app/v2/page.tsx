@@ -6,6 +6,9 @@ import { adaptScoredLeadsToIcpCards } from "@/app/components/v2/adapters/icp-ana
 import { adaptScoredLeadsToCommCards } from "@/app/components/v2/adapters/communication-intelligence-adapter";
 import { adaptScoredLeadsToFollowUpCards } from "@/app/components/v2/adapters/follow-ups-adapter";
 import { adaptScoredLeadsToPipelineCards } from "@/app/components/v2/adapters/revenue-pipeline-adapter";
+import { adaptScoredLeadsToForecastCards } from "@/app/components/v2/adapters/revenue-forecast-adapter";
+import { adaptScoredLeadsToRiskCards } from "@/app/components/v2/adapters/revenue-risk-adapter";
+import { adaptScoredLeadsToRecoveryCards } from "@/app/components/v2/adapters/revenue-recovery-adapter";
 import V2Shell from "@/app/components/v2/V2Shell";
 
 export const metadata: Metadata = {
@@ -20,5 +23,8 @@ export default function V2Page() {
   const commCards = adaptScoredLeadsToCommCards(scored);
   const followUpCards = adaptScoredLeadsToFollowUpCards(scored);
   const pipelineCards = adaptScoredLeadsToPipelineCards(scored);
-  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} pipelineCards={pipelineCards} />;
+  const forecastCards = adaptScoredLeadsToForecastCards(scored);
+  const riskCards = adaptScoredLeadsToRiskCards(scored);
+  const recoveryCards = adaptScoredLeadsToRecoveryCards(scored);
+  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} pipelineCards={pipelineCards} forecastCards={forecastCards} riskCards={riskCards} recoveryCards={recoveryCards} />;
 }
