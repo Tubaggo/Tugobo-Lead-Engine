@@ -145,12 +145,14 @@ function SearchIcon() {
 
 /* ── tab filter logic ─────────────────────────────────────── */
 
-function applyTabFilter(rows: QueueRow[], tabIndex: number): QueueRow[] {
+function filterByTab(rows: QueueRow[], tabIndex: number): QueueRow[] {
   switch (tabIndex) {
     case 1: return rows.filter((r) => r.channel === "Arama");
     case 2: return rows.filter((r) => r.channel === "WhatsApp");
-    case 3: return rows.filter((r) => r.actionLabel === "Takip Et");
-    case 4: return rows.filter((r) => r.priority === "low");
+    case 3: return rows.filter((r) =>
+      r.lastActionAgo.includes("gün") || r.lastActionAgo.includes("hafta")
+    );
+    case 4: return rows.filter((r) => r.priority === "low" || r.priority === "medium");
     default: return rows;
   }
 }
@@ -168,16 +170,24 @@ export default function RevenueQueueScreen({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
 
+  const tabCounts = useMemo(() => [
+    rows.length,
+    filterByTab(rows, 1).length,
+    filterByTab(rows, 2).length,
+    filterByTab(rows, 3).length,
+    filterByTab(rows, 4).length,
+  ], [rows]);
+
   const SUB_TABS = [
-    { label: "Fırsat Kuyruğu", count: kpi.opportunityCount },
-    { label: "Aranacaklar", count: kpi.callsToday },
-    { label: "Mesaj Atılacaklar", count: kpi.messagesToday },
-    { label: "Takip Edilecekler", count: kpi.followUpsToday },
-    { label: "Bekleyenler", count: kpi.pendingApprovals },
+    { label: "Fırsat Kuyruğu", count: tabCounts[0] },
+    { label: "Aranacaklar", count: tabCounts[1] },
+    { label: "Mesaj Atılacaklar", count: tabCounts[2] },
+    { label: "Takip Edilecekler", count: tabCounts[3] },
+    { label: "Bekleyenler", count: tabCounts[4] },
   ];
 
   const filteredRows = useMemo(() => {
-    let result = applyTabFilter(rows, activeTab);
+    let result = filterByTab(rows, activeTab);
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       result = result.filter(

@@ -94,7 +94,7 @@ export default function RevenueAnalyticsScreen({
     <div className="flex flex-1 flex-col overflow-hidden min-w-0">
 
       {/* KPI Strip */}
-      <div className="flex-shrink-0 grid grid-cols-4 gap-3 px-4 py-3 border-b border-zinc-800">
+      <div className="flex-shrink-0 grid grid-cols-4 gap-3 px-4 py-3 border-b border-white/[0.06]">
         <KpiCell
           label="Toplam Fırsat Değeri"
           value={formatMrr(summary.totalOpportunityValue)}
@@ -126,33 +126,35 @@ export default function RevenueAnalyticsScreen({
       </div>
 
       {/* Filter + Sort + Search */}
-      <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-4 py-2.5 border-b border-zinc-800">
+      <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-4 py-2.5 border-b border-white/[0.06]">
         {FILTERS.map((f) => (
           <button
             key={f.key}
             onClick={() => setFilter(f.key)}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-              filter === f.key ? "bg-zinc-700 text-white" : "text-zinc-500 hover:text-zinc-300"
+            className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+              filter === f.key
+                ? "bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/30"
+                : "text-zinc-500 hover:bg-white/[0.05] hover:text-zinc-300"
             }`}
           >
             {f.label}
           </button>
         ))}
-        <div className="flex items-center gap-1 ml-auto">
+        <div className="flex items-center gap-1.5 ml-auto">
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value as AnalyticsSortKey)}
-            className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none"
+            className="h-9 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 text-[11px] text-zinc-400 outline-none hover:bg-white/[0.06] hover:text-zinc-200 focus:ring-1 focus:ring-indigo-500/40 transition-colors duration-150 cursor-pointer"
           >
             {SORTS.map((s) => (
-              <option key={s.key} value={s.key}>{s.label}</option>
+              <option key={s.key} value={s.key}>↕ {s.label}</option>
             ))}
           </select>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Ara..."
-            className="bg-zinc-800/80 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 w-32"
+            placeholder="Otel veya şehir ara…"
+            className="h-9 w-48 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 text-[11px] text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-indigo-500/40 focus:bg-white/[0.06] transition-colors duration-150"
           />
         </div>
       </div>
@@ -302,7 +304,7 @@ function KpiCell({
 }) {
   return (
     <div className={`rounded-lg border px-3 py-2.5 ${bgClass}`}>
-      <p className="text-[10px] text-zinc-500 uppercase tracking-wide">{label}</p>
+      <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">{label}</p>
       <p className={`text-lg font-semibold mt-0.5 ${colorClass}`}>{value}</p>
       <p className="text-[10px] text-zinc-600 mt-0.5">{sub}</p>
     </div>
@@ -311,7 +313,7 @@ function KpiCell({
 
 function SectionLabel({ label }: { label: string }) {
   return (
-    <p className="text-[10px] uppercase tracking-widest font-semibold text-zinc-500">{label}</p>
+    <p className="text-[10px] uppercase tracking-[0.12em] font-semibold text-zinc-500">{label}</p>
   );
 }
 

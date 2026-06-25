@@ -257,7 +257,7 @@ function LeadDetail({ card }: { card: AnalyticsCard }) {
 
 function PanelLabel({ label }: { label: string }) {
   return (
-    <p className="text-[10px] uppercase tracking-widest font-semibold text-zinc-500">{label}</p>
+    <p className="text-[10px] uppercase tracking-[0.12em] font-semibold text-zinc-500">{label}</p>
   );
 }
 

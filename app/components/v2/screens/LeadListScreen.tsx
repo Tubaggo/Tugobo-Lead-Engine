@@ -216,7 +216,7 @@ type IcpFilter = "all" | "strong" | "good" | "weak";
 type SortKey = "opportunity" | "icp" | "revenue";
 
 const selectCls =
-  "rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-[11px] text-zinc-400 outline-none cursor-pointer hover:border-white/[0.12] transition-colors";
+  "h-9 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 text-[11px] text-zinc-400 outline-none hover:bg-white/[0.06] hover:text-zinc-200 focus:ring-1 focus:ring-indigo-500/40 transition-colors duration-150 cursor-pointer";
 
 /* ── individual card ──────────────────────────────────────────── */
 

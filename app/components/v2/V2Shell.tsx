@@ -148,7 +148,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
       <V2Sidebar activeScreen={activeScreen} onNavigate={handleNavigate} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <V2Header title={meta.title} subtitle={meta.subtitle} />
-        {isQueue && <V2KpiStrip kpi={kpi} />}
+        {isQueue && <V2KpiStrip kpi={kpi} onNavigate={handleNavigate} />}
         <div className="flex flex-1 gap-4 overflow-hidden p-4">
           {isQueue ? (
             <>
@@ -258,6 +258,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                 pipelineCards={pipelineCards}
                 selectedId={selectedCommandCard?.id ?? null}
                 onSelect={setSelectedCommandCard}
+                onNavigate={handleNavigate}
               />
               <FounderCommandCenterContextPanel
                 selectedCard={selectedCommandCard}

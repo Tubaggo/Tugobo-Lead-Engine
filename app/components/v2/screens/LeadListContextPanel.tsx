@@ -3,7 +3,7 @@ import { Badge } from "@/app/components/v2/primitives/Badge";
 import { fmtCurrency, type PackageTier, type Priority, type ActionChannel } from "@/app/components/v2/mock/mock-queue";
 import { OPPORTUNITY_REASON_LABELS } from "@/app/lib/opportunity-scoring";
 
-const SECTION_TITLE = "text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-500";
+const SECTION_TITLE = "text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500";
 
 const AVATAR_COLORS = [
   "bg-amber-500/30 text-amber-200",

@@ -9,12 +9,14 @@ import {
   type CommandFilter,
   type PipelineStageSnapshot,
 } from "@/app/components/v2/adapters/founder-command-center-adapter";
+import type { V2Screen } from "@/app/components/v2/types";
 
 type Props = {
   recoveryCards: RecoveryCard[];
   pipelineCards: PipelineCard[];
   selectedId: string | null;
   onSelect: (card: RecoveryCard) => void;
+  onNavigate: (screen: V2Screen) => void;
 };
 
 const FILTERS: { key: CommandFilter; label: string }[] = [
@@ -45,6 +47,7 @@ export default function FounderCommandCenterScreen({
   pipelineCards,
   selectedId,
   onSelect,
+  onNavigate,
 }: Props) {
   const [filter, setFilter] = useState<CommandFilter>("all");
   const [search, setSearch] = useState("");
@@ -75,23 +78,23 @@ export default function FounderCommandCenterScreen({
     <div className="flex flex-1 flex-col overflow-hidden min-w-0">
 
       {/* KPI Strip */}
-      <div className="flex-shrink-0 grid grid-cols-4 gap-3 px-4 py-3 border-b border-zinc-800">
+      <div className="flex-shrink-0 grid grid-cols-4 gap-3 px-4 py-3 border-b border-white/[0.06]">
         <KpiCell label="Beklenen Gelir" value={formatMrr(summary.expectedRevenue)} colorClass="text-indigo-400" bgClass="bg-indigo-950/30 border-indigo-900/40" />
-        <KpiCell label="Riskli Gelir" value={formatMrr(summary.revenueAtRisk)} colorClass="text-rose-400" bgClass="bg-rose-950/30 border-rose-900/40" />
-        <KpiCell label="Kurtarılabilir" value={formatMrr(summary.recoverableRevenue)} colorClass="text-emerald-400" bgClass="bg-emerald-950/30 border-emerald-900/40" />
-        <KpiCell label="Bugünkü Fırsatlar" value={`${summary.todaysOpportunities}`} colorClass="text-amber-400" bgClass="bg-amber-950/30 border-amber-900/40" />
+        <KpiCell label="Riskli Gelir" value={formatMrr(summary.revenueAtRisk)} colorClass="text-rose-400" bgClass="bg-rose-950/30 border-rose-900/40" onClick={() => onNavigate("revenue-risk")} />
+        <KpiCell label="Kurtarılabilir" value={formatMrr(summary.recoverableRevenue)} colorClass="text-emerald-400" bgClass="bg-emerald-950/30 border-emerald-900/40" onClick={() => onNavigate("revenue-recovery")} />
+        <KpiCell label="Bugünkü Fırsatlar" value={`${summary.todaysOpportunities}`} colorClass="text-amber-400" bgClass="bg-amber-950/30 border-amber-900/40" onClick={() => onNavigate("follow-ups")} />
       </div>
 
       {/* Filter + Search */}
-      <div className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 border-b border-zinc-800">
+      <div className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 border-b border-white/[0.06]">
         {FILTERS.map((f) => (
           <button
             key={f.key}
             onClick={() => setFilter(f.key)}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+            className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
               filter === f.key
-                ? "bg-zinc-700 text-white"
-                : "text-zinc-500 hover:text-zinc-300"
+                ? "bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/30"
+                : "text-zinc-500 hover:bg-white/[0.05] hover:text-zinc-300"
             }`}
           >
             {f.label}
@@ -101,8 +104,8 @@ export default function FounderCommandCenterScreen({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Ara..."
-            className="bg-zinc-800/80 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 w-36"
+            placeholder="Otel veya şehir ara…"
+            className="h-9 w-48 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 text-[11px] text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-indigo-500/40 focus:bg-white/[0.06] transition-colors duration-150"
           />
         </div>
       </div>
@@ -116,15 +119,15 @@ export default function FounderCommandCenterScreen({
             <SectionLabel label="Gelir Özeti" />
             <div className="grid grid-cols-3 gap-2">
               <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/40 px-3 py-2.5">
-                <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Tahmin</p>
+                <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">Tahmin</p>
                 <p className="text-base font-semibold text-indigo-400 mt-0.5">{formatMrr(summary.expectedRevenue)}</p>
               </div>
               <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/40 px-3 py-2.5">
-                <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Riskli</p>
+                <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">Riskli</p>
                 <p className="text-base font-semibold text-rose-400 mt-0.5">{formatMrr(summary.revenueAtRisk)}</p>
               </div>
               <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/40 px-3 py-2.5">
-                <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Kurtarılabilir</p>
+                <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">Kurtarılabilir</p>
                 <p className="text-base font-semibold text-emerald-400 mt-0.5">{formatMrr(summary.recoverableRevenue)}</p>
               </div>
             </div>
@@ -288,15 +291,29 @@ function KpiCell({
   value,
   colorClass,
   bgClass,
+  onClick,
 }: {
   label: string;
   value: string;
   colorClass: string;
   bgClass: string;
+  onClick?: () => void;
 }) {
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`rounded-lg border px-3 py-2.5 text-left transition-opacity hover:opacity-80 ${bgClass}`}
+      >
+        <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">{label}</p>
+        <p className={`text-lg font-semibold mt-0.5 ${colorClass}`}>{value}</p>
+      </button>
+    );
+  }
   return (
     <div className={`rounded-lg border px-3 py-2.5 ${bgClass}`}>
-      <p className="text-[10px] text-zinc-500 uppercase tracking-wide">{label}</p>
+      <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">{label}</p>
       <p className={`text-lg font-semibold mt-0.5 ${colorClass}`}>{value}</p>
     </div>
   );
@@ -304,7 +321,7 @@ function KpiCell({
 
 function SectionLabel({ label }: { label: string }) {
   return (
-    <p className="text-[10px] uppercase tracking-widest font-semibold text-zinc-500">
+    <p className="text-[10px] uppercase tracking-[0.12em] font-semibold text-zinc-500">
       {label}
     </p>
   );
@@ -324,7 +341,7 @@ function Section({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <p className="text-[10px] uppercase tracking-widest font-semibold text-zinc-500">
+        <p className="text-[10px] uppercase tracking-[0.12em] font-semibold text-zinc-500">
           {title}
         </p>
         <span className={`text-[10px] font-semibold ${accentClass}`}>{count}</span>

@@ -68,7 +68,7 @@ const PRIORITY_TR: Record<string, string> = {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] font-semibold uppercase tracking-widest text-white/30 mb-2">
+    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500 mb-2">
       {children}
     </div>
   );

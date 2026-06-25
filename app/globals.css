@@ -8,10 +8,16 @@
   --foreground: #ededed;
   --muted: #8b8b95;
   --border: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.04);
+  --border-divider: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
   --accent: #6366f1;
   --accent-soft: rgba(99, 102, 241, 0.18);
   --hot: #f97316;
   --good: #10b981;
+  --ds-transition: 150ms;
+  --ds-radius-card: 12px;
+  --ds-radius-control: 8px;
 }
 
 @theme inline {
@@ -51,18 +57,18 @@ body {
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.07);
   border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.14);
 }
 
 /* Range / slider used for scoring tweaks (none yet but kept for premium feel) */

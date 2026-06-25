@@ -1,5 +1,6 @@
 import { KpiCard } from "@/app/components/v2/primitives/KpiCard";
 import { fmtCurrencyTR, type MockKpi } from "@/app/components/v2/mock/mock-queue";
+import type { V2Screen } from "@/app/components/v2/types";
 
 const sp = {
   viewBox: "0 0 16 16",
@@ -55,7 +56,7 @@ const MessageIcon = () => (
   </svg>
 );
 
-export default function V2KpiStrip({ kpi }: { kpi: MockKpi }) {
+export default function V2KpiStrip({ kpi, onNavigate }: { kpi: MockKpi; onNavigate: (screen: V2Screen) => void }) {
   const {
     totalWeightedMrr,
     totalWeightedArr,
@@ -108,6 +109,7 @@ export default function V2KpiStrip({ kpi }: { kpi: MockKpi }) {
         accent="sky"
         icon={<PhoneIcon />}
         iconBg="bg-sky-500/15 text-sky-400"
+        onClick={() => onNavigate("follow-ups")}
       />
       <KpiCard
         label="Bugün Önerilen Mesaj"
@@ -116,6 +118,7 @@ export default function V2KpiStrip({ kpi }: { kpi: MockKpi }) {
         accent="emerald"
         icon={<MessageIcon />}
         iconBg="bg-emerald-500/15 text-emerald-400"
+        onClick={() => onNavigate("communication-intelligence")}
       />
     </div>
   );

@@ -22,7 +22,7 @@ type Props = {
 export function Badge({ children, variant = "default" }: Props) {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${VARIANTS[variant]}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ring-1 ring-inset ${VARIANTS[variant]}`}
     >
       {children}
     </span>

@@ -158,7 +158,7 @@ function priorityVariant(p: string) {
 }
 
 const selectCls =
-  "rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 text-xs text-white/70 outline-none focus:ring-1 focus:ring-indigo-500/50 hover:bg-white/[0.07] transition-colors";
+  "h-9 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 text-[11px] text-zinc-400 outline-none hover:bg-white/[0.06] hover:text-zinc-200 focus:ring-1 focus:ring-indigo-500/40 transition-colors duration-150 cursor-pointer";
 
 // ── component ─────────────────────────────────────────────────
 
@@ -279,7 +279,7 @@ export default function RevenueRiskScreen({ cards, selectedId, onSelect }: Props
           placeholder="Hotel veya şehir ara…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="h-8 w-40 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 text-xs text-white/80 placeholder:text-white/30 outline-none focus:ring-1 focus:ring-indigo-500/50"
+          className="h-9 w-48 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 text-[11px] text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-indigo-500/40 focus:bg-white/[0.06] transition-colors duration-150"
         />
 
         <select
@@ -339,14 +339,14 @@ export default function RevenueRiskScreen({ cards, selectedId, onSelect }: Props
           ))}
         </select>
 
-        <span className="ml-auto text-[11px] text-white/30">
+        <span className="ml-auto text-[11px] text-zinc-500">
           {filtered.length} / {cards.length}
         </span>
 
         {hasFilters && (
           <button
             onClick={clearFilters}
-            className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+            className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors duration-150"
           >
             Temizle
           </button>
@@ -387,11 +387,11 @@ function KpiTile({
 }) {
   return (
     <div className="flex flex-col gap-0.5 px-4 py-3">
-      <span className="text-[10px] font-medium uppercase tracking-wide text-white/40">
+      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
         {label}
       </span>
-      <span className={`text-2xl font-bold ${accent}`}>{value}</span>
-      <span className="text-[10px] text-white/30">{sub}</span>
+      <span className={`text-[28px] font-bold ${accent}`}>{value}</span>
+      <span className="text-[10px] text-zinc-600">{sub}</span>
     </div>
   );
 }
@@ -421,7 +421,7 @@ function RiskCardRow({
         "w-full text-left rounded-lg border border-l-4 p-3 transition-colors",
         leftBorder,
         isSelected
-          ? "border-indigo-500/40 bg-indigo-500/[0.07]"
+          ? "border-indigo-500/40 bg-indigo-500/[0.07] ring-1 ring-inset ring-indigo-500/20"
           : isCriticalOrHigh
             ? "border-white/[0.06] bg-rose-500/[0.03] hover:bg-rose-500/[0.06]"
             : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05]",

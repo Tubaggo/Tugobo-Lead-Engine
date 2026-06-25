@@ -10,6 +10,7 @@ type Props = {
   accent?: "default" | "emerald" | "amber" | "indigo" | "rose" | "purple" | "sky" | "orange" | "violet";
   icon?: ReactNode;
   iconBg?: string;
+  onClick?: () => void;
 };
 
 const ACCENT: Record<NonNullable<Props["accent"]>, string> = {
@@ -36,9 +37,15 @@ const TREND_ARROW: Record<Direction, string> = {
   neutral: "→",
 };
 
-export function KpiCard({ label, value, sub, trend, accent = "default", icon, iconBg }: Props) {
+export function KpiCard({ label, value, sub, trend, accent = "default", icon, iconBg, onClick }: Props) {
+  const Wrapper = onClick ? "button" : "div";
   return (
-    <div className="flex items-center gap-3.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-4 shadow-sm">
+    <Wrapper
+      {...(onClick ? { type: "button" as const, onClick } : {})}
+      className={`flex items-center gap-4 rounded-xl border border-white/[0.08] bg-white/[0.03] px-5 py-4 shadow-sm transition-colors duration-150${
+        onClick ? " cursor-pointer hover:border-white/[0.14] hover:bg-white/[0.05]" : ""
+      }`}
+    >
       {icon && (
         <div
           className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${iconBg ?? "bg-zinc-800"}`}
@@ -47,14 +54,14 @@ export function KpiCard({ label, value, sub, trend, accent = "default", icon, ic
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.13em] text-zinc-500">
+        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
           {label}
         </p>
-        <p className={`text-[19px] font-bold leading-none tabular-nums ${ACCENT[accent]}`}>
+        <p className={`text-[28px] font-bold leading-none tabular-nums ${ACCENT[accent]}`}>
           {value}
         </p>
         {(sub || trend) && (
-          <div className="mt-1 flex items-center gap-1.5">
+          <div className="mt-1.5 flex items-center gap-1.5">
             {trend && (
               <span className={`text-[10px] font-semibold ${TREND_COLOR[trend.direction]}`}>
                 {TREND_ARROW[trend.direction]} {trend.value}
@@ -64,6 +71,6 @@ export function KpiCard({ label, value, sub, trend, accent = "default", icon, ic
           </div>
         )}
       </div>
-    </div>
+    </Wrapper>
   );
 }
