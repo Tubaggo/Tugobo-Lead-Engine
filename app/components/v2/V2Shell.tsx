@@ -23,6 +23,8 @@ import RevenueRiskScreen from "@/app/components/v2/screens/RevenueRiskScreen";
 import RevenueRiskContextPanel from "@/app/components/v2/screens/RevenueRiskContextPanel";
 import RevenueRecoveryScreen from "@/app/components/v2/screens/RevenueRecoveryScreen";
 import RevenueRecoveryContextPanel from "@/app/components/v2/screens/RevenueRecoveryContextPanel";
+import FounderCommandCenterScreen from "@/app/components/v2/screens/FounderCommandCenterScreen";
+import FounderCommandCenterContextPanel from "@/app/components/v2/screens/FounderCommandCenterContextPanel";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -107,6 +109,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
   const [selectedForecastCard, setSelectedForecastCard] = useState<ForecastCard | null>(null);
   const [selectedRiskCard, setSelectedRiskCard] = useState<RiskCard | null>(null);
   const [selectedRecoveryCard, setSelectedRecoveryCard] = useState<RecoveryCard | null>(null);
+  const [selectedCommandCard, setSelectedCommandCard] = useState<RecoveryCard | null>(null);
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
@@ -118,6 +121,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
     setSelectedForecastCard(null);
     setSelectedRiskCard(null);
     setSelectedRecoveryCard(null);
+    setSelectedCommandCard(null);
   }
 
   const meta = SCREEN_META[activeScreen];
@@ -130,6 +134,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
   const isForecast = activeScreen === "revenue-forecast";
   const isRisk = activeScreen === "revenue-risk";
   const isRecovery = activeScreen === "revenue-recovery";
+  const isCommand = activeScreen === "command-center";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -239,6 +244,21 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                 allCards={recoveryCards}
               />
             </>
+          ) : isCommand ? (
+            <>
+              <FounderCommandCenterScreen
+                recoveryCards={recoveryCards}
+                pipelineCards={pipelineCards}
+                selectedId={selectedCommandCard?.id ?? null}
+                onSelect={setSelectedCommandCard}
+              />
+              <FounderCommandCenterContextPanel
+                selectedCard={selectedCommandCard}
+                recoveryCards={recoveryCards}
+                pipelineCards={pipelineCards}
+                commCards={commCards}
+              />
+            </>
           ) : (
             <>
               <PlaceholderScreen
@@ -254,6 +274,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "revenue-forecast"
                     | "revenue-risk"
                     | "revenue-recovery"
+                    | "command-center"
                   >
                 }
               />
@@ -270,6 +291,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "revenue-forecast"
                     | "revenue-risk"
                     | "revenue-recovery"
+                    | "command-center"
                   >
                 }
               />
