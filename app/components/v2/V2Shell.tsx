@@ -25,6 +25,8 @@ import RevenueRecoveryScreen from "@/app/components/v2/screens/RevenueRecoverySc
 import RevenueRecoveryContextPanel from "@/app/components/v2/screens/RevenueRecoveryContextPanel";
 import FounderCommandCenterScreen from "@/app/components/v2/screens/FounderCommandCenterScreen";
 import FounderCommandCenterContextPanel from "@/app/components/v2/screens/FounderCommandCenterContextPanel";
+import RevenueAnalyticsScreen from "@/app/components/v2/screens/RevenueAnalyticsScreen";
+import RevenueAnalyticsContextPanel from "@/app/components/v2/screens/RevenueAnalyticsContextPanel";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -37,6 +39,7 @@ import type { PipelineCard } from "@/app/components/v2/adapters/revenue-pipeline
 import type { ForecastCard } from "@/app/components/v2/adapters/revenue-forecast-adapter";
 import type { RiskCard } from "@/app/components/v2/adapters/revenue-risk-adapter";
 import type { RecoveryCard } from "@/app/components/v2/adapters/revenue-recovery-adapter";
+import type { AnalyticsCard } from "@/app/components/v2/adapters/revenue-analytics-adapter";
 
 export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> = {
   "revenue-queue": {
@@ -97,9 +100,10 @@ type Props = {
   forecastCards: ForecastCard[];
   riskCards: RiskCard[];
   recoveryCards: RecoveryCard[];
+  analyticsCards: AnalyticsCard[];
 };
 
-export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards }: Props) {
+export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards }: Props) {
   const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
   const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
   const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
@@ -110,6 +114,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
   const [selectedRiskCard, setSelectedRiskCard] = useState<RiskCard | null>(null);
   const [selectedRecoveryCard, setSelectedRecoveryCard] = useState<RecoveryCard | null>(null);
   const [selectedCommandCard, setSelectedCommandCard] = useState<RecoveryCard | null>(null);
+  const [selectedAnalyticsCard, setSelectedAnalyticsCard] = useState<AnalyticsCard | null>(null);
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
@@ -122,6 +127,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
     setSelectedRiskCard(null);
     setSelectedRecoveryCard(null);
     setSelectedCommandCard(null);
+    setSelectedAnalyticsCard(null);
   }
 
   const meta = SCREEN_META[activeScreen];
@@ -135,6 +141,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
   const isRisk = activeScreen === "revenue-risk";
   const isRecovery = activeScreen === "revenue-recovery";
   const isCommand = activeScreen === "command-center";
+  const isAnalytics = activeScreen === "revenue-analytics";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -259,6 +266,20 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                 commCards={commCards}
               />
             </>
+          ) : isAnalytics ? (
+            <>
+              <RevenueAnalyticsScreen
+                analyticsCards={analyticsCards}
+                pipelineCards={pipelineCards}
+                selectedId={selectedAnalyticsCard?.id ?? null}
+                onSelect={setSelectedAnalyticsCard}
+              />
+              <RevenueAnalyticsContextPanel
+                selectedCard={selectedAnalyticsCard}
+                analyticsCards={analyticsCards}
+                pipelineCards={pipelineCards}
+              />
+            </>
           ) : (
             <>
               <PlaceholderScreen
@@ -275,6 +296,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "revenue-risk"
                     | "revenue-recovery"
                     | "command-center"
+                    | "revenue-analytics"
                   >
                 }
               />
@@ -292,6 +314,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
                     | "revenue-risk"
                     | "revenue-recovery"
                     | "command-center"
+                    | "revenue-analytics"
                   >
                 }
               />

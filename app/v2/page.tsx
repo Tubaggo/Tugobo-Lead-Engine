@@ -9,6 +9,7 @@ import { adaptScoredLeadsToPipelineCards } from "@/app/components/v2/adapters/re
 import { adaptScoredLeadsToForecastCards } from "@/app/components/v2/adapters/revenue-forecast-adapter";
 import { adaptScoredLeadsToRiskCards } from "@/app/components/v2/adapters/revenue-risk-adapter";
 import { adaptScoredLeadsToRecoveryCards } from "@/app/components/v2/adapters/revenue-recovery-adapter";
+import { adaptScoredLeadsToAnalyticsCards } from "@/app/components/v2/adapters/revenue-analytics-adapter";
 import V2Shell from "@/app/components/v2/V2Shell";
 
 export const metadata: Metadata = {
@@ -26,5 +27,6 @@ export default function V2Page() {
   const forecastCards = adaptScoredLeadsToForecastCards(scored);
   const riskCards = adaptScoredLeadsToRiskCards(scored);
   const recoveryCards = adaptScoredLeadsToRecoveryCards(scored);
-  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} pipelineCards={pipelineCards} forecastCards={forecastCards} riskCards={riskCards} recoveryCards={recoveryCards} />;
+  const analyticsCards = adaptScoredLeadsToAnalyticsCards(recoveryCards, commCards);
+  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} pipelineCards={pipelineCards} forecastCards={forecastCards} riskCards={riskCards} recoveryCards={recoveryCards} analyticsCards={analyticsCards} />;
 }
