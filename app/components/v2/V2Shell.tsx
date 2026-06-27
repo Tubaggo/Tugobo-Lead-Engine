@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { V2Screen } from "@/app/components/v2/types";
+import type { ScoredLead } from "@/app/lib/leads";
 import V2Sidebar from "@/app/components/v2/layout/V2Sidebar";
 import V2Header from "@/app/components/v2/layout/V2Header";
 import V2KpiStrip from "@/app/components/v2/layout/V2KpiStrip";
-import V2ContextPanel from "@/app/components/v2/layout/V2ContextPanel";
 import RevenueQueueScreen from "@/app/components/v2/screens/RevenueQueueScreen";
+import RevenueQueueContextPanel from "@/app/components/v2/screens/RevenueQueueContextPanel";
 import LeadListScreen from "@/app/components/v2/screens/LeadListScreen";
 import LeadListContextPanel from "@/app/components/v2/screens/LeadListContextPanel";
 import IcpAnalysisScreen from "@/app/components/v2/screens/IcpAnalysisScreen";
@@ -92,6 +93,7 @@ type Props = {
   rows: QueueRow[];
   kpi: MockKpi;
   ctx: MockContext;
+  scoredLeads: ScoredLead[];
   cards: LeadCard[];
   icpCards: IcpCard[];
   commCards: CommCard[];
@@ -103,9 +105,18 @@ type Props = {
   analyticsCards: AnalyticsCard[];
 };
 
-export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards }: Props) {
+export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards }: Props) {
   const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
+  const [selectedQueueRowId, setSelectedQueueRowId] = useState<string | null>(null);
   const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
+
+  const scoredLeadsById = useMemo(
+    () => new Map(scoredLeads.map((l) => [l.id, l])),
+    [scoredLeads],
+  );
+  const selectedQueueLead = selectedQueueRowId
+    ? (scoredLeadsById.get(selectedQueueRowId) ?? null)
+    : null;
   const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
   const [selectedCommCard, setSelectedCommCard] = useState<CommCard | null>(null);
   const [selectedFollowUpCard, setSelectedFollowUpCard] = useState<FollowUpCard | null>(null);
@@ -118,6 +129,7 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
+    setSelectedQueueRowId(null);
     setSelectedLeadCard(null);
     setSelectedIcpCard(null);
     setSelectedCommCard(null);
@@ -145,15 +157,31 @@ export default function V2Shell({ rows, kpi, ctx, cards, icpCards, commCards, fo
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <V2Sidebar activeScreen={activeScreen} onNavigate={handleNavigate} />
+      <V2Sidebar
+        activeScreen={activeScreen}
+        onNavigate={handleNavigate}
+        counts={{
+          "revenue-queue": rows.length,
+          "follow-ups": followUpCards.length,
+        }}
+      />
       <div className="flex flex-1 flex-col overflow-hidden">
         <V2Header title={meta.title} subtitle={meta.subtitle} />
         {isQueue && <V2KpiStrip kpi={kpi} onNavigate={handleNavigate} />}
-        <div className="flex flex-1 gap-4 overflow-hidden p-4">
+        <div className="flex flex-1 gap-3 overflow-hidden p-3">
           {isQueue ? (
             <>
-              <RevenueQueueScreen rows={rows} kpi={kpi} />
-              <V2ContextPanel kpi={kpi} ctx={ctx} />
+              <RevenueQueueScreen
+                rows={rows}
+                kpi={kpi}
+                selectedRowId={selectedQueueRowId}
+                onSelectRow={setSelectedQueueRowId}
+              />
+              <RevenueQueueContextPanel
+                selectedLead={selectedQueueLead}
+                kpi={kpi}
+                ctx={ctx}
+              />
             </>
           ) : isLeadList ? (
             <>

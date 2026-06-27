@@ -37,7 +37,7 @@ function AnalyticsSummaryPanel({
   const summary = computeAnalyticsSummary(analyticsCards, pipelineCards);
 
   return (
-    <div className="w-[360px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
+    <div className="w-[260px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
       <div className="flex-shrink-0 px-4 py-3 border-b border-zinc-800">
         <p className="text-xs font-semibold text-zinc-300">Analytics Özeti</p>
         <p className="text-[10px] text-zinc-600 mt-0.5">Tüm pipeline performansı</p>
@@ -157,7 +157,7 @@ function LeadDetail({ card }: { card: AnalyticsCard }) {
   const stageMeta = STAGE_META[card.stage];
 
   return (
-    <div className="w-[360px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
+    <div className="w-[260px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
       {/* Header */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-zinc-800">
         <p className="text-xs font-semibold text-zinc-100 truncate">{card.hotelName}</p>

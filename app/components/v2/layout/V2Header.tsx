@@ -12,13 +12,13 @@ export default function V2Header({
   const [filterActive, setFilterActive] = useState(false);
 
   return (
-    <header className="flex shrink-0 items-center justify-between border-b border-white/[0.06] bg-[var(--background-elev)] px-6 py-4">
+    <header className="flex shrink-0 items-center justify-between border-b border-white/[0.06] bg-[var(--background-elev)] px-6 py-3.5">
       {/* Title area */}
       <div>
-        <h1 className="text-[26px] font-bold tracking-tight text-zinc-100">
+        <h1 className="text-[24px] font-bold tracking-tight text-zinc-100 leading-none">
           {title}
         </h1>
-        <p className="mt-1 text-[13px] text-zinc-500">
+        <p className="mt-1 text-[12.5px] text-zinc-500">
           {subtitle}
         </p>
       </div>

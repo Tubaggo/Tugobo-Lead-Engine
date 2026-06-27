@@ -39,7 +39,7 @@ function FounderBriefPanel({
   const summary = computeCommandCenter(recoveryCards, pipelineCards);
 
   return (
-    <div className="w-[360px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
+    <div className="w-[260px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
       <div className="flex-shrink-0 px-4 py-3 border-b border-zinc-800">
         <p className="text-xs font-semibold text-zinc-300">Kurucu Özeti</p>
         <p className="text-[10px] text-zinc-600 mt-0.5">Güncel operasyonel durum</p>
@@ -170,7 +170,7 @@ function LeadDetail({
     : null;
 
   return (
-    <div className="w-[360px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
+    <div className="w-[260px] flex-shrink-0 flex flex-col overflow-hidden border-l border-zinc-800">
       {/* Header */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-zinc-800">
         <p className="text-xs font-semibold text-zinc-100 truncate">{card.hotelName}</p>

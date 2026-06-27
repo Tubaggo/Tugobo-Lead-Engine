@@ -28,5 +28,5 @@ export default function V2Page() {
   const riskCards = adaptScoredLeadsToRiskCards(scored);
   const recoveryCards = adaptScoredLeadsToRecoveryCards(scored);
   const analyticsCards = adaptScoredLeadsToAnalyticsCards(recoveryCards, commCards);
-  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} pipelineCards={pipelineCards} forecastCards={forecastCards} riskCards={riskCards} recoveryCards={recoveryCards} analyticsCards={analyticsCards} />;
+  return <V2Shell rows={rows} kpi={kpi} ctx={ctx} scoredLeads={scored} cards={cards} icpCards={icpCards} commCards={commCards} followUpCards={followUpCards} pipelineCards={pipelineCards} forecastCards={forecastCards} riskCards={riskCards} recoveryCards={recoveryCards} analyticsCards={analyticsCards} />;
 }

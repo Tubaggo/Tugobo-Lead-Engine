@@ -184,7 +184,7 @@ function RiskOverview({ cards }: { cards: RiskCard[] }) {
   );
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Risk summary */}
       <div className="rounded-xl border border-rose-500/20 bg-rose-500/[0.04] p-4">
         <SectionLabel>Gelir Risk Özeti</SectionLabel>
@@ -384,7 +384,7 @@ function RiskDetail({ card }: { card: RiskCard }) {
   const stageMeta = STAGE_META[card.stage];
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* 1. Risk profile */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <div className="flex items-start gap-3">

@@ -162,13 +162,23 @@ function filterByTab(rows: QueueRow[], tabIndex: number): QueueRow[] {
 export default function RevenueQueueScreen({
   rows,
   kpi,
+  selectedRowId,
+  onSelectRow,
 }: {
   rows: QueueRow[];
   kpi: MockKpi;
+  selectedRowId?: string | null;
+  onSelectRow?: (id: string | null) => void;
 }) {
   const [activeTab, setActiveTab] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
+
+  const effectiveSelectedId = selectedRowId !== undefined ? selectedRowId : internalSelectedId;
+  const handleSelect = (id: string | null) => {
+    if (onSelectRow) onSelectRow(id);
+    else setInternalSelectedId(id);
+  };
 
   const tabCounts = useMemo(() => [
     rows.length,
@@ -200,7 +210,7 @@ export default function RevenueQueueScreen({
   }, [rows, activeTab, searchQuery]);
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.025] shadow-xl shadow-black/20">
+    <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[var(--background-elev)] shadow-xl shadow-black/20">
       {/* Sub-tab row */}
       <div className="flex shrink-0 items-center gap-0.5 border-b border-white/[0.06] px-4">
         <div className="flex flex-1 items-center gap-0">
@@ -210,7 +220,7 @@ export default function RevenueQueueScreen({
               type="button"
               onClick={() => {
                 setActiveTab(i);
-                setSelectedRowId(null);
+                handleSelect(null);
               }}
               className={`flex items-center gap-1.5 border-b-2 px-3.5 py-3 text-[11px] font-medium transition-colors ${
                 activeTab === i
@@ -284,7 +294,7 @@ export default function RevenueQueueScreen({
       {/* Table */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
-          <thead className="sticky top-0 z-10 bg-[#0d0d14]">
+          <thead className="sticky top-0 z-10 bg-[var(--background-elev)]">
             <tr className="border-b border-white/[0.06]">
               <th className="w-10 py-3 pl-4 pr-2 text-center text-[9px] font-semibold uppercase tracking-widest text-zinc-600">
                 #
@@ -326,12 +336,12 @@ export default function RevenueQueueScreen({
                 const avatarColor = AVATAR_COLORS[idx % AVATAR_COLORS.length];
                 const initials = hotelInitials(row.hotelName);
                 const isUrgent = row.actionLabel === "Hemen Ara";
-                const isSelected = selectedRowId === row.id;
+                const isSelected = effectiveSelectedId === row.id;
 
                 return (
                   <tr
                     key={row.id}
-                    onClick={() => setSelectedRowId(isSelected ? null : row.id)}
+                    onClick={() => handleSelect(isSelected ? null : row.id)}
                     className={`cursor-pointer transition-colors ${
                       isSelected
                         ? "bg-indigo-500/[0.07] ring-1 ring-inset ring-indigo-500/20"

@@ -42,22 +42,22 @@ export function KpiCard({ label, value, sub, trend, accent = "default", icon, ic
   return (
     <Wrapper
       {...(onClick ? { type: "button" as const, onClick } : {})}
-      className={`flex items-center gap-4 rounded-xl border border-white/[0.08] bg-white/[0.03] px-5 py-4 shadow-sm transition-colors duration-150${
-        onClick ? " cursor-pointer hover:border-white/[0.14] hover:bg-white/[0.05]" : ""
+      className={`flex items-center gap-3.5 rounded-xl border border-white/[0.08] bg-[var(--background-elev)] px-4 py-4 transition-colors duration-150${
+        onClick ? " cursor-pointer hover:border-white/[0.14] hover:bg-[var(--background-soft)]" : ""
       }`}
     >
       {icon && (
         <div
-          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${iconBg ?? "bg-zinc-800"}`}
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] ${iconBg ?? "bg-zinc-800"}`}
         >
           {icon}
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+        <p className="mb-1 text-[9.5px] font-semibold uppercase tracking-[0.11em] text-zinc-500 leading-none">
           {label}
         </p>
-        <p className={`text-[28px] font-bold leading-none tabular-nums ${ACCENT[accent]}`}>
+        <p className={`text-[26px] font-bold leading-none tabular-nums ${ACCENT[accent]}`}>
           {value}
         </p>
         {(sub || trend) && (

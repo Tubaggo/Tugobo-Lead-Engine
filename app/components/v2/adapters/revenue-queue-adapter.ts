@@ -1,5 +1,9 @@
 import type { ScoredLead } from "@/app/lib/leads";
 import {
+  computeVerifiedOpportunity,
+  SALES_PRIORITY_RANK,
+} from "@/lib/verified-opportunity/verified-opportunity";
+import {
   type QueueRow,
   type MockKpi,
   type MockContext,
@@ -111,7 +115,30 @@ function toLastActionInfo(lead: ScoredLead): {
 export function adaptScoredLeadsToRows(scored: ScoredLead[]): QueueRow[] {
   const active = scored
     .filter((l) => l.priorityBucket !== "archive")
-    .sort((a, b) => (b.outreachPriority ?? 0) - (a.outreachPriority ?? 0));
+    .sort((a, b) => {
+      const voA = computeVerifiedOpportunity(a);
+      const voB = computeVerifiedOpportunity(b);
+
+      // 1. Priority (CRITICAL → LOW)
+      const prioRank = SALES_PRIORITY_RANK[voB.priority] - SALES_PRIORITY_RANK[voA.priority];
+      if (prioRank !== 0) return prioRank;
+
+      // 2. Confidence score
+      const confRank = voB.confidenceScore - voA.confidenceScore;
+      if (confRank !== 0) return confRank;
+
+      // 3. Weighted MRR
+      const mrrA = (TIER_BASE_MRR[a.businessTier ?? "small"] ?? 10_000) *
+        ((a.verifiedOpportunityScore ?? a.leadScore ?? 50) / 100);
+      const mrrB = (TIER_BASE_MRR[b.businessTier ?? "small"] ?? 10_000) *
+        ((b.verifiedOpportunityScore ?? b.leadScore ?? 50) / 100);
+      const mrrRank = mrrB - mrrA;
+      if (mrrRank !== 0) return mrrRank;
+
+      // 4. Estimated close probability (VOS or fallback)
+      return (b.verifiedOpportunityScore ?? b.leadScore ?? 0) -
+        (a.verifiedOpportunityScore ?? a.leadScore ?? 0);
+    });
 
   return active.slice(0, 10).map((lead, i) => {
     const conversion = Math.round(

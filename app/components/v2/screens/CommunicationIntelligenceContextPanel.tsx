@@ -144,7 +144,7 @@ function WorkspaceSummary({ cards }: { cards: CommCard[] }) {
   ).length;
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Channel coverage */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <SectionLabel>Kanal Kapsama Özeti</SectionLabel>
@@ -308,7 +308,7 @@ function LeadDetail({ card }: { card: CommCard }) {
   const tempCfg = TEMP_CONFIG[card.leadTemperature];
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Header */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <div className="flex items-start gap-3">

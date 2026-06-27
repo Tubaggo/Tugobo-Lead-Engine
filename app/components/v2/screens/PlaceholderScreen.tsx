@@ -366,7 +366,7 @@ export function PlaceholderContextPanel({
   const SECTION = "text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-500";
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Screen info card */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.03]">
         <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-3">

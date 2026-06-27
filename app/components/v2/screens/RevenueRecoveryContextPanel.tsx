@@ -215,7 +215,7 @@ function RecoveryOverview({ cards }: { cards: RecoveryCard[] }) {
   );
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Recovery summary */}
       <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-4">
         <SectionLabel>Kurtarma Özeti</SectionLabel>
@@ -421,7 +421,7 @@ function RecoveryDetail({ card }: { card: RecoveryCard }) {
   const stageMeta = STAGE_META[card.stage];
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* 1. Recovery profile */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <div className="flex items-start gap-3">

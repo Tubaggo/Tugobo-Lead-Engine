@@ -577,7 +577,7 @@ export default function LeadListContextPanel({
   allCards: LeadCard[];
 }) {
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {selectedCard ? (
         <LeadDetail card={selectedCard} />
       ) : (

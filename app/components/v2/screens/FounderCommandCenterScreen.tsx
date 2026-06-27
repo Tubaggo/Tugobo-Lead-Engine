@@ -86,7 +86,7 @@ export default function FounderCommandCenterScreen({
       </div>
 
       {/* Filter + Search */}
-      <div className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 border-b border-white/[0.06]">
+      <div className="flex-shrink-0 flex items-center gap-1.5 px-4 py-3 border-b border-white/[0.06]">
         {FILTERS.map((f) => (
           <button
             key={f.key}

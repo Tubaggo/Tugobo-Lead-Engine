@@ -67,7 +67,7 @@ export default function V2KpiStrip({ kpi, onNavigate }: { kpi: MockKpi; onNaviga
   } = kpi;
 
   return (
-    <div className="grid shrink-0 grid-cols-6 gap-3 border-b border-white/[0.06] px-6 py-4">
+    <div className="grid shrink-0 grid-cols-6 gap-2.5 border-b border-white/[0.06] px-5 py-3.5">
       <KpiCard
         label="Toplam Ağırlıklı MRR"
         value={fmtCurrencyTR(totalWeightedMrr)}

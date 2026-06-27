@@ -101,7 +101,7 @@ function WorkspaceSummary({ cards }: { cards: FollowUpCard[] }) {
     .slice(0, 3);
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Takip dağılımı */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <SectionLabel>Takip Dağılımı</SectionLabel>
@@ -256,7 +256,7 @@ function LeadDetail({ card }: { card: FollowUpCard }) {
   const tempCfg = TEMP_CONFIG[card.leadTemperature];
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Header */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <div className="flex items-start gap-3">

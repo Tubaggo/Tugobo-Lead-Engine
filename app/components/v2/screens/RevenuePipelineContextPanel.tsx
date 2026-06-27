@@ -111,7 +111,7 @@ function PipelineOverview({ cards }: { cards: PipelineCard[] }) {
   const strongestMeta = STAGE_META[summary.strongestStage];
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* Pipeline total */}
       <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-4">
         <SectionLabel>Pipeline Özeti</SectionLabel>
@@ -293,7 +293,7 @@ function OpportunityDetail({ card }: { card: PipelineCard }) {
   const nextActionText = buildNextAction(card);
 
   return (
-    <aside className="flex w-[330px] shrink-0 flex-col gap-3 overflow-y-auto">
+    <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {/* 1. Opportunity profile */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
         <div className="flex items-start gap-3">
