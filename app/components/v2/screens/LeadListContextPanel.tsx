@@ -2,6 +2,8 @@ import type { LeadCard, WebsiteStatus, WhatsAppStatus } from "@/app/components/v
 import { Badge } from "@/app/components/v2/primitives/Badge";
 import { fmtCurrency, type PackageTier, type Priority, type ActionChannel } from "@/app/components/v2/mock/mock-queue";
 import { OPPORTUNITY_REASON_LABELS } from "@/app/lib/opportunity-scoring";
+import type { ScoredLead } from "@/app/lib/leads";
+import LeadIntelligencePanel from "@/app/components/v2/panels/LeadIntelligencePanel";
 
 const SECTION_TITLE = "text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500";
 
@@ -571,11 +573,16 @@ function LeadDetail({ card }: { card: LeadCard }) {
 
 export default function LeadListContextPanel({
   selectedCard,
+  selectedScoredLead,
   allCards,
 }: {
   selectedCard: LeadCard | null;
+  selectedScoredLead: ScoredLead | null;
   allCards: LeadCard[];
 }) {
+  if (selectedCard && selectedScoredLead) {
+    return <LeadIntelligencePanel lead={selectedScoredLead} />;
+  }
   return (
     <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
       {selectedCard ? (

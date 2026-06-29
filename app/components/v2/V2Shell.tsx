@@ -192,6 +192,7 @@ export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, 
               />
               <LeadListContextPanel
                 selectedCard={selectedLeadCard}
+                selectedScoredLead={selectedLeadCard ? (scoredLeadsById.get(selectedLeadCard.id) ?? null) : null}
                 allCards={cards}
               />
             </>
