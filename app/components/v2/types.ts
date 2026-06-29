@@ -9,4 +9,5 @@ export type V2Screen =
   | "revenue-risk"
   | "revenue-recovery"
   | "revenue-analytics"
-  | "command-center";
+  | "command-center"
+  | "lead-import";

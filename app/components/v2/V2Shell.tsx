@@ -28,10 +28,24 @@ import FounderCommandCenterScreen from "@/app/components/v2/screens/FounderComma
 import FounderCommandCenterContextPanel from "@/app/components/v2/screens/FounderCommandCenterContextPanel";
 import RevenueAnalyticsScreen from "@/app/components/v2/screens/RevenueAnalyticsScreen";
 import RevenueAnalyticsContextPanel from "@/app/components/v2/screens/RevenueAnalyticsContextPanel";
+import LeadImportScreen from "@/app/components/v2/screens/LeadImportScreen";
+import LeadImportContextPanel from "@/app/components/v2/screens/LeadImportContextPanel";
+import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
+import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
-import type { QueueRow, MockKpi, MockContext } from "@/app/components/v2/mock/mock-queue";
+// Adapter functions — run client-side so imported leads are included
+import { adaptV2Data } from "@/app/components/v2/adapters/revenue-queue-adapter";
+import { adaptScoredLeadsToCards } from "@/app/components/v2/adapters/lead-list-adapter";
+import { adaptScoredLeadsToIcpCards } from "@/app/components/v2/adapters/icp-analysis-adapter";
+import { adaptScoredLeadsToCommCards } from "@/app/components/v2/adapters/communication-intelligence-adapter";
+import { adaptScoredLeadsToFollowUpCards } from "@/app/components/v2/adapters/follow-ups-adapter";
+import { adaptScoredLeadsToPipelineCards } from "@/app/components/v2/adapters/revenue-pipeline-adapter";
+import { adaptScoredLeadsToForecastCards } from "@/app/components/v2/adapters/revenue-forecast-adapter";
+import { adaptScoredLeadsToRiskCards } from "@/app/components/v2/adapters/revenue-risk-adapter";
+import { adaptScoredLeadsToRecoveryCards } from "@/app/components/v2/adapters/revenue-recovery-adapter";
+import { adaptScoredLeadsToAnalyticsCards } from "@/app/components/v2/adapters/revenue-analytics-adapter";
 import type { LeadCard } from "@/app/components/v2/adapters/lead-list-adapter";
 import type { IcpCard } from "@/app/components/v2/adapters/icp-analysis-adapter";
 import type { CommCard } from "@/app/components/v2/adapters/communication-intelligence-adapter";
@@ -87,36 +101,20 @@ export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> 
     title: "Gelir Analizi",
     subtitle: "Derinlemesine gelir analitiği ve performans raporları.",
   },
+  "lead-import": {
+    title: "Lead Import",
+    subtitle: "Google Maps'tan otel ve konaklama leadlerini içe aktarın.",
+  },
 };
 
 type Props = {
-  rows: QueueRow[];
-  kpi: MockKpi;
-  ctx: MockContext;
   scoredLeads: ScoredLead[];
-  cards: LeadCard[];
-  icpCards: IcpCard[];
-  commCards: CommCard[];
-  followUpCards: FollowUpCard[];
-  pipelineCards: PipelineCard[];
-  forecastCards: ForecastCard[];
-  riskCards: RiskCard[];
-  recoveryCards: RecoveryCard[];
-  analyticsCards: AnalyticsCard[];
 };
 
-export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards }: Props) {
+export default function V2Shell({ scoredLeads }: Props) {
   const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
   const [selectedQueueRowId, setSelectedQueueRowId] = useState<string | null>(null);
   const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
-
-  const scoredLeadsById = useMemo(
-    () => new Map(scoredLeads.map((l) => [l.id, l])),
-    [scoredLeads],
-  );
-  const selectedQueueLead = selectedQueueRowId
-    ? (scoredLeadsById.get(selectedQueueRowId) ?? null)
-    : null;
   const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
   const [selectedCommCard, setSelectedCommCard] = useState<CommCard | null>(null);
   const [selectedFollowUpCard, setSelectedFollowUpCard] = useState<FollowUpCard | null>(null);
@@ -126,6 +124,34 @@ export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, 
   const [selectedRecoveryCard, setSelectedRecoveryCard] = useState<RecoveryCard | null>(null);
   const [selectedCommandCard, setSelectedCommandCard] = useState<RecoveryCard | null>(null);
   const [selectedAnalyticsCard, setSelectedAnalyticsCard] = useState<AnalyticsCard | null>(null);
+
+  const leadImportState = useLeadImport();
+  const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
+
+  const scoredLeadsById = useMemo(
+    () => new Map(allLeads.map((l) => [l.id, l])),
+    [allLeads],
+  );
+
+  const derived = useMemo(() => {
+    const { rows, kpi, ctx } = adaptV2Data(allLeads);
+    const cards = adaptScoredLeadsToCards(allLeads);
+    const icpCards = adaptScoredLeadsToIcpCards(allLeads);
+    const commCards = adaptScoredLeadsToCommCards(allLeads);
+    const followUpCards = adaptScoredLeadsToFollowUpCards(allLeads);
+    const pipelineCards = adaptScoredLeadsToPipelineCards(allLeads);
+    const forecastCards = adaptScoredLeadsToForecastCards(allLeads);
+    const riskCards = adaptScoredLeadsToRiskCards(allLeads);
+    const recoveryCards = adaptScoredLeadsToRecoveryCards(allLeads);
+    const analyticsCards = adaptScoredLeadsToAnalyticsCards(recoveryCards, commCards);
+    return { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards };
+  }, [allLeads]);
+
+  const { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards } = derived;
+
+  const selectedQueueLead = selectedQueueRowId
+    ? (scoredLeadsById.get(selectedQueueRowId) ?? null)
+    : null;
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
@@ -154,6 +180,7 @@ export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, 
   const isRecovery = activeScreen === "revenue-recovery";
   const isCommand = activeScreen === "command-center";
   const isAnalytics = activeScreen === "revenue-analytics";
+  const isLeadImport = activeScreen === "lead-import";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -310,6 +337,11 @@ export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, 
                 pipelineCards={pipelineCards}
               />
             </>
+          ) : isLeadImport ? (
+            <>
+              <LeadImportScreen importState={leadImportState} />
+              <LeadImportContextPanel importState={leadImportState} />
+            </>
           ) : (
             <>
               <PlaceholderScreen
@@ -327,6 +359,7 @@ export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, 
                     | "revenue-recovery"
                     | "command-center"
                     | "revenue-analytics"
+                    | "lead-import"
                   >
                 }
               />
@@ -345,6 +378,7 @@ export default function V2Shell({ rows, kpi, ctx, scoredLeads, cards, icpCards, 
                     | "revenue-recovery"
                     | "command-center"
                     | "revenue-analytics"
+                    | "lead-import"
                   >
                 }
               />

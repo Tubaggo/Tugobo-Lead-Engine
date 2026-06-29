@@ -95,7 +95,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Sistem",
     items: [
-      { label: "Lead Import", icon: "import" },
+      { label: "Lead Import", icon: "import", screen: "lead-import" as const },
       { label: "Veri Kaynakları", icon: "database" },
       { label: "Otomasyonlar", icon: "automation" },
     ],
