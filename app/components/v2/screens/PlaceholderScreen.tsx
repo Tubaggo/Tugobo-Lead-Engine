@@ -16,7 +16,7 @@ type ScreenCfg = {
   iconContent: string;
 };
 
-const SCREEN_CFG: Record<Exclude<V2Screen, "revenue-queue" | "lead-import">, ScreenCfg> = {
+const SCREEN_CFG: Record<Exclude<V2Screen, "revenue-queue" | "lead-import" | "data-sources">, ScreenCfg> = {
   "command-center": {
     label: "Komuta Merkezi",
     description:
@@ -278,7 +278,7 @@ function GhostRows() {
 
 /* ── main placeholder workspace ───────────────────────────── */
 
-export default function PlaceholderScreen({ screen }: { screen: Exclude<V2Screen, "revenue-queue" | "lead-import"> }) {
+export default function PlaceholderScreen({ screen }: { screen: Exclude<V2Screen, "revenue-queue" | "lead-import" | "data-sources"> }) {
   const cfg = SCREEN_CFG[screen];
 
   return (
@@ -359,7 +359,7 @@ export default function PlaceholderScreen({ screen }: { screen: Exclude<V2Screen
 export function PlaceholderContextPanel({
   screen,
 }: {
-  screen: Exclude<V2Screen, "revenue-queue" | "lead-import">;
+  screen: Exclude<V2Screen, "revenue-queue" | "lead-import" | "data-sources">;
 }) {
   const cfg = SCREEN_CFG[screen];
 

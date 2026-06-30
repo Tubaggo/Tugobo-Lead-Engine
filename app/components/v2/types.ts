@@ -10,4 +10,5 @@ export type V2Screen =
   | "revenue-recovery"
   | "revenue-analytics"
   | "command-center"
-  | "lead-import";
+  | "lead-import"
+  | "data-sources";

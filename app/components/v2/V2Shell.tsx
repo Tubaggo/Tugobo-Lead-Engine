@@ -30,6 +30,10 @@ import RevenueAnalyticsScreen from "@/app/components/v2/screens/RevenueAnalytics
 import RevenueAnalyticsContextPanel from "@/app/components/v2/screens/RevenueAnalyticsContextPanel";
 import LeadImportScreen from "@/app/components/v2/screens/LeadImportScreen";
 import LeadImportContextPanel from "@/app/components/v2/screens/LeadImportContextPanel";
+import DataSourcesScreen, {
+  type DataSourcesScreenState,
+} from "@/app/components/v2/screens/DataSourcesScreen";
+import DataSourcesContextPanel from "@/app/components/v2/screens/DataSourcesContextPanel";
 import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
 import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
 import PlaceholderScreen, {
@@ -105,6 +109,10 @@ export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> 
     title: "Lead Import",
     subtitle: "Google Maps'tan otel ve konaklama leadlerini içe aktarın.",
   },
+  "data-sources": {
+    title: "Veri Kaynakları",
+    subtitle: "Entegrasyon sağlık durumu, sağlayıcı bağlantıları ve operasyonel hazırlık.",
+  },
 };
 
 type Props = {
@@ -124,6 +132,9 @@ export default function V2Shell({ scoredLeads }: Props) {
   const [selectedRecoveryCard, setSelectedRecoveryCard] = useState<RecoveryCard | null>(null);
   const [selectedCommandCard, setSelectedCommandCard] = useState<RecoveryCard | null>(null);
   const [selectedAnalyticsCard, setSelectedAnalyticsCard] = useState<AnalyticsCard | null>(null);
+
+  const [dataSourcesState, setDataSourcesState] =
+    useState<DataSourcesScreenState | null>(null);
 
   const leadImportState = useLeadImport();
   const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
@@ -181,6 +192,7 @@ export default function V2Shell({ scoredLeads }: Props) {
   const isCommand = activeScreen === "command-center";
   const isAnalytics = activeScreen === "revenue-analytics";
   const isLeadImport = activeScreen === "lead-import";
+  const isDataSources = activeScreen === "data-sources";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -342,6 +354,11 @@ export default function V2Shell({ scoredLeads }: Props) {
               <LeadImportScreen importState={leadImportState} />
               <LeadImportContextPanel importState={leadImportState} />
             </>
+          ) : isDataSources ? (
+            <>
+              <DataSourcesScreen onStateChange={setDataSourcesState} />
+              <DataSourcesContextPanel screenState={dataSourcesState} />
+            </>
           ) : (
             <>
               <PlaceholderScreen
@@ -360,6 +377,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                     | "command-center"
                     | "revenue-analytics"
                     | "lead-import"
+                    | "data-sources"
                   >
                 }
               />
@@ -379,6 +397,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                     | "command-center"
                     | "revenue-analytics"
                     | "lead-import"
+                    | "data-sources"
                   >
                 }
               />
