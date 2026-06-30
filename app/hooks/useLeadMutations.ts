@@ -95,6 +95,8 @@ function hydrateEntry(v: unknown): LeadStatusUpdate {
 export function useLeadMutations(leadId: string) {
   const [stateMap, setStateMap] = useState<StateMap>({});
   const [mounted, setMounted] = useState(false);
+  // One-level undo: snapshot of the state before the last reversible action.
+  const [prevState, setPrevState] = useState<LeadStatusUpdate | null>(null);
 
   useEffect(() => {
     const raw = loadStateMap();
@@ -138,6 +140,10 @@ export function useLeadMutations(leadId: string) {
    * Mirrors `applyOutreachConfirmed` in Dashboard.tsx exactly.
    */
   const markContacted = useCallback(() => {
+    // Capture snapshot before mutation for undo (skip if already DNC — no-op)
+    if (!leadState.doNotContact) {
+      setPrevState({ ...leadState });
+    }
     setStateMap((prev) => {
       const current = prev[leadId] ?? DEFAULT_STATE;
       if (current.doNotContact) return prev;
@@ -170,26 +176,29 @@ export function useLeadMutations(leadId: string) {
       saveStateMap(next);
       return next;
     });
-  }, [leadId]);
+  }, [leadId, leadState]);
 
   const markNoResponse = useCallback(() => {
+    setPrevState({ ...leadState });
     applyPatch(leadId, { status: "needs_follow_up" });
-  }, [leadId, applyPatch]);
+  }, [leadId, applyPatch, leadState]);
 
   const markDoNotContact = useCallback(() => {
+    setPrevState({ ...leadState });
     applyPatch(leadId, {
       doNotContact: true,
       status: "lost",
       pipelineStage: "do_not_contact",
       lostAt: Date.now(),
     });
-  }, [leadId, applyPatch]);
+  }, [leadId, applyPatch, leadState]);
 
   const scheduleFollowUp = useCallback(
     (timestamp: number) => {
+      setPrevState({ ...leadState });
       applyPatch(leadId, { nextFollowUpAt: timestamp, status: "needs_follow_up" });
     },
-    [leadId, applyPatch],
+    [leadId, applyPatch, leadState],
   );
 
   const setPipelineStage = useCallback(
@@ -222,6 +231,29 @@ export function useLeadMutations(leadId: string) {
     [leadId, applyPatch],
   );
 
+  const reactivateLead = useCallback(() => {
+    setPrevState({ ...leadState });
+    applyPatch(leadId, {
+      doNotContact: false,
+      status: "new",
+      pipelineStage: "new",
+      nextFollowUpAt: null,
+    });
+  }, [leadId, applyPatch, leadState]);
+
+  // Restores the exact state snapshot before the last reversible action.
+  // Only affects localStorage mutation state — does not undo backend API calls.
+  const undoLastAction = useCallback(() => {
+    if (!prevState) return;
+    const snapshot = prevState;
+    setPrevState(null);
+    setStateMap((prev) => {
+      const next: StateMap = { ...prev, [leadId]: { ...snapshot } };
+      saveStateMap(next);
+      return next;
+    });
+  }, [leadId, prevState]);
+
   return {
     mounted,
     leadState,
@@ -234,5 +266,8 @@ export function useLeadMutations(leadId: string) {
     setWon,
     setLost,
     updateNote,
+    reactivateLead,
+    undoLastAction,
+    canUndo: prevState !== null,
   };
 }

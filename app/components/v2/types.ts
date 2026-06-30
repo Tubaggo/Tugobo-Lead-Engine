@@ -11,4 +11,5 @@ export type V2Screen =
   | "revenue-analytics"
   | "command-center"
   | "lead-import"
-  | "data-sources";
+  | "data-sources"
+  | "automation-center";

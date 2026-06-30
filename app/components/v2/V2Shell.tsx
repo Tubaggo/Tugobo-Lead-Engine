@@ -34,6 +34,13 @@ import DataSourcesScreen, {
   type DataSourcesScreenState,
 } from "@/app/components/v2/screens/DataSourcesScreen";
 import DataSourcesContextPanel from "@/app/components/v2/screens/DataSourcesContextPanel";
+import AutomationCenterScreen from "@/app/components/v2/screens/AutomationCenterScreen";
+import AutomationCenterContextPanel from "@/app/components/v2/screens/AutomationCenterContextPanel";
+import {
+  adaptScoredLeadsToAutomationCards,
+  computeAutomationSummary,
+  type AutomationCard,
+} from "@/app/components/v2/adapters/automation-center-adapter";
 import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
 import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
 import PlaceholderScreen, {
@@ -113,6 +120,10 @@ export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> 
     title: "Veri Kaynakları",
     subtitle: "Entegrasyon sağlık durumu, sağlayıcı bağlantıları ve operasyonel hazırlık.",
   },
+  "automation-center": {
+    title: "Otomasyonlar",
+    subtitle: "Re-enrich, contact finder, AI review, follow-up ve outreach kuyrukları.",
+  },
 };
 
 type Props = {
@@ -135,6 +146,8 @@ export default function V2Shell({ scoredLeads }: Props) {
 
   const [dataSourcesState, setDataSourcesState] =
     useState<DataSourcesScreenState | null>(null);
+  const [selectedAutomationCard, setSelectedAutomationCard] =
+    useState<AutomationCard | null>(null);
 
   const leadImportState = useLeadImport();
   const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
@@ -155,10 +168,12 @@ export default function V2Shell({ scoredLeads }: Props) {
     const riskCards = adaptScoredLeadsToRiskCards(allLeads);
     const recoveryCards = adaptScoredLeadsToRecoveryCards(allLeads);
     const analyticsCards = adaptScoredLeadsToAnalyticsCards(recoveryCards, commCards);
-    return { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards };
+    const automationCards = adaptScoredLeadsToAutomationCards(allLeads);
+    const automationSummary = computeAutomationSummary(automationCards);
+    return { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary };
   }, [allLeads]);
 
-  const { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards } = derived;
+  const { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary } = derived;
 
   const selectedQueueLead = selectedQueueRowId
     ? (scoredLeadsById.get(selectedQueueRowId) ?? null)
@@ -177,6 +192,7 @@ export default function V2Shell({ scoredLeads }: Props) {
     setSelectedRecoveryCard(null);
     setSelectedCommandCard(null);
     setSelectedAnalyticsCard(null);
+    setSelectedAutomationCard(null);
   }
 
   const meta = SCREEN_META[activeScreen];
@@ -193,6 +209,7 @@ export default function V2Shell({ scoredLeads }: Props) {
   const isAnalytics = activeScreen === "revenue-analytics";
   const isLeadImport = activeScreen === "lead-import";
   const isDataSources = activeScreen === "data-sources";
+  const isAutomationCenter = activeScreen === "automation-center";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -359,6 +376,18 @@ export default function V2Shell({ scoredLeads }: Props) {
               <DataSourcesScreen onStateChange={setDataSourcesState} />
               <DataSourcesContextPanel screenState={dataSourcesState} />
             </>
+          ) : isAutomationCenter ? (
+            <>
+              <AutomationCenterScreen
+                leads={allLeads}
+                selectedId={selectedAutomationCard?.id ?? null}
+                onSelect={setSelectedAutomationCard}
+              />
+              <AutomationCenterContextPanel
+                selectedCard={selectedAutomationCard}
+                summary={automationSummary}
+              />
+            </>
           ) : (
             <>
               <PlaceholderScreen
@@ -378,6 +407,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                     | "revenue-analytics"
                     | "lead-import"
                     | "data-sources"
+                    | "automation-center"
                   >
                 }
               />
@@ -398,6 +428,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                     | "revenue-analytics"
                     | "lead-import"
                     | "data-sources"
+                    | "automation-center"
                   >
                 }
               />
