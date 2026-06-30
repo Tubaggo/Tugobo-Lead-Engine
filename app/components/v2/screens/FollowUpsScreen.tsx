@@ -22,9 +22,11 @@ type Props = {
 
 const STATE_FILTER_LABEL: Record<StateFilter, string> = {
   all: "Tüm Takipler",
-  today: "Bugün",
-  "this-week": "Bu Hafta",
   overdue: "Gecikmiş",
+  today: "Bugün",
+  upcoming: "Yaklaşan",
+  "no-response": "Yanıt Yok",
+  "this-week": "Bu Hafta",
   done: "Tamamlandı",
 };
 
@@ -128,6 +130,12 @@ export default function FollowUpsScreen({ cards, selectedId, onSelect }: Props) 
         result = result.filter(
           (c) => c.followUpState === "today" || c.followUpState === "overdue",
         );
+      } else if (stateFilter === "upcoming") {
+        result = result.filter(
+          (c) => c.followUpState === "this-week" || c.followUpState === "scheduled",
+        );
+      } else if (stateFilter === "no-response") {
+        result = result.filter((c) => c.isNoResponse);
       } else {
         result = result.filter((c) => c.followUpState === stateFilter);
       }
@@ -172,7 +180,7 @@ export default function FollowUpsScreen({ cards, selectedId, onSelect }: Props) 
   return (
     <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.025]">
       {/* KPI strip */}
-      <div className="shrink-0 grid grid-cols-4 divide-x divide-white/[0.06] border-b border-white/[0.06]">
+      <div className="shrink-0 grid grid-cols-5 divide-x divide-white/[0.06] border-b border-white/[0.06]">
         <KpiTile
           label="Takip Bekleyen"
           value={String(summary.pendingCount)}
@@ -190,6 +198,12 @@ export default function FollowUpsScreen({ cards, selectedId, onSelect }: Props) 
           value={String(summary.overdueCount)}
           sub="öncelikli müdahale"
           accent="text-rose-300"
+        />
+        <KpiTile
+          label="Yanıt Yok"
+          value={String(summary.noResponseCount)}
+          sub="takip gerekli"
+          accent="text-yellow-300"
         />
         <KpiTile
           label="Sıcak Lead"
@@ -226,7 +240,7 @@ export default function FollowUpsScreen({ cards, selectedId, onSelect }: Props) 
           onChange={(e) => setStateFilter(e.target.value as StateFilter)}
           className={selectCls}
         >
-          {(["all", "today", "this-week", "overdue", "done"] as StateFilter[]).map((v) => (
+          {(["all", "overdue", "today", "upcoming", "no-response", "this-week", "done"] as StateFilter[]).map((v) => (
             <option key={v} value={v}>
               {STATE_FILTER_LABEL[v]}
             </option>
@@ -369,6 +383,14 @@ function FollowUpCardRow({
         <Badge variant={priorityVariant(card.priority)}>
           {PRIORITY_TR[card.priority]}
         </Badge>
+
+        {card.contactAttempts > 0 && (
+          <span className="text-[10px] text-white/35">{card.contactAttempts}x denendi</span>
+        )}
+
+        {card.nextFollowUpLabel !== "—" && (
+          <span className="text-[10px] text-white/35">takip: {card.nextFollowUpLabel}</span>
+        )}
 
         {card.icpScore > 0 && (
           <span className="text-[10px] text-white/40">

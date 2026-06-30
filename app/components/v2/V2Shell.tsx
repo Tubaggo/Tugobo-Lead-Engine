@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import type { V2Screen } from "@/app/components/v2/types";
 import type { ScoredLead } from "@/app/lib/leads";
 import V2Sidebar from "@/app/components/v2/layout/V2Sidebar";
@@ -149,6 +149,11 @@ export default function V2Shell({ scoredLeads }: Props) {
   const [selectedAutomationCard, setSelectedAutomationCard] =
     useState<AutomationCard | null>(null);
 
+  // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
+  // from the latest localStorage state without requiring a full server re-fetch.
+  const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
+  const onFollowUpMutation = useCallback(() => setFollowUpMutVersion((v) => v + 1), []);
+
   const leadImportState = useLeadImport();
   const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
 
@@ -162,7 +167,6 @@ export default function V2Shell({ scoredLeads }: Props) {
     const cards = adaptScoredLeadsToCards(allLeads);
     const icpCards = adaptScoredLeadsToIcpCards(allLeads);
     const commCards = adaptScoredLeadsToCommCards(allLeads);
-    const followUpCards = adaptScoredLeadsToFollowUpCards(allLeads);
     const pipelineCards = adaptScoredLeadsToPipelineCards(allLeads);
     const forecastCards = adaptScoredLeadsToForecastCards(allLeads);
     const riskCards = adaptScoredLeadsToRiskCards(allLeads);
@@ -170,10 +174,69 @@ export default function V2Shell({ scoredLeads }: Props) {
     const analyticsCards = adaptScoredLeadsToAnalyticsCards(recoveryCards, commCards);
     const automationCards = adaptScoredLeadsToAutomationCards(allLeads);
     const automationSummary = computeAutomationSummary(automationCards);
-    return { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary };
+    return { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary };
   }, [allLeads]);
 
-  const { rows, kpi, ctx, cards, icpCards, commCards, followUpCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary } = derived;
+  const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary } = derived;
+
+  // followUpCards is computed separately so it can react to local mutations immediately.
+  // On each onFollowUpMutation() call, followUpMutVersion increments → this memo reruns →
+  // it reads the freshest localStorage state and merges mutation fields into allLeads before adapting.
+  const followUpCards = useMemo(() => {
+    let stateMap: Record<string, Record<string, unknown>> = {};
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem("tugobo-lead-engine:state-v1");
+        if (raw) stateMap = JSON.parse(raw) as typeof stateMap;
+      } catch {
+        // ignore
+      }
+    }
+    const merged = allLeads.map((lead) => {
+      const mut = stateMap[lead.id];
+      // Only apply when the user has actually taken an action in V2 (updatedAt is set)
+      if (!mut || typeof mut.updatedAt !== "number") return lead;
+      const patch: Record<string, unknown> = {};
+      // Timestamps: merge only when explicitly set to a positive value
+      if (typeof mut.lastContactedAt === "number" && mut.lastContactedAt > 0) {
+        patch.lastContactedAt = mut.lastContactedAt;
+      }
+      if (typeof mut.nextFollowUpAt === "number" && mut.nextFollowUpAt > 0) {
+        patch.nextFollowUpAt = mut.nextFollowUpAt;
+      }
+      // contactAttempts: only ever increase — never let a mutation decrease the count
+      if (
+        typeof mut.contactAttempts === "number" &&
+        mut.contactAttempts > ((lead.contactAttempts as number | undefined) ?? 0)
+      ) {
+        patch.contactAttempts = mut.contactAttempts;
+      }
+      // doNotContact: merge directly (Lead type already has this field)
+      if (typeof mut.doNotContact === "boolean") {
+        patch.doNotContact = mut.doNotContact;
+      }
+      // pipelineStage: merge when set to a non-null string
+      if (typeof mut.pipelineStage === "string") {
+        patch.pipelineStage = mut.pipelineStage;
+      }
+      return Object.keys(patch).length > 0
+        ? ({ ...lead, ...patch } as typeof lead)
+        : lead;
+    });
+    return adaptScoredLeadsToFollowUpCards(merged);
+  }, [allLeads, followUpMutVersion]);
+
+  // Always read the up-to-date version of the selected card from the freshly-computed
+  // followUpCards pool. This ensures the context panel sees post-mutation fields
+  // (contactAttempts, nextFollowUpLabel, doNotContact, etc.) without requiring the user
+  // to re-click. Falls back to null when the card has been removed (e.g. DNC filter).
+  const effectiveSelectedFollowUpCard = useMemo(
+    () =>
+      selectedFollowUpCard
+        ? (followUpCards.find((c) => c.id === selectedFollowUpCard.id) ?? null)
+        : null,
+    [selectedFollowUpCard, followUpCards],
+  );
 
   const selectedQueueLead = selectedQueueRowId
     ? (scoredLeadsById.get(selectedQueueRowId) ?? null)
@@ -280,12 +343,13 @@ export default function V2Shell({ scoredLeads }: Props) {
             <>
               <FollowUpsScreen
                 cards={followUpCards}
-                selectedId={selectedFollowUpCard?.id ?? null}
+                selectedId={effectiveSelectedFollowUpCard?.id ?? null}
                 onSelect={setSelectedFollowUpCard}
               />
               <FollowUpsContextPanel
-                selectedCard={selectedFollowUpCard}
+                selectedCard={effectiveSelectedFollowUpCard}
                 allCards={followUpCards}
+                onMutation={onFollowUpMutation}
               />
             </>
           ) : isPipeline ? (

@@ -4,7 +4,7 @@ import type { PackageTier, Priority } from "@/app/components/v2/mock/mock-queue"
 export type FollowUpState = "overdue" | "today" | "this-week" | "scheduled" | "done";
 export type LeadTemperature = "hot" | "warm" | "cold";
 export type PriorityFilter = "all" | "critical" | "high" | "medium" | "low";
-export type StateFilter = "all" | "today" | "this-week" | "overdue" | "done";
+export type StateFilter = "all" | "overdue" | "today" | "upcoming" | "no-response" | "this-week" | "done";
 export type FollowUpSortKey = "priority" | "opportunity" | "icp" | "last-contact";
 
 export type FollowUpCard = {
@@ -32,6 +32,11 @@ export type FollowUpCard = {
   leadTemperature: LeadTemperature;
   urgencyLevel: "high" | "medium" | "low";
 
+  /** Human-readable label for when the next follow-up is due, e.g. "Yarın", "3g gecikti" */
+  nextFollowUpLabel: string;
+  /** True when contactAttempts > 0 but lead hasn't been marked done (i.e. no response received) */
+  isNoResponse: boolean;
+
   whyThisLead: string[];
   aiInsight: string;
 };
@@ -45,6 +50,7 @@ export type FollowUpSummary = {
   doneCount: number;
   thisWeekCount: number;
   scheduledCount: number;
+  noResponseCount: number;
 };
 
 // ── helpers ───────────────────────────────────────────────────
@@ -110,11 +116,15 @@ function deriveState(lead: ScoredLead): FollowUpState {
       ? lead.nextFollowUpAt
       : null;
 
-  // Recently contacted (within 8 hours) → done for now
-  if (lastContactedMs && now - lastContactedMs < 8 * 60 * 60 * 1_000) return "done";
-
-  // Explicitly scheduled follow-up is overdue
+  // Explicitly scheduled follow-up is overdue — highest urgency
   if (nextFollowUpMs && nextFollowUpMs < now) return "overdue";
+
+  // Recently contacted (within 8 hours) AND no explicit future schedule → done for now.
+  // If nextFollowUpMs is set, the user scheduled a future follow-up and the card must
+  // remain visible even though they just made contact.
+  if (lastContactedMs && now - lastContactedMs < 8 * 60 * 60 * 1_000 && !nextFollowUpMs) {
+    return "done";
+  }
 
   // Today-bucket or explicit high-priority follow_up
   if (lead.priorityBucket === "today") return "today";
@@ -181,11 +191,29 @@ function deriveUrgencyLevel(lead: ScoredLead): "high" | "medium" | "low" {
   return "low";
 }
 
+function formatNextFollowUp(ms: number | null): string {
+  if (!ms) return "—";
+  const now = Date.now();
+  const diffMs = ms - now;
+  if (diffMs < 0) {
+    const d = Math.round(-diffMs / 86_400_000);
+    if (d === 0) return "Bugün (gecikti)";
+    if (d === 1) return "1 gün gecikti";
+    return `${d}g gecikti`;
+  }
+  const d = Math.round(diffMs / 86_400_000);
+  if (d === 0) return "Bugün";
+  if (d === 1) return "Yarın";
+  if (d <= 7) return `${d} gün içinde`;
+  if (d <= 14) return "1 hafta içinde";
+  return `${Math.round(d / 7)} hafta içinde`;
+}
+
 // ── main adapter ──────────────────────────────────────────────
 
 export function adaptScoredLeadsToFollowUpCards(scored: ScoredLead[]): FollowUpCard[] {
   return scored
-    .filter((l) => l.priorityBucket !== "archive")
+    .filter((l) => l.priorityBucket !== "archive" && !l.doNotContact)
     .map((lead) => {
       const lastContactedMs =
         typeof lead.lastContactedAt === "number" && lead.lastContactedAt > 0
@@ -224,6 +252,9 @@ export function adaptScoredLeadsToFollowUpCards(scored: ScoredLead[]): FollowUpC
         leadTemperature: deriveTemperature(lead),
         urgencyLevel: deriveUrgencyLevel(lead),
 
+        nextFollowUpLabel: formatNextFollowUp(nextFollowUpMs),
+        isNoResponse: (lead.contactAttempts ?? 0) > 0 && state !== "done",
+
         whyThisLead: lead.whyThisLead ?? [],
         aiInsight: lead.aiInsight ?? "",
       };
@@ -240,6 +271,7 @@ export function computeFollowUpSummary(cards: FollowUpCard[]): FollowUpSummary {
   const doneCount = cards.filter((c) => c.followUpState === "done").length;
   const pendingCount = total - doneCount;
   const hotCount = cards.filter((c) => c.leadTemperature === "hot").length;
+  const noResponseCount = cards.filter((c) => c.isNoResponse).length;
 
   return {
     total,
@@ -250,5 +282,6 @@ export function computeFollowUpSummary(cards: FollowUpCard[]): FollowUpSummary {
     doneCount,
     thisWeekCount,
     scheduledCount,
+    noResponseCount,
   };
 }

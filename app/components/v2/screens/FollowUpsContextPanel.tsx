@@ -1,3 +1,7 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { flushSync } from "react-dom";
 import type {
   FollowUpCard,
   FollowUpState,
@@ -6,10 +10,12 @@ import type {
 } from "@/app/components/v2/adapters/follow-ups-adapter";
 import { computeFollowUpSummary } from "@/app/components/v2/adapters/follow-ups-adapter";
 import { Badge } from "@/app/components/v2/primitives/Badge";
+import { useLeadMutations } from "@/app/hooks/useLeadMutations";
 
 type Props = {
   selectedCard: FollowUpCard | null;
   allCards: FollowUpCard[];
+  onMutation?: () => void;
 };
 
 // ── shared helpers ────────────────────────────────────────────
@@ -85,8 +91,8 @@ function StatRow({ label, value }: { label: string; value: string }) {
 
 // ── root ──────────────────────────────────────────────────────
 
-export default function FollowUpsContextPanel({ selectedCard, allCards }: Props) {
-  if (selectedCard) return <LeadDetail card={selectedCard} />;
+export default function FollowUpsContextPanel({ selectedCard, allCards, onMutation }: Props) {
+  if (selectedCard) return <LeadDetail card={selectedCard} key={selectedCard.id} onMutation={onMutation} />;
   return <WorkspaceSummary cards={allCards} />;
 }
 
@@ -145,6 +151,7 @@ function WorkspaceSummary({ cards }: { cards: FollowUpCard[] }) {
         <StatRow label="Toplam Takip Bekleyen" value={String(summary.pendingCount)} />
         <StatRow label="Kritik / Bugün Aranacak" value={String(summary.todayCount)} />
         <StatRow label="Gecikmiş Takip" value={String(summary.overdueCount)} />
+        <StatRow label="Yanıt Vermedi" value={String(summary.noResponseCount)} />
         <StatRow label="Sıcak Lead" value={String(summary.hotCount)} />
         <StatRow label="Bu Hafta Tamamlanacak" value={String(summary.thisWeekCount)} />
       </div>
@@ -188,6 +195,9 @@ function WorkspaceSummary({ cards }: { cards: FollowUpCard[] }) {
         <div className="space-y-2">
           <RecoLine icon="◉" text={`${summary.overdueCount} gecikmiş takibi önce tamamla`} />
           <RecoLine icon="◎" text={`${summary.todayCount} lead bugün iletişim bekliyor`} />
+          {summary.noResponseCount > 0 && (
+            <RecoLine icon="◑" text={`${summary.noResponseCount} lead yanıt vermedi — takip gerekli`} />
+          )}
           <RecoLine icon="○" text={`${summary.hotCount} sıcak lead yüksek dönüşüm şansı taşıyor`} />
         </div>
         <p className="mt-3 text-[10px] text-white/30 leading-relaxed">
@@ -248,12 +258,85 @@ function RecoLine({ icon, text }: { icon: string; text: string }) {
   );
 }
 
+// ── action button ─────────────────────────────────────────────
+
+function ActionBtn({
+  label,
+  onClick,
+  variant = "default",
+  disabled,
+}: {
+  label: string;
+  onClick: () => void;
+  variant?: "default" | "primary" | "danger";
+  disabled?: boolean;
+}) {
+  const base =
+    "flex h-8 w-full items-center justify-center rounded-lg px-3 text-[11px] font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40";
+  const v =
+    variant === "primary"
+      ? "bg-indigo-500 text-white hover:bg-indigo-400"
+      : variant === "danger"
+        ? "bg-rose-500/[0.12] text-rose-400 ring-1 ring-inset ring-rose-500/20 hover:bg-rose-500/[0.18]"
+        : "border border-white/[0.08] bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-zinc-100";
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className={`${base} ${v}`}>
+      {label}
+    </button>
+  );
+}
+
 // ── lead selected ─────────────────────────────────────────────
 
-function LeadDetail({ card }: { card: FollowUpCard }) {
+function LeadDetail({ card, onMutation }: { card: FollowUpCard; onMutation?: () => void }) {
+  const {
+    mounted,
+    leadState,
+    markContacted,
+    markNoResponse,
+    markDoNotContact,
+    scheduleFollowUp,
+    undoLastAction,
+    canUndo,
+  } = useLeadMutations(card.id);
+
+  const [lastAction, setLastAction] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!lastAction) return;
+    const t = setTimeout(() => setLastAction(null), 3000);
+    return () => clearTimeout(t);
+  }, [lastAction]);
+
+  function fire(mutation: () => void, label: string) {
+    // flushSync forces React to process setStateMap's functional updater (and saveStateMap)
+    // synchronously before we return. That means localStorage is written BEFORE onMutation()
+    // bumps followUpMutVersion in V2Shell — so the followUpCards useMemo reads fresh storage.
+    flushSync(() => mutation());
+    setLastAction(label);
+    onMutation?.();
+  }
+
   const avatarCls = AVATAR_COLORS[stableAvatarIdx(card.id)];
   const stateCfg = STATE_CONFIG[card.followUpState];
   const tempCfg = TEMP_CONFIG[card.leadTemperature];
+
+  // Prefer live mutation state once hydrated, fall back to adapter data
+  const liveAttempts = mounted ? (leadState.contactAttempts ?? card.contactAttempts) : card.contactAttempts;
+  const liveLastContactMs = mounted ? leadState.lastContactedAt : card.lastContactedAtMs;
+  const liveLastContactLabel = liveLastContactMs
+    ? (() => {
+        const diffH = (Date.now() - liveLastContactMs) / (60 * 60 * 1_000);
+        if (diffH < 1) return "Az önce";
+        if (diffH < 24) return `${Math.round(diffH)} saat önce`;
+        const diffD = Math.round(diffH / 24);
+        if (diffD === 1) return "Dün";
+        if (diffD <= 7) return `${diffD} gün önce`;
+        if (diffD <= 14) return "1 hafta önce";
+        return `${Math.round(diffD / 7)} hafta önce`;
+      })()
+    : card.lastContactLabel;
+  const isDnc = mounted && leadState.doNotContact;
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto">
@@ -292,15 +375,20 @@ function LeadDetail({ card }: { card: FollowUpCard }) {
         <div className="grid grid-cols-2 gap-3 mt-2">
           <div>
             <div className="text-[10px] text-white/30">Son Temas</div>
-            <div className="text-xs font-medium text-white/70 mt-0.5">{card.lastContactLabel}</div>
+            <div className="text-xs font-medium text-white/70 mt-0.5">{liveLastContactLabel}</div>
           </div>
           <div>
             <div className="text-[10px] text-white/30">Temas Sayısı</div>
             <div className="text-xs font-medium text-white/70 mt-0.5">
-              {card.contactAttempts > 0 ? `${card.contactAttempts}x` : "İlk temas"}
+              {liveAttempts > 0 ? `${liveAttempts}x` : "İlk temas"}
             </div>
           </div>
         </div>
+        {isDnc && (
+          <div className="mt-2 rounded-lg bg-rose-500/[0.10] border border-rose-500/20 px-2.5 py-1.5 text-[10px] font-semibold text-rose-400 text-center">
+            DNC — İletişim engellendi
+          </div>
+        )}
       </div>
 
       {/* Opportunity + ICP */}
@@ -352,6 +440,72 @@ function LeadDetail({ card }: { card: FollowUpCard }) {
           <p className="text-[11px] text-white/60 leading-relaxed">{card.aiInsight}</p>
         </div>
       )}
+
+      {/* Quick actions */}
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4">
+        <SectionLabel>Hızlı Aksiyon</SectionLabel>
+
+        {/* Success feedback — auto-clears after 3s */}
+        {lastAction && (
+          <div className="mb-2 flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.10] px-3 py-2 text-[11px] text-emerald-400">
+            <span className="shrink-0 font-bold">✓</span>
+            <span>{lastAction}</span>
+          </div>
+        )}
+
+        {isDnc ? (
+          <div className="rounded-lg bg-rose-500/[0.08] border border-rose-500/20 px-3 py-2 text-[11px] text-rose-400 text-center">
+            DNC — İletişim kalıcı olarak engellendi
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <ActionBtn
+              label="Temas Kuruldu"
+              onClick={() => fire(markContacted, "Temas kuruldu")}
+              variant="primary"
+            />
+            <div className="grid grid-cols-2 gap-1.5">
+              <ActionBtn
+                label="+1 Gün"
+                onClick={() =>
+                  fire(
+                    () => scheduleFollowUp(Date.now() + 24 * 60 * 60 * 1_000),
+                    "Takip +1 gün planlandı",
+                  )
+                }
+              />
+              <ActionBtn
+                label="+3 Gün"
+                onClick={() =>
+                  fire(
+                    () => scheduleFollowUp(Date.now() + 3 * 24 * 60 * 60 * 1_000),
+                    "Takip +3 gün planlandı",
+                  )
+                }
+              />
+            </div>
+            <ActionBtn
+              label="Yanıt Yok"
+              onClick={() => fire(markNoResponse, "Yanıt yok olarak işaretlendi")}
+            />
+            <ActionBtn
+              label="İletişim Engelle (DNC)"
+              onClick={() => fire(markDoNotContact, "İletişim engellendi")}
+              variant="danger"
+            />
+          </div>
+        )}
+
+        {canUndo && (
+          <button
+            type="button"
+            onClick={() => fire(undoLastAction, "Son aksiyon geri alındı")}
+            className="mt-2 w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors duration-150"
+          >
+            ↩ Son aksiyonu geri al
+          </button>
+        )}
+      </div>
     </aside>
   );
 }
