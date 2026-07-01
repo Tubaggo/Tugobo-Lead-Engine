@@ -1,0 +1,940 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import type { AutomationCard, AutomationSummary } from "@/app/components/v2/adapters/automation-center-adapter";
+import { QUEUE_LABELS } from "@/app/components/v2/adapters/automation-center-adapter";
+import { useLeadMutations } from "@/app/hooks/useLeadMutations";
+
+/* ── Design tokens ──────────────────────────────────────────────── */
+
+const PANEL = "flex w-[280px] shrink-0 flex-col gap-0 overflow-y-auto rounded-xl border border-white/[0.08] bg-[var(--background-elev)]";
+const SEC = "border-b border-white/[0.06] px-4 py-4";
+const SEC_TITLE = "mb-2.5 text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-500";
+const ROW = "flex items-center justify-between";
+const LABEL = "text-[10px] text-zinc-500";
+const VALUE = "text-[11px] font-medium text-zinc-300";
+
+/* ── Base button ────────────────────────────────────────────────── */
+
+function Btn({
+  label,
+  onClick,
+  loading,
+  variant = "default",
+  disabled,
+}: {
+  label: string;
+  onClick: () => void;
+  loading?: boolean;
+  variant?: "default" | "primary" | "danger";
+  disabled?: boolean;
+}) {
+  const base =
+    "flex h-8 w-full items-center justify-center rounded-lg px-3 text-[11px] font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40";
+  const v =
+    variant === "primary"
+      ? "bg-indigo-500 text-white hover:bg-indigo-400"
+      : variant === "danger"
+        ? "bg-rose-500/[0.12] text-rose-400 ring-1 ring-inset ring-rose-500/20 hover:bg-rose-500/[0.18]"
+        : "border border-white/[0.08] bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-zinc-100";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || loading}
+      className={`${base} ${v}`}
+    >
+      {loading ? "Yükleniyor…" : label}
+    </button>
+  );
+}
+
+/* ── Shared error box ───────────────────────────────────────────── */
+
+function ErrorBox({ error }: { error: string }) {
+  return (
+    <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/[0.08] p-3 text-[10px] leading-relaxed text-rose-400">
+      {error}
+    </div>
+  );
+}
+
+/* ── Success chip (shared header for all result cards) ──────────── */
+
+function SuccessChip({ label, timestamp }: { label: string; timestamp: number | null }) {
+  const rel = timestamp
+    ? (() => {
+        const s = Math.round((Date.now() - timestamp) / 1000);
+        if (s < 10) return "az önce";
+        if (s < 60) return `${s}s önce`;
+        return `${Math.round(s / 60)}dk önce`;
+      })()
+    : null;
+
+  return (
+    <div className="mb-3 flex items-center justify-between">
+      <span className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-400">
+        <span>✓</span>
+        <span>{label}</span>
+      </span>
+      {rel && <span className="text-[9px] text-zinc-600">{rel}</span>}
+    </div>
+  );
+}
+
+/* ── AI Message result card ─────────────────────────────────────── */
+
+function MessageResultCard({
+  text,
+  generatedAt,
+  phone,
+}: {
+  text: string;
+  generatedAt: number | null;
+  phone: string | null;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {/* silently fail */});
+  }
+
+  function handleWhatsApp() {
+    if (!phone) return;
+    const clean = phone.replace(/[^0-9]/g, "");
+    window.open(`https://wa.me/${clean}?text=${encodeURIComponent(text)}`, "_blank");
+  }
+
+  return (
+    <div className="space-y-3">
+      <SuccessChip label="Mesaj Oluşturuldu" timestamp={generatedAt} />
+      <div className="min-h-[160px] rounded-xl border border-white/[0.08] bg-white/[0.025] p-3.5">
+        <p className="select-text whitespace-pre-wrap text-[11.5px] leading-[1.7] text-zinc-200">
+          {text}
+        </p>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className={[
+            "flex h-8 flex-1 items-center justify-center rounded-lg border text-[10px] font-semibold transition-colors duration-150",
+            copied
+              ? "border-emerald-500/30 bg-emerald-500/[0.10] text-emerald-400"
+              : "border-white/[0.08] bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] hover:text-zinc-100",
+          ].join(" ")}
+        >
+          {copied ? "✓ Kopyalandı" : "Kopyala"}
+        </button>
+        {phone && (
+          <button
+            type="button"
+            onClick={handleWhatsApp}
+            className="flex h-8 flex-1 items-center justify-center rounded-lg bg-emerald-500/[0.12] text-[10px] font-semibold text-emerald-400 ring-1 ring-inset ring-emerald-500/20 transition-colors duration-150 hover:bg-emerald-500/[0.18]"
+          >
+            WhatsApp Aç
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Contact Finder result card ─────────────────────────────────── */
+
+type ContactResult = {
+  bestContactType: string;
+  bestContactValue: string;
+  confidence: string;
+};
+
+function ContactFoundCard({
+  card,
+  result,
+  foundAt,
+}: {
+  card: AutomationCard;
+  result: ContactResult;
+  foundAt: number | null;
+}) {
+  function openWhatsApp() {
+    if (!card.phone) return;
+    window.open(`https://wa.me/${card.phone.replace(/[^0-9]/g, "")}`, "_blank");
+  }
+  function openWebsite() {
+    if (!card.website) return;
+    const url = card.website.startsWith("http") ? card.website : `https://${card.website}`;
+    window.open(url, "_blank");
+  }
+  function openInstagram() {
+    if (!card.instagram) return;
+    window.open(`https://instagram.com/${card.instagram.replace(/^@/, "")}`, "_blank");
+  }
+
+  const channels = [
+    card.phone ? { label: "WhatsApp", value: card.phone } : null,
+    card.instagram ? { label: "Instagram", value: `@${card.instagram.replace(/^@/, "")}` } : null,
+    card.website ? { label: "Website", value: card.website } : null,
+  ].filter((x): x is { label: string; value: string } => x !== null);
+
+  return (
+    <div className="space-y-3">
+      <SuccessChip label="İletişim Bulundu" timestamp={foundAt} />
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-2.5">
+        {channels.map((ch) => (
+          <div key={ch.label} className={ROW}>
+            <span className="text-[10px] font-medium text-zinc-500">{ch.label}</span>
+            <span className="max-w-[155px] truncate text-[11px] text-zinc-200">{ch.value}</span>
+          </div>
+        ))}
+        {channels.length > 0 && (
+          <div className="border-t border-white/[0.06] pt-2.5 space-y-2">
+            <div className={ROW}>
+              <span className="text-[10px] text-zinc-500">Güven</span>
+              <span className="text-[13px] font-bold text-emerald-400">{result.confidence}</span>
+            </div>
+            <div className={ROW}>
+              <span className="text-[10px] text-zinc-500">Kaynak</span>
+              <span className="text-[11px] text-zinc-300">{result.bestContactType}</span>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {card.phone && (
+          <button
+            type="button"
+            onClick={openWhatsApp}
+            className="flex h-8 w-full items-center justify-center rounded-lg bg-emerald-500/[0.12] text-[10px] font-semibold text-emerald-400 ring-1 ring-inset ring-emerald-500/20 transition-colors duration-150 hover:bg-emerald-500/[0.18]"
+          >
+            WhatsApp Aç
+          </button>
+        )}
+        {card.website && (
+          <button
+            type="button"
+            onClick={openWebsite}
+            className="flex h-8 w-full items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-[10px] font-semibold text-zinc-300 transition-colors duration-150 hover:bg-white/[0.08] hover:text-zinc-100"
+          >
+            Website Aç
+          </button>
+        )}
+        {card.instagram && (
+          <button
+            type="button"
+            onClick={openInstagram}
+            className="flex h-8 w-full items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-[10px] font-semibold text-zinc-300 transition-colors duration-150 hover:bg-white/[0.08] hover:text-zinc-100"
+          >
+            Instagram Aç
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Re-Enrich result card ──────────────────────────────────────── */
+
+type EnrichResult = {
+  score: number | string;
+  tier: string;
+  hasWebsite: boolean;
+  hasWhatsApp: boolean;
+  hasInstagram: boolean;
+  hasReservationCta: boolean;
+  icpScore: number | string;
+  enrichedAt: number;
+};
+
+function EnrichResultCard({ result }: { result: EnrichResult }) {
+  const rel = (() => {
+    const s = Math.round((Date.now() - result.enrichedAt) / 1000);
+    if (s < 10) return "az önce";
+    if (s < 60) return `${s} saniye önce`;
+    if (s < 3600) return `${Math.round(s / 60)} dakika önce`;
+    return `${Math.round(s / 3600)} saat önce`;
+  })();
+
+  const checks = [
+    { label: "Website", ok: result.hasWebsite },
+    { label: "WhatsApp", ok: result.hasWhatsApp },
+    { label: "Instagram", ok: result.hasInstagram },
+    { label: "Rezervasyon CTA", ok: result.hasReservationCta },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <SuccessChip label="Zenginleştirme Tamamlandı" timestamp={result.enrichedAt} />
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-3">
+        <div>
+          <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">Son Tarama</p>
+          <div className="space-y-1.5">
+            {checks.map((ch) => (
+              <div key={ch.label} className="flex items-center gap-2">
+                <span
+                  className={`text-[11px] font-bold leading-none ${ch.ok ? "text-emerald-400" : "text-zinc-700"}`}
+                >
+                  {ch.ok ? "✓" : "—"}
+                </span>
+                <span className={`text-[10.5px] ${ch.ok ? "text-zinc-300" : "text-zinc-600"}`}>
+                  {ch.label}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-white/[0.06] pt-3 space-y-2">
+          <div className={ROW}>
+            <span className="text-[10px] text-zinc-500">Fırsat Skoru</span>
+            <span className="text-[14px] font-bold tabular-nums text-indigo-400">{result.score}</span>
+          </div>
+          <div className={ROW}>
+            <span className="text-[10px] text-zinc-500">ICP Uyumu</span>
+            <span className="text-[14px] font-bold tabular-nums text-sky-400">{result.icpScore}</span>
+          </div>
+          <div className={ROW}>
+            <span className="text-[10px] text-zinc-500">Tier</span>
+            <span className="text-[11px] font-semibold capitalize text-zinc-300">{result.tier}</span>
+          </div>
+        </div>
+
+        <p className="border-t border-white/[0.06] pt-2.5 text-[9px] text-zinc-600">
+          Güncellendi: {rel}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ── Lead status display card ───────────────────────────────────── */
+
+type LeadStatusConfig = { label: string; dot: string; badge: string };
+
+const STATUS_CONFIG: Record<string, LeadStatusConfig> = {
+  new: {
+    label: "Yeni",
+    dot: "bg-sky-400",
+    badge: "bg-sky-500/[0.12] text-sky-400 ring-sky-500/20",
+  },
+  contacted: {
+    label: "İletişim Kuruldu",
+    dot: "bg-emerald-400",
+    badge: "bg-emerald-500/[0.12] text-emerald-400 ring-emerald-500/20",
+  },
+  needs_follow_up: {
+    label: "Takip Gerekli",
+    dot: "bg-amber-400",
+    badge: "bg-amber-500/[0.12] text-amber-400 ring-amber-500/20",
+  },
+  replied: {
+    label: "Yanıt Verdi",
+    dot: "bg-emerald-400",
+    badge: "bg-emerald-500/[0.12] text-emerald-400 ring-emerald-500/20",
+  },
+  meeting: {
+    label: "Toplantı",
+    dot: "bg-violet-400",
+    badge: "bg-violet-500/[0.12] text-violet-400 ring-violet-500/20",
+  },
+  won: {
+    label: "Kazanıldı",
+    dot: "bg-violet-400",
+    badge: "bg-violet-500/[0.14] text-violet-300 ring-violet-500/20",
+  },
+  lost: {
+    label: "Kaybedildi",
+    dot: "bg-rose-400",
+    badge: "bg-rose-500/[0.12] text-rose-400 ring-rose-500/20",
+  },
+  dnc: {
+    label: "İletişim Engellendi",
+    dot: "bg-rose-500",
+    badge: "bg-rose-500/[0.14] text-rose-400 ring-rose-500/20",
+  },
+};
+
+function relTimeLabel(ts: number | null | undefined): string {
+  if (!ts || ts <= 0) return "—";
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return "Az önce";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} dakika önce`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} saat önce`;
+  const d = Math.round(h / 24);
+  if (d === 1) return "Dün";
+  if (d <= 7) return `${d} gün önce`;
+  return `${Math.round(d / 7)} hafta önce`;
+}
+
+function followUpLabel(ts: number | null | undefined): string {
+  if (!ts || ts <= 0) return "—";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(ts);
+  target.setHours(0, 0, 0, 0);
+  const diff = Math.round((target.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+  if (diff < 0) return `${Math.abs(diff)} gün gecikti`;
+  if (diff === 0) return "Bugün";
+  if (diff === 1) return "Yarın";
+  return `${diff} gün sonra`;
+}
+
+function LeadStatusCard({
+  status,
+  doNotContact,
+  lastContactedAt,
+  updatedAt,
+  nextFollowUpAt,
+  contactAttempts,
+}: {
+  status: string;
+  doNotContact: boolean;
+  lastContactedAt: number | null;
+  updatedAt: number | null;
+  nextFollowUpAt: number | null;
+  contactAttempts: number;
+}) {
+  const key = doNotContact ? "dnc" : (status in STATUS_CONFIG ? status : "new");
+  const cfg = STATUS_CONFIG[key] ?? STATUS_CONFIG["new"]!;
+  const lastTs = lastContactedAt ?? updatedAt;
+  const followUp = followUpLabel(nextFollowUpAt);
+  const followUpColor =
+    followUp.includes("gecikti")
+      ? "text-rose-400"
+      : followUp === "Bugün"
+        ? "text-amber-400"
+        : nextFollowUpAt
+          ? "text-zinc-300"
+          : "text-zinc-600";
+
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-3">
+      <div className="flex items-center gap-2">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${cfg.dot}`} />
+        <span className={`rounded-md px-2 py-[3px] text-[10px] font-semibold ring-1 ring-inset ${cfg.badge}`}>
+          {cfg.label}
+        </span>
+      </div>
+      <div className="border-t border-white/[0.06] pt-3 space-y-2.5">
+        <div className={ROW}>
+          <span className={LABEL}>Son Aktivite</span>
+          <span className={VALUE}>{relTimeLabel(lastTs)}</span>
+        </div>
+        <div className={ROW}>
+          <span className={LABEL}>Sonraki Takip</span>
+          <span className={`text-[11px] font-medium ${followUpColor}`}>{followUp}</span>
+        </div>
+        <div className={ROW}>
+          <span className={LABEL}>İletişim Denemesi</span>
+          <span className={`text-[11px] font-medium tabular-nums ${contactAttempts > 0 ? "text-zinc-300" : "text-zinc-600"}`}>
+            {contactAttempts > 0 ? contactAttempts : "—"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── State types ────────────────────────────────────────────────── */
+
+type MsgApiState = { loading: boolean; result: string | null; error: string | null; generatedAt: number | null };
+type CfApiState = { loading: boolean; result: ContactResult | null; error: string | null; foundAt: number | null };
+type ReEnrichApiState = { loading: boolean; result: EnrichResult | null; error: string | null };
+
+const EMPTY_MSG: MsgApiState = { loading: false, result: null, error: null, generatedAt: null };
+const EMPTY_CF: CfApiState = { loading: false, result: null, error: null, foundAt: null };
+const EMPTY_ENRICH: ReEnrichApiState = { loading: false, result: null, error: null };
+
+/* ── Empty / summary state ──────────────────────────────────────── */
+
+function SummaryView({ summary }: { summary: AutomationSummary }) {
+  return (
+    <div className={PANEL}>
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Otomasyon Merkezi</p>
+        <p className="text-[11px] leading-relaxed text-zinc-500">
+          Çalıştırılacak bir lead seçin veya kuyruk tipine göre filtreleyin.
+        </p>
+      </div>
+
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Genel Durum</p>
+        <div className="space-y-2">
+          {[
+            { label: "Toplam Bekleyen", value: summary.total, color: undefined },
+            { label: "Hazır", value: summary.ready, color: "text-emerald-400" },
+            { label: "Gecikmiş", value: summary.overdue, color: "text-rose-400" },
+            { label: "Engellendi", value: summary.blocked, color: "text-zinc-500" },
+          ].map((row) => (
+            <div key={row.label} className={ROW}>
+              <span className={LABEL}>{row.label}</span>
+              <span className={`text-[14px] font-bold tabular-nums ${row.color ?? "text-zinc-200"}`}>
+                {row.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Kuyruk Özeti</p>
+        <div className="space-y-2">
+          {summary.queues.map((q) => (
+            <div key={q.type} className={ROW}>
+              <span className={LABEL}>{q.label}</span>
+              <div className="flex items-center gap-2">
+                {q.overdue > 0 && (
+                  <span className="text-[9px] text-rose-400">{q.overdue} gecikti</span>
+                )}
+                <span className="text-[13px] font-semibold tabular-nums text-zinc-300">
+                  {q.total}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Bağlı Olmayan</p>
+        <p className="text-[10px] leading-relaxed text-zinc-600">
+          Kalıcı hata kuyruğu mevcut değil — retry geçmişi oturum belleğinde tutulmuyor.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ── Lead detail + actions ──────────────────────────────────────── */
+
+function DetailView({ card }: { card: AutomationCard }) {
+  const { leadState, markContacted, markNoResponse, markDoNotContact, scheduleFollowUp, reactivateLead, undoLastAction, canUndo } =
+    useLeadMutations(card.id);
+
+  const [reEnrich, setReEnrich] = useState<ReEnrichApiState>(EMPTY_ENRICH);
+  const [cfState, setCfState] = useState<CfApiState>(EMPTY_CF);
+  const [msgState, setMsgState] = useState<MsgApiState>(EMPTY_MSG);
+
+  useEffect(() => {
+    setReEnrich(EMPTY_ENRICH);
+    setCfState(EMPTY_CF);
+    setMsgState(EMPTY_MSG);
+  }, [card.id]);
+
+  async function runReEnrich() {
+    setReEnrich({ loading: true, result: null, error: null });
+    try {
+      const res = await fetch("/api/re-enrich-lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead: card.scoredLead }),
+      });
+      const data = (await res.json()) as { lead?: Record<string, unknown>; error?: string };
+      if (!res.ok || data.error) {
+        setReEnrich({ loading: false, result: null, error: data.error ?? `Hata: ${res.status}` });
+      } else {
+        const l = data.lead as Record<string, unknown>;
+        const score =
+          typeof l.verifiedOpportunityScore === "number"
+            ? l.verifiedOpportunityScore
+            : typeof l.opportunityScore === "number"
+              ? l.opportunityScore
+              : "—";
+        const tier = typeof l.opportunityTier === "string" ? l.opportunityTier : "—";
+        setReEnrich({
+          loading: false,
+          result: {
+            score,
+            tier,
+            hasWebsite: !!(l.hasOwnWebsite || l.website),
+            hasWhatsApp: !!l.phone,
+            hasInstagram: !!l.instagram,
+            hasReservationCta: !!(l.hasReservationCta),
+            icpScore:
+              typeof l.icpFitScore === "number"
+                ? l.icpFitScore
+                : typeof l.leadScore === "number"
+                  ? l.leadScore
+                  : "—",
+            enrichedAt: Date.now(),
+          },
+          error: null,
+        });
+      }
+    } catch (e) {
+      setReEnrich({
+        loading: false,
+        result: null,
+        error: e instanceof Error ? e.message : "Bağlantı hatası",
+      });
+    }
+  }
+
+  async function runContactFinder() {
+    setCfState({ loading: true, result: null, error: null, foundAt: null });
+    try {
+      const res = await fetch("/api/contact-finder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          website: card.website ?? "",
+          phone: card.phone ?? "",
+          instagram: card.instagram ?? "",
+        }),
+      });
+      const data = (await res.json()) as {
+        bestContactType?: string;
+        bestContactValue?: string;
+        confidence?: string;
+        error?: string;
+      };
+      if (!res.ok || data.error) {
+        setCfState({ loading: false, result: null, error: data.error ?? `Hata: ${res.status}`, foundAt: null });
+      } else {
+        setCfState({
+          loading: false,
+          result: {
+            bestContactType: data.bestContactType ?? "—",
+            bestContactValue: data.bestContactValue ?? "—",
+            confidence: data.confidence ?? "—",
+          },
+          error: null,
+          foundAt: Date.now(),
+        });
+      }
+    } catch (e) {
+      setCfState({
+        loading: false,
+        result: null,
+        error: e instanceof Error ? e.message : "Bağlantı hatası",
+        foundAt: null,
+      });
+    }
+  }
+
+  async function runGenerateMessage() {
+    setMsgState({ loading: true, result: null, error: null, generatedAt: null });
+    const lead = card.scoredLead;
+    try {
+      const res = await fetch("/api/generate-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          leadId: lead.id,
+          name: lead.name,
+          type: lead.type,
+          location: lead.city,
+          leadScore: lead.leadScore,
+          hotScore: lead.hotScore,
+          hasWhatsAppPath: !!(lead.phone?.trim()),
+          hasInstagram: !!(lead.instagram?.trim()),
+          hasOwnWebsite: lead.hasOwnWebsite,
+          channels: lead.channels ?? [],
+          businessSignals: lead.businessSignals ?? [],
+          painPointSummary: lead.painPointSummary ?? [],
+          outreachAngle: lead.outreachAngle ?? "",
+          outreachIntelligence: lead.outreachIntelligence ?? null,
+        }),
+      });
+      const data = (await res.json()) as { message?: string; error?: string };
+      if (!res.ok || data.error) {
+        setMsgState({ loading: false, result: null, error: data.error ?? `Hata: ${res.status}`, generatedAt: null });
+      } else {
+        setMsgState({ loading: false, result: data.message ?? "Mesaj oluşturuldu.", error: null, generatedAt: Date.now() });
+      }
+    } catch (e) {
+      setMsgState({
+        loading: false,
+        result: null,
+        error: e instanceof Error ? e.message : "Bağlantı hatası",
+        generatedAt: null,
+      });
+    }
+  }
+
+  const canReEnrich = !!card.website || !!card.phone;
+  const canContactFinder = !!card.website || !!card.phone || !!card.instagram;
+  const canGenerateMessage = !!card.scoredLead.name;
+
+  const isContacted = leadState.status === "contacted";
+  const isDnc = Boolean(leadState.doNotContact);
+  const canReactivate = isDnc || leadState.status === "lost";
+
+  const [reactivated, setReactivated] = useState(false);
+  const [undone, setUndone] = useState(false);
+
+  function handleReactivate() {
+    reactivateLead();
+    setReactivated(true);
+    setUndone(false);
+    setTimeout(() => setReactivated(false), 3000);
+  }
+
+  function handleUndo() {
+    undoLastAction();
+    setReactivated(false);
+    setUndone(true);
+    setTimeout(() => setUndone(false), 3000);
+  }
+
+  return (
+    <div className={PANEL}>
+      {/* Lead header */}
+      <div className={SEC}>
+        <p className="text-[14px] font-semibold leading-snug text-zinc-100">{card.hotelName}</p>
+        <p className="mt-1 text-[11px] text-zinc-500">{card.city} · {card.hotelType}</p>
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          <span className="rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] text-zinc-400">
+            Fırsat: {card.opportunityScore}
+          </span>
+          <span
+            className={[
+              "rounded-full px-2 py-[2px] text-[9px] ring-1 ring-inset",
+              card.status === "overdue"
+                ? "bg-rose-500/[0.12] text-rose-400 ring-rose-500/20"
+                : card.status === "ready"
+                  ? "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20"
+                  : "bg-zinc-700/50 text-zinc-500 ring-zinc-600/20",
+            ].join(" ")}
+          >
+            {card.statusLabel}
+          </span>
+        </div>
+      </div>
+
+      {/* Primary queue & reason */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Birincil Kuyruk</p>
+        <p className="text-[12px] font-semibold text-zinc-200">{card.queueLabel}</p>
+        <p className="mt-1.5 text-[10.5px] leading-relaxed text-zinc-500">{card.reason}</p>
+        {card.queues.length > 1 && (
+          <div className="mt-2.5 flex flex-wrap gap-1">
+            {card.queues
+              .filter((q) => q !== card.primaryQueue)
+              .map((q) => (
+                <span
+                  key={q}
+                  className="rounded-full bg-white/[0.05] px-1.5 py-[1px] text-[9px] text-zinc-500"
+                >
+                  {QUEUE_LABELS[q]}
+                </span>
+              ))}
+          </div>
+        )}
+      </div>
+
+      {/* Contact info */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>İletişim</p>
+        <div className="space-y-1.5">
+          {card.website && (
+            <div className={ROW}>
+              <span className={LABEL}>Web</span>
+              <span className="max-w-[155px] truncate text-[10px] text-sky-400">{card.website}</span>
+            </div>
+          )}
+          {card.phone && (
+            <div className={ROW}>
+              <span className={LABEL}>Telefon</span>
+              <span className={VALUE}>{card.phone}</span>
+            </div>
+          )}
+          {card.instagram && (
+            <div className={ROW}>
+              <span className={LABEL}>Instagram</span>
+              <span className={VALUE}>@{card.instagram.replace(/^@/, "")}</span>
+            </div>
+          )}
+          {!card.website && !card.phone && !card.instagram && (
+            <p className="text-[10px] text-zinc-600">İletişim bilgisi yok</p>
+          )}
+        </div>
+      </div>
+
+      {/* AI Message */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>AI Mesaj Üret</p>
+        <Btn
+          label="Mesaj Oluştur"
+          loading={msgState.loading}
+          disabled={!canGenerateMessage}
+          onClick={runGenerateMessage}
+        />
+        {msgState.result && (
+          <div className="mt-3">
+            <MessageResultCard
+              text={msgState.result}
+              generatedAt={msgState.generatedAt}
+              phone={card.phone}
+            />
+          </div>
+        )}
+        {msgState.error && <ErrorBox error={msgState.error} />}
+      </div>
+
+      {/* Contact Finder */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>İletişim Bul</p>
+        <Btn
+          label="Çalıştır — Contact Finder"
+          loading={cfState.loading}
+          disabled={!canContactFinder}
+          onClick={runContactFinder}
+        />
+        {!canContactFinder && (
+          <p className="mt-1.5 text-[10px] text-zinc-600">Web sitesi, telefon veya Instagram gerekli</p>
+        )}
+        {cfState.result && (
+          <div className="mt-3">
+            <ContactFoundCard card={card} result={cfState.result} foundAt={cfState.foundAt} />
+          </div>
+        )}
+        {cfState.error && <ErrorBox error={cfState.error} />}
+      </div>
+
+      {/* Re-Enrich */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Yeniden Zenginleştir</p>
+        <Btn
+          label="Çalıştır — Re-Enrich"
+          variant="primary"
+          loading={reEnrich.loading}
+          disabled={!canReEnrich}
+          onClick={runReEnrich}
+        />
+        {!canReEnrich && (
+          <p className="mt-1.5 text-[10px] text-zinc-600">Web sitesi veya telefon gerekli</p>
+        )}
+        {reEnrich.result && (
+          <div className="mt-3">
+            <EnrichResultCard result={reEnrich.result} />
+          </div>
+        )}
+        {reEnrich.error && <ErrorBox error={reEnrich.error} />}
+      </div>
+
+      {/* Lead status card */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Durum</p>
+        <LeadStatusCard
+          status={leadState.status}
+          doNotContact={isDnc}
+          lastContactedAt={leadState.lastContactedAt ?? null}
+          updatedAt={leadState.updatedAt ?? null}
+          nextFollowUpAt={leadState.nextFollowUpAt ?? null}
+          contactAttempts={leadState.contactAttempts ?? 0}
+        />
+      </div>
+
+      {/* Action buttons */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Aksiyonlar</p>
+        <div className="space-y-1.5">
+          <Btn
+            label={isContacted ? "Tekrar İletişim Kuruldu" : "İletişim Kuruldu"}
+            onClick={markContacted}
+            disabled={isDnc}
+          />
+          <Btn
+            label="Takip Zamanla (24s)"
+            onClick={() => scheduleFollowUp(Date.now() + 24 * 60 * 60 * 1000)}
+            disabled={isDnc}
+          />
+          <Btn
+            label="Yanıt Yok"
+            onClick={markNoResponse}
+            disabled={isDnc}
+          />
+          {!isDnc && (
+            <Btn
+              label="İletişim Kurma (DNC)"
+              variant="danger"
+              onClick={markDoNotContact}
+            />
+          )}
+          {canReactivate && (
+            <button
+              type="button"
+              onClick={handleReactivate}
+              className="flex h-8 w-full items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/[0.08] px-3 text-[11px] font-semibold text-sky-400 transition-colors duration-150 hover:bg-sky-500/[0.14] hover:text-sky-300"
+            >
+              Yeniden Aktifleştir
+            </button>
+          )}
+        </div>
+        {reactivated && (
+          <div className="mt-3 flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.08] px-3 py-2.5">
+            <span className="text-[10px] font-semibold text-emerald-400">✓</span>
+            <span className="text-[10px] text-emerald-400">Lead yeniden aktifleştirildi</span>
+          </div>
+        )}
+        {canUndo && !undone && (
+          <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+            <span className="text-[10px] text-zinc-500">Son işlem geri alınabilir</span>
+            <button
+              type="button"
+              onClick={handleUndo}
+              className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-zinc-300 transition-colors duration-150 hover:bg-white/[0.08] hover:text-zinc-100"
+            >
+              Geri Al
+            </button>
+          </div>
+        )}
+        {undone && (
+          <div className="mt-3 flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.08] px-3 py-2.5">
+            <span className="text-[10px] font-semibold text-emerald-400">✓</span>
+            <span className="text-[10px] text-emerald-400">Son işlem geri alındı</span>
+          </div>
+        )}
+      </div>
+
+      {/* Scores */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Puanlar</p>
+        <div className="space-y-1.5">
+          {[
+            { label: "Lead Score", value: card.scoredLead.leadScore },
+            { label: "Hot Score", value: card.scoredLead.hotScore },
+            { label: "ICP Fit", value: card.scoredLead.icpFitScore ?? "—" },
+            { label: "Fırsat Skoru", value: card.opportunityScore },
+          ].map((r) => (
+            <div key={r.label} className={ROW}>
+              <span className={LABEL}>{r.label}</span>
+              <span className={VALUE}>{r.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Last activity */}
+      {card.lastActivityLabel !== "—" && (
+        <div className={SEC}>
+          <p className={SEC_TITLE}>Son Aktivite</p>
+          <p className="text-[11px] text-zinc-400">{card.lastActivityLabel}</p>
+          {card.scoredLead.lastEnrichedAt && (
+            <p className="mt-1 text-[10px] text-zinc-600">
+              Zenginleştirme: {new Date(card.scoredLead.lastEnrichedAt).toLocaleDateString("tr-TR")}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Export ─────────────────────────────────────────────────────── */
+
+type Props = {
+  selectedCard: AutomationCard | null;
+  summary: AutomationSummary;
+};
+
+export default function AutomationCenterContextPanel({ selectedCard, summary }: Props) {
+  if (!selectedCard) return <SummaryView summary={summary} />;
+  return <DetailView key={selectedCard.id} card={selectedCard} />;
+}
