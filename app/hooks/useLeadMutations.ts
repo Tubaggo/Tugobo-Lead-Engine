@@ -241,6 +241,21 @@ export function useLeadMutations(leadId: string) {
     });
   }, [leadId, applyPatch, leadState]);
 
+  /**
+   * Clears only the follow-up *schedule* (status + nextFollowUpAt) back to neutral.
+   * This is a follow-up reset, not a lead reset: contactAttempts, lastContactedAt,
+   * contactedAt, pipelineStage, and all other operational/commercial history are
+   * permanent record and must never be touched here. `doNotContact` is likewise
+   * untouched — DNC is a separate, intentional decision.
+   */
+  const resetFollowUpState = useCallback(() => {
+    setPrevState({ ...leadState });
+    applyPatch(leadId, {
+      status: "new",
+      nextFollowUpAt: null,
+    });
+  }, [leadId, applyPatch, leadState]);
+
   // Restores the exact state snapshot before the last reversible action.
   // Only affects localStorage mutation state — does not undo backend API calls.
   const undoLastAction = useCallback(() => {
@@ -267,6 +282,7 @@ export function useLeadMutations(leadId: string) {
     setLost,
     updateNote,
     reactivateLead,
+    resetFollowUpState,
     undoLastAction,
     canUndo: prevState !== null,
   };

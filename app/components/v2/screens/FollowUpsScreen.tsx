@@ -51,14 +51,16 @@ const STATE_BADGE: Record<
 > = {
   overdue: { label: "Gecikmiş", cls: "bg-rose-500/20 text-rose-300 ring-rose-500/30" },
   today: { label: "Bugün Ara", cls: "bg-amber-500/20 text-amber-300 ring-amber-500/30" },
+  tomorrow: { label: "Yarın Ara", cls: "bg-orange-500/20 text-orange-300 ring-orange-500/30" },
   "this-week": { label: "Bu Hafta", cls: "bg-sky-500/20 text-sky-300 ring-sky-500/30" },
-  scheduled: { label: "Planlandı", cls: "bg-zinc-600/20 text-zinc-400 ring-zinc-600/20" },
+  scheduled: { label: "Takip Gerekli", cls: "bg-zinc-600/20 text-zinc-400 ring-zinc-600/20" },
   done: { label: "Tamamlandı", cls: "bg-emerald-500/20 text-emerald-300 ring-emerald-500/30" },
 };
 
 const STATE_LEFT_BORDER: Record<FollowUpState, string> = {
   overdue: "border-l-rose-500/70",
   today: "border-l-amber-500/70",
+  tomorrow: "border-l-orange-500/50",
   "this-week": "border-l-sky-500/40",
   scheduled: "border-l-white/[0.06]",
   done: "border-l-emerald-500/30",
@@ -132,7 +134,10 @@ export default function FollowUpsScreen({ cards, selectedId, onSelect }: Props) 
         );
       } else if (stateFilter === "upcoming") {
         result = result.filter(
-          (c) => c.followUpState === "this-week" || c.followUpState === "scheduled",
+          (c) =>
+            c.followUpState === "tomorrow" ||
+            c.followUpState === "this-week" ||
+            c.followUpState === "scheduled",
         );
       } else if (stateFilter === "no-response") {
         result = result.filter((c) => c.isNoResponse);
@@ -361,7 +366,9 @@ function FollowUpCardRow({
             <span
               className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${stateBadge.cls}`}
             >
-              {stateBadge.label}
+              {/* Same derived label as the context panel's Takip Durumu — never a separate,
+                  potentially-contradictory static bucket text (e.g. "Bu Hafta" vs "3 Gün Sonra"). */}
+              {card.urgencyLabel}
             </span>
           </div>
           <div className="mt-0.5 text-[11px] text-white/40">
@@ -386,6 +393,12 @@ function FollowUpCardRow({
 
         {card.contactAttempts > 0 && (
           <span className="text-[10px] text-white/35">{card.contactAttempts}x denendi</span>
+        )}
+
+        {card.isNoResponse && (
+          <span className="inline-flex items-center rounded-full bg-yellow-500/15 px-2 py-0.5 text-[10px] font-semibold text-yellow-300 ring-1 ring-inset ring-yellow-500/25">
+            Yanıt Yok
+          </span>
         )}
 
         {card.nextFollowUpLabel !== "—" && (

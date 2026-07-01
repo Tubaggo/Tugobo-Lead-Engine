@@ -170,6 +170,10 @@ export type Lead = {
   importSessionId?: string | null;
   /** Optional mirror; persisted workflow flag lives in {@link LeadStatusUpdate.doNotContact}. */
   doNotContact?: boolean;
+  /** Optional mirror; persisted workflow status lives in {@link LeadStatusUpdate.status}. */
+  status?: LeadStatus;
+  /** Optional mirror; last local workflow mutation timestamp from {@link LeadStatusUpdate.updatedAt}. */
+  updatedAt?: number | null;
   /** Optional CRM stage mirror (e.g. Airtable pipeline_stage). */
   pipelineStage?: string;
   /** Contact readiness intelligence score (0-100). */

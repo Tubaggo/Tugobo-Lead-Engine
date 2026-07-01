@@ -179,10 +179,10 @@ export default function V2Shell({ scoredLeads }: Props) {
 
   const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary } = derived;
 
-  // followUpCards is computed separately so it can react to local mutations immediately.
+  // followUpMergedLeads is computed separately so it can react to local mutations immediately.
   // On each onFollowUpMutation() call, followUpMutVersion increments → this memo reruns →
-  // it reads the freshest localStorage state and merges mutation fields into allLeads before adapting.
-  const followUpCards = useMemo(() => {
+  // it reads the freshest localStorage state and merges mutation fields into allLeads.
+  const followUpMergedLeads = useMemo(() => {
     let stateMap: Record<string, Record<string, unknown>> = {};
     if (typeof window !== "undefined") {
       try {
@@ -192,7 +192,7 @@ export default function V2Shell({ scoredLeads }: Props) {
         // ignore
       }
     }
-    const merged = allLeads.map((lead) => {
+    return allLeads.map((lead) => {
       const mut = stateMap[lead.id];
       // Only apply when the user has actually taken an action in V2 (updatedAt is set)
       if (!mut || typeof mut.updatedAt !== "number") return lead;
@@ -219,24 +219,42 @@ export default function V2Shell({ scoredLeads }: Props) {
       if (typeof mut.pipelineStage === "string") {
         patch.pipelineStage = mut.pipelineStage;
       }
+      // status: merge the workflow status mirror (e.g. "needs_follow_up" from Yanıt Yok)
+      if (typeof mut.status === "string") {
+        patch.status = mut.status;
+      }
+      // updatedAt: mirror the last local mutation timestamp
+      if (typeof mut.updatedAt === "number") {
+        patch.updatedAt = mut.updatedAt;
+      }
       return Object.keys(patch).length > 0
         ? ({ ...lead, ...patch } as typeof lead)
         : lead;
     });
-    return adaptScoredLeadsToFollowUpCards(merged);
   }, [allLeads, followUpMutVersion]);
+
+  const followUpCards = useMemo(
+    () => adaptScoredLeadsToFollowUpCards(followUpMergedLeads),
+    [followUpMergedLeads],
+  );
 
   // Always read the up-to-date version of the selected card from the freshly-computed
   // followUpCards pool. This ensures the context panel sees post-mutation fields
   // (contactAttempts, nextFollowUpLabel, doNotContact, etc.) without requiring the user
-  // to re-click. Falls back to null when the card has been removed (e.g. DNC filter).
-  const effectiveSelectedFollowUpCard = useMemo(
-    () =>
-      selectedFollowUpCard
-        ? (followUpCards.find((c) => c.id === selectedFollowUpCard.id) ?? null)
-        : null,
-    [selectedFollowUpCard, followUpCards],
-  );
+  // to re-click. If a mutation just pushed the card out of the filtered pool (DNC, or
+  // auto-DNC on the 3rd contact attempt), fall back to adapting it directly from the
+  // merged (unfiltered) lead pool so the detail panel — and its Undo button — don't
+  // disappear out from under the user. The list itself keeps filtering DNC leads as before.
+  const effectiveSelectedFollowUpCard = useMemo(() => {
+    if (!selectedFollowUpCard) return null;
+    const inList = followUpCards.find((c) => c.id === selectedFollowUpCard.id);
+    if (inList) return inList;
+    const stillExists = followUpMergedLeads.find((l) => l.id === selectedFollowUpCard.id);
+    if (!stillExists) return null;
+    return (
+      adaptScoredLeadsToFollowUpCards([stillExists], { includeDoNotContact: true })[0] ?? null
+    );
+  }, [selectedFollowUpCard, followUpCards, followUpMergedLeads]);
 
   const selectedQueueLead = selectedQueueRowId
     ? (scoredLeadsById.get(selectedQueueRowId) ?? null)

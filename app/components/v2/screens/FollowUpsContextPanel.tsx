@@ -39,8 +39,9 @@ function stableAvatarIdx(id: string): number {
 const STATE_CONFIG: Record<FollowUpState, { label: string; color: string; bg: string }> = {
   overdue: { label: "Gecikmiş", color: "text-rose-300", bg: "bg-rose-500/15 border-rose-500/30" },
   today: { label: "Bugün Ara", color: "text-amber-300", bg: "bg-amber-500/15 border-amber-500/30" },
+  tomorrow: { label: "Yarın Ara", color: "text-orange-300", bg: "bg-orange-500/15 border-orange-500/30" },
   "this-week": { label: "Bu Hafta", color: "text-sky-300", bg: "bg-sky-500/15 border-sky-500/30" },
-  scheduled: { label: "Planlandı", color: "text-zinc-400", bg: "bg-zinc-600/15 border-zinc-600/30" },
+  scheduled: { label: "Takip Gerekli", color: "text-zinc-400", bg: "bg-zinc-600/15 border-zinc-600/30" },
   done: { label: "Tamamlandı", color: "text-emerald-300", bg: "bg-emerald-500/15 border-emerald-500/30" },
 };
 
@@ -71,6 +72,14 @@ const PRIORITY_TR: Record<string, string> = {
   medium: "Orta",
   low: "Düşük",
 };
+
+function formatAbsoluteDate(ms: number): string {
+  return new Date(ms).toLocaleDateString("tr-TR", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -272,7 +281,7 @@ function ActionBtn({
   disabled?: boolean;
 }) {
   const base =
-    "flex h-8 w-full items-center justify-center rounded-lg px-3 text-[11px] font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40";
+    "flex min-h-8 w-full items-center justify-center rounded-lg px-3 py-1.5 text-center text-[11px] leading-tight font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40";
   const v =
     variant === "primary"
       ? "bg-indigo-500 text-white hover:bg-indigo-400"
@@ -296,6 +305,7 @@ function LeadDetail({ card, onMutation }: { card: FollowUpCard; onMutation?: () 
     markNoResponse,
     markDoNotContact,
     scheduleFollowUp,
+    resetFollowUpState,
     undoLastAction,
     canUndo,
   } = useLeadMutations(card.id);
@@ -384,10 +394,31 @@ function LeadDetail({ card, onMutation }: { card: FollowUpCard; onMutation?: () 
             </div>
           </div>
         </div>
+        <StatRow
+          label="Sonraki Takip"
+          value={card.nextFollowUpAtMs ? formatAbsoluteDate(card.nextFollowUpAtMs) : "—"}
+        />
+        {!isDnc && card.isNoResponse && (
+          <div className="mt-2 rounded-lg bg-yellow-500/[0.10] border border-yellow-500/20 px-2.5 py-1.5 text-[10px] font-semibold text-yellow-300 text-center">
+            Yanıt Yok — Takip Gerekli
+          </div>
+        )}
         {isDnc && (
           <div className="mt-2 rounded-lg bg-rose-500/[0.10] border border-rose-500/20 px-2.5 py-1.5 text-[10px] font-semibold text-rose-400 text-center">
             DNC — İletişim engellendi
           </div>
+        )}
+        {/* Secondary, low-priority action — intentionally not styled like the main quick
+            actions below. Hidden entirely for DNC leads: İletişim Engelli is a separate,
+            deliberate decision and must never be cleared by a follow-up state reset. */}
+        {!isDnc && (
+          <button
+            type="button"
+            onClick={() => fire(resetFollowUpState, "Takip durumu yeniden başlatıldı")}
+            className="mt-2 w-full text-center text-[10px] text-white/35 hover:text-white/55 transition-colors duration-150"
+          >
+            Takibi Yeniden Başlat
+          </button>
         )}
       </div>
 
@@ -466,20 +497,20 @@ function LeadDetail({ card, onMutation }: { card: FollowUpCard; onMutation?: () 
             />
             <div className="grid grid-cols-2 gap-1.5">
               <ActionBtn
-                label="+1 Gün"
+                label="Yarın Hatırlat"
                 onClick={() =>
                   fire(
                     () => scheduleFollowUp(Date.now() + 24 * 60 * 60 * 1_000),
-                    "Takip +1 gün planlandı",
+                    "Yarın için hatırlatma kuruldu",
                   )
                 }
               />
               <ActionBtn
-                label="+3 Gün"
+                label="3 Gün Sonra Hatırlat"
                 onClick={() =>
                   fire(
                     () => scheduleFollowUp(Date.now() + 3 * 24 * 60 * 60 * 1_000),
-                    "Takip +3 gün planlandı",
+                    "3 gün sonra için hatırlatma kuruldu",
                   )
                 }
               />

@@ -1,7 +1,7 @@
 import type { ScoredLead } from "@/app/lib/leads";
 import type { PackageTier, Priority } from "@/app/components/v2/mock/mock-queue";
 
-export type FollowUpState = "overdue" | "today" | "this-week" | "scheduled" | "done";
+export type FollowUpState = "overdue" | "today" | "tomorrow" | "this-week" | "scheduled" | "done";
 export type LeadTemperature = "hot" | "warm" | "cold";
 export type PriorityFilter = "all" | "critical" | "high" | "medium" | "low";
 export type StateFilter = "all" | "overdue" | "today" | "upcoming" | "no-response" | "this-week" | "done";
@@ -34,6 +34,8 @@ export type FollowUpCard = {
 
   /** Human-readable label for when the next follow-up is due, e.g. "Yarın", "3g gecikti" */
   nextFollowUpLabel: string;
+  /** Raw epoch ms of the scheduled next follow-up; null if none is set */
+  nextFollowUpAtMs: number | null;
   /** True when contactAttempts > 0 but lead hasn't been marked done (i.e. no response received) */
   isNoResponse: boolean;
 
@@ -93,8 +95,10 @@ const ACTION_LABEL: Record<string, string> = {
 export function stateRank(state: FollowUpState): number {
   switch (state) {
     case "overdue":
-      return 4;
+      return 5;
     case "today":
+      return 4;
+    case "tomorrow":
       return 3;
     case "this-week":
       return 2;
@@ -103,6 +107,16 @@ export function stateRank(state: FollowUpState): number {
     case "done":
       return 0;
   }
+}
+
+/** Calendar-day difference (local time), not raw ms/24h — avoids timezone off-by-one errors. */
+function calendarDayDiff(fromMs: number, toMs: number): number {
+  const startOfDay = (ms: number) => {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  };
+  return Math.round((startOfDay(toMs) - startOfDay(fromMs)) / 86_400_000);
 }
 
 function deriveState(lead: ScoredLead): FollowUpState {
@@ -116,41 +130,50 @@ function deriveState(lead: ScoredLead): FollowUpState {
       ? lead.nextFollowUpAt
       : null;
 
-  // Explicitly scheduled follow-up is overdue — highest urgency
-  if (nextFollowUpMs && nextFollowUpMs < now) return "overdue";
+  // An explicit scheduled follow-up (Yarın Hatırlat / 3 Gün Sonra Hatırlat / the auto-schedule
+  // from Temas Kuruldu) is the user's own action and must always win over the static
+  // priorityBucket/recommendedAction business signals below — otherwise a lead originally
+  // scored as "today" would keep showing "Bugün Ara" forever regardless of what the user did.
+  if (nextFollowUpMs) {
+    const dayDiff = calendarDayDiff(now, nextFollowUpMs);
+    if (dayDiff < 0) return "overdue";
+    if (dayDiff === 0) return "today";
+    if (dayDiff === 1) return "tomorrow";
+    // Any future day (2, 8, 30, ...) is "this-week" bucket — urgencyLabel renders the
+    // exact day count ("X Gün Sonra") regardless of how far out. "scheduled" (→ "Takip
+    // Gerekli") is reserved for leads with no explicit date at all.
+    return "this-week";
+  }
 
-  // Recently contacted (within 8 hours) AND no explicit future schedule → done for now.
-  // If nextFollowUpMs is set, the user scheduled a future follow-up and the card must
-  // remain visible even though they just made contact.
-  if (lastContactedMs && now - lastContactedMs < 8 * 60 * 60 * 1_000 && !nextFollowUpMs) {
+  // Recently contacted (within 8 hours) with no follow-up scheduled → done for now.
+  if (lastContactedMs && now - lastContactedMs < 8 * 60 * 60 * 1_000) {
     return "done";
   }
 
-  // Today-bucket or explicit high-priority follow_up
+  // No explicit date set yet — fall back to the business-priority signals from scoring.
   if (lead.priorityBucket === "today") return "today";
   if (lead.recommendedAction === "follow_up" && (lead.outreachPriority ?? 0) > 65) return "today";
-
-  // High-bucket or follow_up action or scheduled within 7 days
   if (lead.priorityBucket === "high") return "this-week";
   if (lead.recommendedAction === "follow_up") return "this-week";
-  if (nextFollowUpMs && nextFollowUpMs < now + 7 * 24 * 60 * 60 * 1_000) return "this-week";
 
   return "scheduled";
 }
 
-function urgencyLabel(state: FollowUpState, nextFollowUpMs: number | null): string {
-  if (state === "done") return "Tamamlandı";
-  if (state === "scheduled") return "Planlandı";
-  if (state === "today") return "Bugün Ara";
-  if (state === "this-week") return "Bu Hafta";
-
-  // overdue
-  if (nextFollowUpMs && nextFollowUpMs > 0) {
-    const overdueDays = Math.round((Date.now() - nextFollowUpMs) / (24 * 60 * 60 * 1_000));
-    if (overdueDays === 1) return "1 Gün Gecikti";
-    if (overdueDays > 1) return `${overdueDays} Gün Gecikti`;
+function urgencyLabel(state: FollowUpState, dayDiff: number | null, neverContacted: boolean): string {
+  switch (state) {
+    case "done":
+      return "Tamamlandı";
+    case "today":
+      return "Bugün Ara";
+    case "tomorrow":
+      return "Yarın Ara";
+    case "this-week":
+      return dayDiff !== null && dayDiff > 0 ? `${dayDiff} Gün Sonra` : "Bu Hafta";
+    case "overdue":
+      return "Gecikmiş";
+    case "scheduled":
+      return neverContacted ? "İlk temas bekleniyor" : "Takip Gerekli";
   }
-  return "Gecikmiş";
 }
 
 function formatLastContact(ms: number | null): string {
@@ -193,15 +216,10 @@ function deriveUrgencyLevel(lead: ScoredLead): "high" | "medium" | "low" {
 
 function formatNextFollowUp(ms: number | null): string {
   if (!ms) return "—";
-  const now = Date.now();
-  const diffMs = ms - now;
-  if (diffMs < 0) {
-    const d = Math.round(-diffMs / 86_400_000);
-    if (d === 0) return "Bugün (gecikti)";
-    if (d === 1) return "1 gün gecikti";
-    return `${d}g gecikti`;
-  }
-  const d = Math.round(diffMs / 86_400_000);
+  // Same calendar-day math as deriveState/urgencyLabel so this line never contradicts
+  // the main state badge (e.g. never says "3 gün içinde" while the badge says "Yarın Ara").
+  const d = calendarDayDiff(Date.now(), ms);
+  if (d < 0) return d === -1 ? "1 gün gecikti" : `${-d}g gecikti`;
   if (d === 0) return "Bugün";
   if (d === 1) return "Yarın";
   if (d <= 7) return `${d} gün içinde`;
@@ -211,9 +229,12 @@ function formatNextFollowUp(ms: number | null): string {
 
 // ── main adapter ──────────────────────────────────────────────
 
-export function adaptScoredLeadsToFollowUpCards(scored: ScoredLead[]): FollowUpCard[] {
+export function adaptScoredLeadsToFollowUpCards(
+  scored: ScoredLead[],
+  opts?: { includeDoNotContact?: boolean },
+): FollowUpCard[] {
   return scored
-    .filter((l) => l.priorityBucket !== "archive" && !l.doNotContact)
+    .filter((l) => l.priorityBucket !== "archive" && (opts?.includeDoNotContact || !l.doNotContact))
     .map((lead) => {
       const lastContactedMs =
         typeof lead.lastContactedAt === "number" && lead.lastContactedAt > 0
@@ -225,6 +246,8 @@ export function adaptScoredLeadsToFollowUpCards(scored: ScoredLead[]): FollowUpC
           : null;
 
       const state = deriveState(lead);
+      const dayDiff = nextFollowUpMs ? calendarDayDiff(Date.now(), nextFollowUpMs) : null;
+      const neverContacted = !lastContactedMs;
 
       return {
         id: lead.id,
@@ -236,7 +259,7 @@ export function adaptScoredLeadsToFollowUpCards(scored: ScoredLead[]): FollowUpC
         outreachPriority: lead.outreachPriority ?? 0,
 
         followUpState: state,
-        urgencyLabel: urgencyLabel(state, nextFollowUpMs),
+        urgencyLabel: urgencyLabel(state, dayDiff, neverContacted),
 
         lastContactedAtMs: lastContactedMs,
         lastContactLabel: formatLastContact(lastContactedMs),
@@ -253,7 +276,17 @@ export function adaptScoredLeadsToFollowUpCards(scored: ScoredLead[]): FollowUpC
         urgencyLevel: deriveUrgencyLevel(lead),
 
         nextFollowUpLabel: formatNextFollowUp(nextFollowUpMs),
-        isNoResponse: (lead.contactAttempts ?? 0) > 0 && state !== "done",
+        nextFollowUpAtMs: nextFollowUpMs,
+        // "Yanıt Yok" means marked no-response with no specific next-contact date set.
+        // Once a date is scheduled (+1 Gün / +3 Gün / auto-schedule from Temas Kuruldu),
+        // the date-based state above takes over — it is no longer "no response", it is
+        // "follow-up scheduled", even though both share the same underlying status value.
+        isNoResponse:
+          !nextFollowUpMs &&
+          ((lead.status === "needs_follow_up") ||
+            ((lead.contactAttempts ?? 0) > 0 &&
+              state !== "done" &&
+              !(lastContactedMs && Date.now() - lastContactedMs < 8 * 60 * 60 * 1_000))),
 
         whyThisLead: lead.whyThisLead ?? [],
         aiInsight: lead.aiInsight ?? "",
