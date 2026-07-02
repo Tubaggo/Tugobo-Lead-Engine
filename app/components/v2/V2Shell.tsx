@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import type { V2Screen } from "@/app/components/v2/types";
 import type { ScoredLead } from "@/app/lib/leads";
 import V2Sidebar from "@/app/components/v2/layout/V2Sidebar";
@@ -43,6 +43,7 @@ import {
 } from "@/app/components/v2/adapters/automation-center-adapter";
 import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
 import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
+import { buildExecutionContexts, projectExecutionQueue } from "@/app/lib/execution-runtime";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -73,8 +74,8 @@ export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> 
     subtitle: "En yüksek gelir potansiyeline sahip fırsatlar sıralanır.",
   },
   "command-center": {
-    title: "Komuta Merkezi",
-    subtitle: "Tüm satış operasyonlarınızı tek ekrandan yönetin.",
+    title: "Günlük Operasyon Merkezi",
+    subtitle: "Bugün odaklanman gereken işleri öncelik sırasına göre yönet.",
   },
   "lead-list": {
     title: "Lead Listesi",
@@ -126,12 +127,51 @@ export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> 
   },
 };
 
+const V2_ACTIVE_SCREEN_STORAGE_KEY = "tugobo-lead-engine:v2-active-screen";
+
+function isV2Screen(value: string): value is V2Screen {
+  return Object.prototype.hasOwnProperty.call(SCREEN_META, value);
+}
+
+/** Reads the persisted active screen, validated against the known V2 screen IDs. Client-only. */
+function readStoredActiveScreen(): V2Screen | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(V2_ACTIVE_SCREEN_STORAGE_KEY);
+    if (raw && isV2Screen(raw)) return raw;
+  } catch {
+    // storage unavailable (privacy mode, quota, etc.) — fall back to default
+  }
+  return null;
+}
+
 type Props = {
   scoredLeads: ScoredLead[];
 };
 
 export default function V2Shell({ scoredLeads }: Props) {
-  const [activeScreen, setActiveScreen] = useState<V2Screen>("revenue-queue");
+  // null means "not yet decided" — deliberately distinct from any real V2Screen
+  // value (including "command-center") so nothing, sidebar highlight included,
+  // can render a screen identity before the persisted value has actually been
+  // read. null is a plain literal (no window access), so it's identical on the
+  // server render and the client's first render — no hydration mismatch.
+  const [activeScreen, setActiveScreen] = useState<V2Screen | null>(null);
+
+  useEffect(() => {
+    const stored = readStoredActiveScreen();
+    setActiveScreen(stored ?? "command-center");
+  }, []);
+
+  useEffect(() => {
+    if (activeScreen === null) return;
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(V2_ACTIVE_SCREEN_STORAGE_KEY, activeScreen);
+    } catch {
+      // ignore quota/availability errors
+    }
+  }, [activeScreen]);
+
   const [selectedQueueRowId, setSelectedQueueRowId] = useState<string | null>(null);
   const [selectedLeadCard, setSelectedLeadCard] = useState<LeadCard | null>(null);
   const [selectedIcpCard, setSelectedIcpCard] = useState<IcpCard | null>(null);
@@ -174,10 +214,15 @@ export default function V2Shell({ scoredLeads }: Props) {
     const analyticsCards = adaptScoredLeadsToAnalyticsCards(recoveryCards, commCards);
     const automationCards = adaptScoredLeadsToAutomationCards(allLeads);
     const automationSummary = computeAutomationSummary(automationCards);
-    return { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary };
+    // Execution Runtime (M7.3): read-only projection over the same lead pool
+    // used by every other Command Center card above — never a second source
+    // of truth, never a mutation path.
+    const executionContexts = buildExecutionContexts(allLeads);
+    const executionQueue = projectExecutionQueue(executionContexts);
+    return { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue };
   }, [allLeads]);
 
-  const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary } = derived;
+  const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue } = derived;
 
   // followUpMergedLeads is computed separately so it can react to local mutations immediately.
   // On each onFollowUpMutation() call, followUpMutVersion increments → this memo reruns →
@@ -274,6 +319,22 @@ export default function V2Shell({ scoredLeads }: Props) {
     setSelectedCommandCard(null);
     setSelectedAnalyticsCard(null);
     setSelectedAutomationCard(null);
+  }
+
+  // Until the persisted screen has been read from localStorage (or defaulted on
+  // the client), activeScreen is null and nothing screen-specific is rendered —
+  // not the content pane, not the sidebar's active highlight. This is what
+  // actually prevents "Günlük Operasyon" from ever being visible before the
+  // real screen: no component below this point ever sees "command-center" as
+  // a stand-in value while we're still waiting to find out the real answer.
+  // The branch is identical on the server render and the client's first render
+  // (activeScreen is null in both), so there is no hydration mismatch.
+  if (activeScreen === null) {
+    return (
+      <div className="flex h-screen items-center justify-center overflow-hidden">
+        <p className="text-xs text-zinc-600">Yükleniyor…</p>
+      </div>
+    );
   }
 
   const meta = SCREEN_META[activeScreen];
@@ -421,6 +482,7 @@ export default function V2Shell({ scoredLeads }: Props) {
           ) : isCommand ? (
             <>
               <FounderCommandCenterScreen
+                executionQueue={executionQueue}
                 recoveryCards={recoveryCards}
                 pipelineCards={pipelineCards}
                 selectedId={selectedCommandCard?.id ?? null}

@@ -64,7 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Genel",
     items: [
-      { label: "Komuta Merkezi", icon: "command", screen: "command-center" },
+      { label: "Günlük Operasyon", icon: "command", screen: "command-center" },
     ],
   },
   {

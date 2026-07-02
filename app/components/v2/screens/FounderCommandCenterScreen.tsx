@@ -1,17 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { RecoveryCard } from "@/app/components/v2/adapters/revenue-recovery-adapter";
 import type { PipelineCard } from "@/app/components/v2/adapters/revenue-pipeline-adapter";
-import {
-  computeCommandCenter,
-  formatMrr,
-  type CommandFilter,
-  type PipelineStageSnapshot,
-} from "@/app/components/v2/adapters/founder-command-center-adapter";
+import { formatMrr } from "@/app/components/v2/adapters/founder-command-center-adapter";
+import { SALES_PRIORITY_LABELS } from "@/lib/verified-opportunity/priority-engine";
+import type {
+  ExecutionQueueItem,
+  ExecutionPriority,
+  ExecutionState,
+  OperationalMomentum,
+  ExecutionConfidence,
+  ExecutionTier,
+} from "@/app/lib/execution-runtime";
 import type { V2Screen } from "@/app/components/v2/types";
 
 type Props = {
+  executionQueue: ExecutionQueueItem[];
   recoveryCards: RecoveryCard[];
   pipelineCards: PipelineCard[];
   selectedId: string | null;
@@ -19,269 +24,139 @@ type Props = {
   onNavigate: (screen: V2Screen) => void;
 };
 
-const FILTERS: { key: CommandFilter; label: string }[] = [
-  { key: "all", label: "Tümü" },
-  { key: "critical", label: "Kritik" },
-  { key: "today", label: "Bugün" },
-  { key: "revenue", label: "Gelir" },
-  { key: "recovery", label: "Kurtarma" },
-  { key: "risk", label: "Risk" },
-];
-
-const PRIORITY_LABEL: Record<string, string> = {
-  critical: "Kritik",
-  high: "Yüksek",
-  medium: "Orta",
-  low: "Düşük",
-};
-
-const PRIORITY_COLOR: Record<string, string> = {
-  critical: "bg-rose-900/60 text-rose-300",
-  high: "bg-amber-900/60 text-amber-300",
-  medium: "bg-sky-900/60 text-sky-300",
-  low: "bg-zinc-800 text-zinc-400",
-};
-
+/**
+ * The Execution Queue (from app/lib/execution-runtime) is the spine of this
+ * screen. This component only groups/formats/labels the queue it's handed —
+ * it never recomputes priority, state, action, momentum, or confidence.
+ */
 export default function FounderCommandCenterScreen({
+  executionQueue,
   recoveryCards,
-  pipelineCards,
   selectedId,
   onSelect,
-  onNavigate,
 }: Props) {
-  const [filter, setFilter] = useState<CommandFilter>("all");
   const [search, setSearch] = useState("");
 
-  const summary = computeCommandCenter(recoveryCards, pipelineCards);
-
   const q = search.toLowerCase().trim();
-  const applySearch = (cards: RecoveryCard[]) =>
-    q ? cards.filter((c) => c.hotelName.toLowerCase().includes(q) || c.city.toLowerCase().includes(q)) : cards;
+  const filteredQueue = useMemo(
+    () =>
+      q
+        ? executionQueue.filter(
+            (i) => i.hotelName.toLowerCase().includes(q) || i.city.toLowerCase().includes(q),
+          )
+        : executionQueue,
+    [executionQueue, q],
+  );
 
-  const showRevenueOverview = filter === "all" || filter === "revenue";
-  const showPriorityQueue = filter === "all" || filter === "critical" || filter === "revenue";
-  const showRecoveryAlerts = filter === "all" || filter === "recovery";
-  const showCriticalRisks = filter === "all" || filter === "risk";
-  const showCommAlerts = filter === "all";
-  const showFollowUpToday = filter === "all" || filter === "today";
-  const showPipelineSnapshot = filter === "all";
+  const tier1 = filteredQueue.filter((i) => i.tier === "tier-1");
+  const tier2 = filteredQueue.filter((i) => i.tier === "tier-2");
+  const tier3 = filteredQueue.filter((i) => i.tier === "tier-3");
 
-  const priorityRows = applySearch(summary.priorityQueue);
-  const recoveryRows = applySearch(summary.recoveryAlerts);
-  const riskRows = applySearch(summary.criticalRisks);
-  const commRows = applySearch(summary.commAlerts);
-  const followUpRows = applySearch(summary.followUpToday);
+  const brief = useMemo(() => buildDayBrief(executionQueue), [executionQueue]);
 
-  const totalPipelineLeads = pipelineCards.length || 1;
+  function handleRowClick(item: ExecutionQueueItem) {
+    const card = recoveryCards.find((c) => c.id === item.leadId);
+    if (card) onSelect(card);
+  }
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+      {/* Live Day Brief */}
+      <div className="flex-shrink-0 px-4 py-3 border-b border-white/[0.06]">
+        <p className="text-sm font-semibold text-zinc-100">{brief.greeting}</p>
+        <p className="text-sm text-zinc-300 mt-0.5">{brief.headline}</p>
+        {brief.detail && <p className="text-xs text-zinc-500 mt-1 leading-relaxed">{brief.detail}</p>}
+      </div>
 
-      {/* KPI Strip */}
+      {/* Daily Progress Strip */}
       <div className="flex-shrink-0 grid grid-cols-4 gap-3 px-4 py-3 border-b border-white/[0.06]">
-        <KpiCell label="Beklenen Gelir" value={formatMrr(summary.expectedRevenue)} colorClass="text-indigo-400" bgClass="bg-indigo-950/30 border-indigo-900/40" />
-        <KpiCell label="Riskli Gelir" value={formatMrr(summary.revenueAtRisk)} colorClass="text-rose-400" bgClass="bg-rose-950/30 border-rose-900/40" onClick={() => onNavigate("revenue-risk")} />
-        <KpiCell label="Kurtarılabilir" value={formatMrr(summary.recoverableRevenue)} colorClass="text-emerald-400" bgClass="bg-emerald-950/30 border-emerald-900/40" onClick={() => onNavigate("revenue-recovery")} />
-        <KpiCell label="Bugünkü Fırsatlar" value={`${summary.todaysOpportunities}`} colorClass="text-amber-400" bgClass="bg-amber-950/30 border-amber-900/40" onClick={() => onNavigate("follow-ups")} />
+        <KpiCell label="Bugünün İşleri" value={`${executionQueue.length}`} colorClass="text-zinc-200" bgClass="bg-zinc-800/50 border-zinc-700/40" />
+        <KpiCell label="Şimdi Yap" value={`${tier1.length}`} colorClass="text-rose-400" bgClass="bg-rose-950/30 border-rose-900/40" />
+        <KpiCell label="Bugün Bitir" value={`${tier2.length}`} colorClass="text-amber-400" bgClass="bg-amber-950/30 border-amber-900/40" />
+        <KpiCell label="Vakit Kalırsa" value={`${tier3.length}`} colorClass="text-zinc-400" bgClass="bg-zinc-800/40 border-zinc-700/30" />
       </div>
 
-      {/* Filter + Search */}
+      {/* Search */}
       <div className="flex-shrink-0 flex items-center gap-1.5 px-4 py-3 border-b border-white/[0.06]">
-        {FILTERS.map((f) => (
-          <button
-            key={f.key}
-            onClick={() => setFilter(f.key)}
-            className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
-              filter === f.key
-                ? "bg-indigo-500/20 text-indigo-300 ring-1 ring-inset ring-indigo-500/30"
-                : "text-zinc-500 hover:bg-white/[0.05] hover:text-zinc-300"
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-        <div className="ml-auto">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Otel veya şehir ara…"
-            className="h-9 w-48 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 text-[11px] text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-indigo-500/40 focus:bg-white/[0.06] transition-colors duration-150"
-          />
-        </div>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Otel veya şehir ara…"
+          className="h-9 w-56 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 text-[11px] text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-indigo-500/40 focus:bg-white/[0.06] transition-colors duration-150"
+        />
       </div>
 
-      {/* Scrollable Sections */}
+      {/* Execution Queue */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-6">
-
-        {/* Revenue Overview */}
-        {showRevenueOverview && (
-          <div className="space-y-2">
-            <SectionLabel label="Gelir Özeti" />
-            <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/40 px-3 py-2.5">
-                <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">Tahmin</p>
-                <p className="text-base font-semibold text-indigo-400 mt-0.5">{formatMrr(summary.expectedRevenue)}</p>
-              </div>
-              <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/40 px-3 py-2.5">
-                <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">Riskli</p>
-                <p className="text-base font-semibold text-rose-400 mt-0.5">{formatMrr(summary.revenueAtRisk)}</p>
-              </div>
-              <div className="rounded-lg bg-zinc-800/50 border border-zinc-700/40 px-3 py-2.5">
-                <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">Kurtarılabilir</p>
-                <p className="text-base font-semibold text-emerald-400 mt-0.5">{formatMrr(summary.recoverableRevenue)}</p>
-              </div>
-            </div>
-          </div>
+        {executionQueue.length === 0 ? (
+          <ClearedState />
+        ) : (
+          <>
+            <TierSection
+              title="Şimdi Yap"
+              accentClass="text-rose-500"
+              items={tier1}
+              selectedId={selectedId}
+              onRowClick={handleRowClick}
+              emptyText="Hemen aksiyon gerektiren iş yok."
+            />
+            <TierSection
+              title="Bugün Bitir"
+              accentClass="text-amber-500"
+              items={tier2}
+              selectedId={selectedId}
+              onRowClick={handleRowClick}
+              emptyText="Bugün için bekleyen iş yok."
+            />
+            <TierSection
+              title="Vakit Kalırsa"
+              accentClass="text-zinc-500"
+              items={tier3}
+              selectedId={selectedId}
+              onRowClick={handleRowClick}
+              emptyText="Ek iş yok."
+            />
+          </>
         )}
-
-        {/* Priority Queue */}
-        {showPriorityQueue && (
-          <Section title="Öncelikli Fırsatlar" count={priorityRows.length} accentClass="text-indigo-500">
-            {priorityRows.length === 0 ? (
-              <EmptyState text="Fırsat bulunamadı." />
-            ) : (
-              priorityRows.map((card) => (
-                <LeadRow
-                  key={card.id}
-                  card={card}
-                  selectedId={selectedId}
-                  onSelect={onSelect}
-                  borderColor="border-l-indigo-600"
-                  right={
-                    <>
-                      <span className="text-[10px] text-zinc-500 truncate max-w-[80px] hidden sm:block">{card.actionLabel}</span>
-                      <Badge label={PRIORITY_LABEL[card.priority] ?? card.priority} colorClass={PRIORITY_COLOR[card.priority] ?? PRIORITY_COLOR.low} />
-                    </>
-                  }
-                />
-              ))
-            )}
-          </Section>
-        )}
-
-        {/* Recovery Alerts */}
-        {showRecoveryAlerts && (
-          <Section title="Kurtarma Uyarıları" count={recoveryRows.length} accentClass="text-emerald-500">
-            {recoveryRows.length === 0 ? (
-              <EmptyState text="Kurtarma fırsatı yok." />
-            ) : (
-              recoveryRows.map((card) => (
-                <LeadRow
-                  key={card.id}
-                  card={card}
-                  selectedId={selectedId}
-                  onSelect={onSelect}
-                  borderColor="border-l-emerald-600"
-                  right={
-                    <>
-                      <span className="text-xs font-medium text-emerald-400">{formatMrr(card.recoveryRevenue)}</span>
-                      <Badge label={card.recoveryLevelLabel} colorClass={RECOVERY_BADGE[card.recoveryLevel]} />
-                    </>
-                  }
-                />
-              ))
-            )}
-          </Section>
-        )}
-
-        {/* Critical Risks */}
-        {showCriticalRisks && (
-          <Section title="Kritik Riskler" count={riskRows.length} accentClass="text-rose-500">
-            {riskRows.length === 0 ? (
-              <EmptyState text="Kritik risk yok." />
-            ) : (
-              riskRows.map((card) => (
-                <LeadRow
-                  key={card.id}
-                  card={card}
-                  selectedId={selectedId}
-                  onSelect={onSelect}
-                  borderColor="border-l-rose-600"
-                  right={
-                    <>
-                      <span className="text-xs font-medium text-rose-400">{formatMrr(card.riskRevenue)}</span>
-                      <Badge label={card.riskLevelLabel} colorClass={RISK_BADGE[card.riskLevel]} />
-                    </>
-                  }
-                />
-              ))
-            )}
-          </Section>
-        )}
-
-        {/* Communication Alerts */}
-        {showCommAlerts && (
-          <Section title="İletişim Bekleyenler" count={commRows.length} accentClass="text-sky-500">
-            {commRows.length === 0 ? (
-              <EmptyState text="Tüm fırsatlarla temas kurulmuş." />
-            ) : (
-              commRows.map((card) => (
-                <LeadRow
-                  key={card.id}
-                  card={card}
-                  selectedId={selectedId}
-                  onSelect={onSelect}
-                  borderColor="border-l-sky-600"
-                  right={
-                    <>
-                      <span className="text-xs text-zinc-500">%{card.opportunityScore}</span>
-                      <Badge label="Temas Yok" colorClass="bg-sky-900/60 text-sky-300" />
-                    </>
-                  }
-                />
-              ))
-            )}
-          </Section>
-        )}
-
-        {/* Follow-up Today */}
-        {showFollowUpToday && (
-          <Section title="Bugünkü Takipler" count={followUpRows.length} accentClass="text-amber-500">
-            {followUpRows.length === 0 ? (
-              <EmptyState text="Bugün takip yok." />
-            ) : (
-              followUpRows.map((card) => (
-                <LeadRow
-                  key={card.id}
-                  card={card}
-                  selectedId={selectedId}
-                  onSelect={onSelect}
-                  borderColor={card.isFollowUpOverdue ? "border-l-rose-600" : "border-l-amber-600"}
-                  right={
-                    <>
-                      <span className="text-[10px] text-zinc-500">{card.lastContactLabel}</span>
-                      <Badge
-                        label={card.isFollowUpOverdue ? "Gecikmiş" : "Bugün"}
-                        colorClass={card.isFollowUpOverdue ? "bg-rose-900/60 text-rose-300" : "bg-amber-900/60 text-amber-300"}
-                      />
-                    </>
-                  }
-                />
-              ))
-            )}
-          </Section>
-        )}
-
-        {/* Pipeline Snapshot */}
-        {showPipelineSnapshot && summary.pipelineSnapshot.length > 0 && (
-          <div className="space-y-2">
-            <SectionLabel label="Pipeline Dağılımı" />
-            <div className="rounded-lg bg-zinc-800/40 border border-zinc-700/30 overflow-hidden">
-              {summary.pipelineSnapshot.map((row, i) => (
-                <PipelineRow
-                  key={row.stage}
-                  row={row}
-                  totalLeads={totalPipelineLeads}
-                  isLast={i === summary.pipelineSnapshot.length - 1}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
       </div>
     </div>
   );
+}
+
+// ── Live Day Brief (deterministic copy from queue counts — no runtime logic) ──
+
+function buildDayBrief(queue: ExecutionQueueItem[]): {
+  greeting: string;
+  headline: string;
+  detail: string;
+} {
+  const hour = new Date().getHours();
+  const greetingWord = hour < 12 ? "Günaydın" : hour < 18 ? "İyi günler" : "İyi akşamlar";
+  const greeting = `${greetingWord}, Gökhan.`;
+
+  const total = queue.length;
+  if (total === 0) {
+    return {
+      greeting,
+      headline: "Bugünün operasyon kuyruğu temiz.",
+      detail: "Şu an aksiyon bekleyen bir iş yok.",
+    };
+  }
+
+  const tier1Count = queue.filter((i) => i.tier === "tier-1").length;
+  const totalValue = queue.reduce((s, i) => s + i.estimatedValue, 0);
+  const topItem = queue[0]; // already sorted by priority > tier > value by the runtime
+
+  const headline = `Bugün öncelikli ${total} iş var.`;
+  const detailParts = [
+    tier1Count > 0
+      ? `${tier1Count} tanesi hemen aksiyon gerektiriyor.`
+      : "Şu an acil aksiyon bekleyen iş yok.",
+    totalValue > 0 ? `Tahmini fırsat değeri: ${formatMrr(totalValue)}.` : "",
+    topItem ? `En kritik iş: ${topItem.hotelName}.` : "",
+  ].filter(Boolean);
+
+  return { greeting, headline, detail: detailParts.join(" ") };
 }
 
 // ── sub-components ────────────────────────────────────────────
@@ -291,26 +166,12 @@ function KpiCell({
   value,
   colorClass,
   bgClass,
-  onClick,
 }: {
   label: string;
   value: string;
   colorClass: string;
   bgClass: string;
-  onClick?: () => void;
 }) {
-  if (onClick) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        className={`rounded-lg border px-3 py-2.5 text-left transition-opacity hover:opacity-80 ${bgClass}`}
-      >
-        <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">{label}</p>
-        <p className={`text-lg font-semibold mt-0.5 ${colorClass}`}>{value}</p>
-      </button>
-    );
-  }
   return (
     <div className={`rounded-lg border px-3 py-2.5 ${bgClass}`}>
       <p className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">{label}</p>
@@ -321,123 +182,164 @@ function KpiCell({
 
 function SectionLabel({ label }: { label: string }) {
   return (
-    <p className="text-[10px] uppercase tracking-[0.12em] font-semibold text-zinc-500">
-      {label}
-    </p>
+    <p className="text-[10px] uppercase tracking-[0.12em] font-semibold text-zinc-500">{label}</p>
   );
 }
 
-function Section({
+function TierSection({
   title,
-  count,
   accentClass,
-  children,
+  items,
+  selectedId,
+  onRowClick,
+  emptyText,
 }: {
   title: string;
-  count: number;
   accentClass: string;
-  children: React.ReactNode;
+  items: ExecutionQueueItem[];
+  selectedId: string | null;
+  onRowClick: (item: ExecutionQueueItem) => void;
+  emptyText: string;
 }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <p className="text-[10px] uppercase tracking-[0.12em] font-semibold text-zinc-500">
-          {title}
-        </p>
-        <span className={`text-[10px] font-semibold ${accentClass}`}>{count}</span>
+        <SectionLabel label={title} />
+        <span className={`text-[10px] font-semibold ${accentClass}`}>{items.length}</span>
       </div>
-      <div className="space-y-1">{children}</div>
+      {items.length === 0 ? (
+        <p className="text-xs text-zinc-600 py-2 px-1">{emptyText}</p>
+      ) : (
+        <div className="space-y-1.5">
+          {items.map((item) => (
+            <QueueItemRow
+              key={item.leadId}
+              item={item}
+              isSelected={item.leadId === selectedId}
+              onClick={() => onRowClick(item)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function LeadRow({
-  card,
-  selectedId,
-  onSelect,
-  borderColor,
-  right,
+function QueueItemRow({
+  item,
+  isSelected,
+  onClick,
 }: {
-  card: RecoveryCard;
-  selectedId: string | null;
-  onSelect: (c: RecoveryCard) => void;
-  borderColor: string;
-  right: React.ReactNode;
+  item: ExecutionQueueItem;
+  isSelected: boolean;
+  onClick: () => void;
 }) {
-  const isSelected = card.id === selectedId;
   return (
     <button
-      onClick={() => onSelect(card)}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border-l-2 transition-colors text-left ${
+      onClick={onClick}
+      className={`w-full text-left px-3 py-2.5 rounded-lg border-l-2 transition-colors ${
         isSelected
           ? "bg-zinc-700/70 border-l-indigo-400"
-          : `bg-zinc-800/40 hover:bg-zinc-800/70 ${borderColor}`
+          : `bg-zinc-800/40 hover:bg-zinc-800/70 ${TIER_BORDER[item.tier]}`
       }`}
     >
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-zinc-100 truncate">{card.hotelName}</p>
-        <p className="text-xs text-zinc-500 truncate">{card.city}</p>
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <p className="text-sm font-medium text-zinc-100 truncate">{item.hotelName}</p>
+            <Badge label={SALES_PRIORITY_LABELS[item.priority]} colorClass={PRIORITY_BADGE[item.priority]} />
+          </div>
+          <p className="text-xs text-zinc-500 truncate mt-0.5">{item.city}</p>
+          <p className="text-[11px] text-zinc-400 mt-1 truncate" title={item.topReason}>
+            {item.topReason}
+          </p>
+        </div>
+        <div className="flex-shrink-0 flex flex-col items-end gap-1.5">
+          <span className="text-xs font-medium text-amber-300 whitespace-nowrap">
+            {item.recommendedAction.label}
+          </span>
+          {item.estimatedValue > 0 && (
+            <span className="text-[11px] text-zinc-500">{formatMrr(item.estimatedValue)}</span>
+          )}
+          <div className="flex items-center gap-1">
+            <Badge label={STATE_LABEL[item.executionState]} colorClass={STATE_BADGE[item.executionState]} />
+            <Badge label={MOMENTUM_LABEL[item.operationalMomentum]} colorClass="bg-zinc-800 text-zinc-400" />
+            <Badge label={CONFIDENCE_LABEL[item.executionConfidence]} colorClass={CONFIDENCE_BADGE[item.executionConfidence]} />
+          </div>
+        </div>
       </div>
-      <div className="flex-shrink-0 flex items-center gap-2">{right}</div>
     </button>
   );
 }
 
 function Badge({ label, colorClass }: { label: string; colorClass: string }) {
   return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colorClass}`}>
+    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${colorClass}`}>
       {label}
     </span>
   );
 }
 
-function EmptyState({ text }: { text: string }) {
-  return <p className="text-xs text-zinc-600 py-2 px-1">{text}</p>;
-}
-
-function PipelineRow({
-  row,
-  totalLeads,
-  isLast,
-}: {
-  row: PipelineStageSnapshot;
-  totalLeads: number;
-  isLast: boolean;
-}) {
-  const pct = Math.round((row.count / totalLeads) * 100);
+function ClearedState() {
   return (
-    <div
-      className={`flex items-center gap-3 px-3 py-2 ${
-        isLast ? "" : "border-b border-zinc-700/30"
-      }`}
-    >
-      <span className="text-xs text-zinc-400 w-28 truncate flex-shrink-0">{row.label}</span>
-      <div className="flex-1 bg-zinc-700/40 rounded-full h-1.5">
-        <div
-          className="bg-indigo-500/70 h-1.5 rounded-full"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className="text-xs text-zinc-500 w-5 text-right flex-shrink-0">{row.count}</span>
-      <span className="text-xs text-zinc-600 w-14 text-right flex-shrink-0">
-        {formatMrr(row.totalWeightedMrr)}
-      </span>
+    <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/30 px-6 py-10 text-center">
+      <p className="text-sm font-semibold text-emerald-300">Kuyruk Temiz</p>
+      <p className="text-xs text-emerald-400/70 mt-1.5">Bugünün operasyon kuyruğu temiz.</p>
     </div>
   );
 }
 
-// ── badge color maps ──────────────────────────────────────────
+// ── UI-only label/color maps (display mapping only — no business rules) ──
 
-const RECOVERY_BADGE: Record<string, string> = {
-  high: "bg-emerald-900/60 text-emerald-300",
-  medium: "bg-sky-900/60 text-sky-300",
-  low: "bg-amber-900/60 text-amber-300",
-  lost: "bg-zinc-800 text-zinc-500",
+const TIER_BORDER: Record<ExecutionTier, string> = {
+  "tier-1": "border-l-rose-600",
+  "tier-2": "border-l-amber-600",
+  "tier-3": "border-l-zinc-600",
 };
 
-const RISK_BADGE: Record<string, string> = {
-  critical: "bg-rose-900/70 text-rose-300",
-  high: "bg-rose-900/50 text-rose-400",
+const PRIORITY_BADGE: Record<ExecutionPriority, string> = {
+  CRITICAL: "bg-rose-900/60 text-rose-300",
+  URGENT: "bg-orange-900/60 text-orange-300",
+  HIGH: "bg-amber-900/60 text-amber-300",
+  NORMAL: "bg-sky-900/60 text-sky-300",
+  LOW: "bg-zinc-800 text-zinc-400",
+};
+
+const STATE_LABEL: Record<ExecutionState, string> = {
+  dormant: "Beklemede",
+  ready: "Hazır",
+  blocked: "Engellendi",
+  waiting: "Yanıt Bekleniyor",
+  scheduled: "Planlandı",
+  completed: "Tamamlandı",
+};
+
+const STATE_BADGE: Record<ExecutionState, string> = {
+  dormant: "bg-zinc-800 text-zinc-500",
+  ready: "bg-emerald-900/50 text-emerald-400",
+  blocked: "bg-rose-900/60 text-rose-300",
+  waiting: "bg-sky-900/50 text-sky-400",
+  scheduled: "bg-indigo-900/50 text-indigo-400",
+  completed: "bg-zinc-800 text-zinc-500",
+};
+
+const MOMENTUM_LABEL: Record<OperationalMomentum, string> = {
+  accelerating: "Hızlanıyor",
+  stable: "Stabil",
+  slowing: "Yavaşlıyor",
+  stalled: "Durdu",
+  recovering: "Toparlanıyor",
+  reactivated: "Yeniden Aktif",
+};
+
+const CONFIDENCE_LABEL: Record<ExecutionConfidence, string> = {
+  high: "Kanıt Güveni: Yüksek",
+  medium: "Kanıt Güveni: Orta",
+  low: "Kanıt Güveni: Düşük",
+};
+
+const CONFIDENCE_BADGE: Record<ExecutionConfidence, string> = {
+  high: "bg-emerald-900/50 text-emerald-400",
   medium: "bg-amber-900/50 text-amber-400",
-  low: "bg-zinc-800 text-zinc-500",
+  low: "bg-rose-900/50 text-rose-400",
 };
