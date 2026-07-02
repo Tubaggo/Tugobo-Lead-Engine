@@ -43,7 +43,11 @@ import {
 } from "@/app/components/v2/adapters/automation-center-adapter";
 import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
 import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
-import { buildExecutionContexts, projectExecutionQueue } from "@/app/lib/execution-runtime";
+import {
+  buildExecutionContexts,
+  projectExecutionQueue,
+  buildFounderCoachInsights,
+} from "@/app/lib/execution-runtime";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -219,10 +223,13 @@ export default function V2Shell({ scoredLeads }: Props) {
     // of truth, never a mutation path.
     const executionContexts = buildExecutionContexts(allLeads);
     const executionQueue = projectExecutionQueue(executionContexts);
-    return { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue };
+    // Founder Coach (M7.5): a further read-only projection over the same
+    // contexts/queue — never rebuilds them, never a second runtime pass.
+    const coachInsights = buildFounderCoachInsights(executionContexts, executionQueue);
+    return { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue, coachInsights };
   }, [allLeads]);
 
-  const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue } = derived;
+  const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue, coachInsights } = derived;
 
   // followUpMergedLeads is computed separately so it can react to local mutations immediately.
   // On each onFollowUpMutation() call, followUpMutVersion increments → this memo reruns →
@@ -321,6 +328,23 @@ export default function V2Shell({ scoredLeads }: Props) {
     setSelectedAutomationCard(null);
   }
 
+  // Used by the Founder Command Center's "Kişiyi Doğrula" / "AI Yeniden
+  // Analiz Et" actions to jump to the existing screen that owns that action
+  // while keeping the same lead selected there. Calls handleNavigate for the
+  // full reset it already does, then — in the same synchronous call, so
+  // React batches both updates — re-selects the matching card on the target
+  // screen. No new selection model, no persistence, no runtime change.
+  function handleNavigateToLead(screen: V2Screen, leadId: string) {
+    handleNavigate(screen);
+    if (screen === "communication-intelligence") {
+      const card = commCards.find((c) => c.id === leadId);
+      if (card) setSelectedCommCard(card);
+    } else if (screen === "automation-center") {
+      const card = automationCards.find((c) => c.id === leadId);
+      if (card) setSelectedAutomationCard(card);
+    }
+  }
+
   // Until the persisted screen has been read from localStorage (or defaulted on
   // the client), activeScreen is null and nothing screen-specific is rendered —
   // not the content pane, not the sidebar's active highlight. This is what
@@ -416,6 +440,9 @@ export default function V2Shell({ scoredLeads }: Props) {
               <CommunicationIntelligenceContextPanel
                 selectedCard={selectedCommCard}
                 allCards={commCards}
+                selectedScoredLead={
+                  selectedCommCard ? (scoredLeadsById.get(selectedCommCard.id) ?? null) : null
+                }
               />
             </>
           ) : isFollowUps ? (
@@ -483,6 +510,7 @@ export default function V2Shell({ scoredLeads }: Props) {
             <>
               <FounderCommandCenterScreen
                 executionQueue={executionQueue}
+                coachInsights={coachInsights}
                 recoveryCards={recoveryCards}
                 pipelineCards={pipelineCards}
                 selectedId={selectedCommandCard?.id ?? null}
@@ -494,6 +522,8 @@ export default function V2Shell({ scoredLeads }: Props) {
                 recoveryCards={recoveryCards}
                 pipelineCards={pipelineCards}
                 commCards={commCards}
+                executionQueue={executionQueue}
+                onNavigateToLead={handleNavigateToLead}
               />
             </>
           ) : isAnalytics ? (

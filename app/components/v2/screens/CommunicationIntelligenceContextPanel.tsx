@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import type {
   CommCard,
   CommSummary,
@@ -8,10 +11,12 @@ import type {
 } from "@/app/components/v2/adapters/communication-intelligence-adapter";
 import { computeCommSummary } from "@/app/components/v2/adapters/communication-intelligence-adapter";
 import { Badge } from "@/app/components/v2/primitives/Badge";
+import type { ScoredLead } from "@/app/lib/leads";
 
 type Props = {
   selectedCard: CommCard | null;
   allCards: CommCard[];
+  selectedScoredLead: ScoredLead | null;
 };
 
 // ── Shared helpers ─────────────────────────────────────────────
@@ -118,8 +123,16 @@ function ScoreBar({ value, color }: { value: number; color: string }) {
 
 // ── Root component ─────────────────────────────────────────────
 
-export default function CommunicationIntelligenceContextPanel({ selectedCard, allCards }: Props) {
-  if (selectedCard) return <LeadDetail card={selectedCard} />;
+export default function CommunicationIntelligenceContextPanel({
+  selectedCard,
+  allCards,
+  selectedScoredLead,
+}: Props) {
+  if (selectedCard) {
+    return (
+      <LeadDetail key={selectedCard.id} card={selectedCard} scoredLead={selectedScoredLead} />
+    );
+  }
   return <WorkspaceSummary cards={allCards} />;
 }
 
@@ -302,7 +315,7 @@ function RecoLine({ icon, text }: { icon: string; text: string }) {
 
 // ── Lead selected: detail panel ────────────────────────────────
 
-function LeadDetail({ card }: { card: CommCard }) {
+function LeadDetail({ card, scoredLead }: { card: CommCard; scoredLead: ScoredLead | null }) {
   const avatarCls = AVATAR_COLORS[stableAvatarIdx(card.id)];
   const channelCfg = BEST_CHANNEL_COLORS[card.bestChannel];
   const tempCfg = TEMP_CONFIG[card.leadTemperature];
@@ -338,6 +351,12 @@ function LeadDetail({ card }: { card: CommCard }) {
           </div>
         </div>
       </div>
+
+      {/* Contact Verification — placed right after the header so the founder
+          never has to scroll to find an actionable next step. Reuses the
+          existing /api/contact-finder endpoint (already wired in
+          AutomationCenterContextPanel.tsx) — no new API, no new persistence. */}
+      <ContactVerificationPanel scoredLead={scoredLead} />
 
       {/* Recommended Channel — prominent card */}
       <div
@@ -446,11 +465,11 @@ function LeadDetail({ card }: { card: CommCard }) {
         </div>
       )}
 
-      {/* AI insight */}
+      {/* AI insight — always rendered in Turkish, see renderCommAiInsightTr() below */}
       {card.aiInsight && (
         <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] p-4">
           <SectionLabel>AI İletişim İçgörüsü</SectionLabel>
-          <p className="text-[11px] text-white/60 leading-relaxed">{card.aiInsight}</p>
+          <p className="text-[11px] text-white/60 leading-relaxed">{renderCommAiInsightTr(card)}</p>
         </div>
       )}
 
@@ -500,6 +519,130 @@ function ProfileRow({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between py-1 border-b border-white/[0.04] last:border-0">
       <span className="text-[11px] text-white/40">{label}</span>
       <span className="text-[11px] font-medium text-white/70">{value}</span>
+    </div>
+  );
+}
+
+// ── AI İletişim İçgörüsü — deterministic Turkish rendering ────
+// card.aiInsight can occasionally be English (older enrichment runs). We
+// never call an API or translate dynamically — instead we prefer the
+// lead's own already-Turkish signal fields (whyThisLead / outreachRationale /
+// bestChannelReason, all existing fields elsewhere in this same panel) and
+// only fall back to a fixed Turkish sentence when none are available. The
+// raw aiInsight string itself is never rendered directly.
+
+function renderCommAiInsightTr(card: CommCard): string {
+  if (card.whyThisLead.length > 0) {
+    return card.whyThisLead.slice(0, 2).join(" ");
+  }
+  if (card.outreachRationale.length > 0) {
+    return card.outreachRationale.slice(0, 2).join(" ");
+  }
+  if (card.bestChannelReason) {
+    return `${card.bestChannelReason} İletişim kanalı doğrulanmadan outreach yapılmamalı.`;
+  }
+  return "Bu işletmede çok kanallı erişim potansiyeli görünüyor. İletişim kanalı doğrulanmadan outreach yapılmamalı.";
+}
+
+// ── Kişi / Kanal Doğrulama — actionable contact verification ─────
+// Reuses the exact same /api/contact-finder endpoint already wired in
+// AutomationCenterContextPanel.tsx's runContactFinder(). No new API route,
+// no new persistence — state is local to this panel and resets per lead
+// (LeadDetail is keyed by card.id above), matching the same ephemeral
+// pattern already used there.
+
+type ContactFinderResult = {
+  bestContactType: string;
+  bestContactValue: string;
+  confidence: string;
+};
+
+const CONTACT_TYPE_TR: Record<string, string> = {
+  VERIFIED_WHATSAPP: "Doğrulanmış WhatsApp",
+  GENERATED_WHATSAPP: "Oluşturulan WhatsApp",
+  PHONE_ONLY: "Sadece Telefon",
+  instagram: "Instagram",
+  email: "E-posta",
+  website: "Web Sitesi",
+};
+
+const CONFIDENCE_TR: Record<string, string> = {
+  high: "Yüksek",
+  medium: "Orta",
+  low: "Düşük",
+};
+
+function ContactVerificationPanel({ scoredLead }: { scoredLead: ScoredLead | null }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<ContactFinderResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const website = scoredLead?.website?.trim() || scoredLead?.websiteCandidateUrl?.trim() || "";
+  const phone = scoredLead?.phone?.trim() || "";
+  const instagram = scoredLead?.instagram?.trim() || "";
+  const canVerify = Boolean(website || phone || instagram);
+
+  async function runVerify() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/contact-finder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ website, phone, instagram }),
+      });
+      const data = (await res.json()) as {
+        bestContactType?: string;
+        bestContactValue?: string;
+        confidence?: string;
+        error?: string;
+      };
+      if (!res.ok || data.error) {
+        setError(data.error ?? `Hata (${res.status})`);
+        setResult(null);
+      } else {
+        setResult({
+          bestContactType: data.bestContactType ?? "—",
+          bestContactValue: data.bestContactValue ?? "—",
+          confidence: data.confidence ?? "—",
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Bağlantı hatası");
+      setResult(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] p-4">
+      <SectionLabel>Kişi / Kanal Doğrulama</SectionLabel>
+      <button
+        type="button"
+        onClick={runVerify}
+        disabled={!canVerify || loading}
+        className="w-full rounded-lg bg-indigo-500 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:bg-zinc-700/40 disabled:text-zinc-500 transition-colors duration-150"
+      >
+        {loading ? "Doğrulanıyor…" : "En İyi Kanalı Bul"}
+      </button>
+      {!canVerify && (
+        <p className="mt-1.5 text-[10px] text-zinc-600">
+          Web sitesi, telefon veya Instagram bilgisi gerekli.
+        </p>
+      )}
+      {result && (
+        <div className="mt-3 rounded-lg bg-white/[0.04] border border-white/[0.08] px-3 py-2.5 space-y-1">
+          <p className="text-[11px] font-semibold text-emerald-400">
+            {CONTACT_TYPE_TR[result.bestContactType] ?? result.bestContactType}
+          </p>
+          <p className="text-[11px] text-white/70 break-all">{result.bestContactValue}</p>
+          <p className="text-[10px] text-zinc-500">
+            Güven: {CONFIDENCE_TR[result.confidence] ?? result.confidence}
+          </p>
+        </div>
+      )}
+      {error && <p className="mt-2 text-[11px] text-rose-400">{error}</p>}
     </div>
   );
 }

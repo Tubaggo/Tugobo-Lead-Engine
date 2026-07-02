@@ -11,6 +11,7 @@ export { computeOperationalMomentum } from "./momentum";
 export { computeExecutionConfidence } from "./confidence";
 export { buildExecutionContext, buildExecutionContexts } from "./context-builder";
 export { projectExecutionQueue, computeTier } from "./queue";
+export { buildFounderCoachInsights } from "./coach";
 
 /**
  * Read-only snapshot for manual inspection/validation — not wired into any

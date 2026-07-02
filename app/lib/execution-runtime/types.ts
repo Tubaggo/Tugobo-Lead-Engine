@@ -169,3 +169,34 @@ export type ExecutionQueueItem = {
   operationalMomentum: OperationalMomentum;
   executionConfidence: ExecutionConfidence;
 };
+
+/** Founder Coach — a second projection of the same queue/contexts, never a second data source. */
+export type CoachInsightType =
+  | "focus"
+  | "risk"
+  | "momentum"
+  | "confidence"
+  | "blocker"
+  | "progress"
+  | "opportunity"
+  | "warning";
+
+export type CoachInsightSeverity = "critical" | "important" | "normal" | "positive";
+
+/**
+ * One coaching insight. Every field is either a short deterministic string
+ * built from queue/context counts, or a direct reference to runtime facts —
+ * there is no free-form or LLM-generated prose anywhere in this type.
+ */
+export type FounderCoachInsight = {
+  id: string;
+  type: CoachInsightType;
+  severity: CoachInsightSeverity;
+  title: string;
+  message: string;
+  /** Short, evidence-backed lines — each traceable to a runtime count or field, never a vague claim. */
+  evidence: string[];
+  relatedLeadIds: string[];
+  relatedLeadNames: string[];
+  source: "execution-runtime";
+};
