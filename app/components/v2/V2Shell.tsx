@@ -48,6 +48,11 @@ import {
   projectExecutionQueue,
   buildFounderCoachInsights,
 } from "@/app/lib/execution-runtime";
+import { buildHermesMonitor } from "@/app/lib/hermes-monitor";
+import { buildHermesMissions, missionBucketOf } from "@/app/components/v2/adapters/hermes-mission-adapter";
+import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
+import { canQueuePipeline, runHermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
+import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -126,8 +131,8 @@ export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> 
     subtitle: "Entegrasyon sağlık durumu, sağlayıcı bağlantıları ve operasyonel hazırlık.",
   },
   "automation-center": {
-    title: "Otomasyonlar",
-    subtitle: "Re-enrich, contact finder, AI review, follow-up ve outreach kuyrukları.",
+    title: "Hermes Workspace",
+    subtitle: "AI işgücü çalışıyor — Founder bugünün operasyonunu denetliyor.",
   },
 };
 
@@ -193,6 +198,34 @@ export default function V2Shell({ scoredLeads }: Props) {
   const [selectedAutomationCard, setSelectedAutomationCard] =
     useState<AutomationCard | null>(null);
 
+  // Hermes (A3/A3.5/A3.6): founder approval loop — pure UI state, deliberately
+  // not persisted. Each decision records the founder's call and its moment
+  // (the timestamp feeds the mission timeline); nothing is executed
+  // either way (execution arrives in A4). A3.6 groups shadow tasks into
+  // missions; the founder now selects/approves a mission, not a raw task.
+  const [selectedHermesMission, setSelectedHermesMission] = useState<HermesMission | null>(null);
+  const [hermesDecisions, setHermesDecisions] = useState<
+    Record<string, { status: "approved" | "rejected"; at: number }>
+  >({});
+  const approveHermesTask = useCallback(
+    (taskId: string) =>
+      setHermesDecisions((p) => ({ ...p, [taskId]: { status: "approved", at: Date.now() } })),
+    [],
+  );
+  const rejectHermesTask = useCallback(
+    (taskId: string) =>
+      setHermesDecisions((p) => ({ ...p, [taskId]: { status: "rejected", at: Date.now() } })),
+    [],
+  );
+
+  // Hermes Pipeline (A5): session-only pipeline bookkeeping, keyed by
+  // missionId — one founder click now drives all four stages autonomously.
+  // Persistence beyond this session happens only through whatever a stage
+  // itself already persists (e.g. scheduleFollowUpForLead's localStorage
+  // write) — never a new ledger. The runner itself is defined below, once
+  // `automationCards` (from `derived`) is in scope.
+  const [hermesPipelines, setHermesPipelines] = useState<Record<string, HermesPipeline>>({});
+
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.
   const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
@@ -226,10 +259,61 @@ export default function V2Shell({ scoredLeads }: Props) {
     // Founder Coach (M7.5): a further read-only projection over the same
     // contexts/queue — never rebuilds them, never a second runtime pass.
     const coachInsights = buildFounderCoachInsights(executionContexts, executionQueue);
-    return { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue, coachInsights };
+    // Hermes Monitor (A3): shadow pass over the same contexts — proposes,
+    // never executes. Approvals live in UI state only; execution is A4.
+    const hermesMonitor = buildHermesMonitor(executionContexts);
+    return { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue, coachInsights, hermesMonitor };
   }, [allLeads]);
 
-  const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue, coachInsights } = derived;
+  const { rows, kpi, ctx, cards, icpCards, commCards, pipelineCards, forecastCards, riskCards, recoveryCards, analyticsCards, automationCards, automationSummary, executionQueue, coachInsights, hermesMonitor } = derived;
+
+  // Hermes Missions (A3.6): groups the monitor's shadow tasks by lead. Recomputed
+  // whenever founder decisions change (unlike hermesMonitor, which only depends
+  // on the lead pool) so approving/rejecting immediately reflows mission buckets.
+  const hermesMissions = useMemo(
+    () => buildHermesMissions(hermesMonitor, hermesDecisions),
+    [hermesMonitor, hermesDecisions],
+  );
+
+  // Hermes Pipeline (A5): the mission's leadId is the join key back to the
+  // same AutomationCard (website/phone/instagram/scoredLead/doNotContact)
+  // the existing manual Contact Finder / Re-Enrich buttons already use —
+  // reusing those fields, not re-deriving them.
+  const automationCardsByLeadId = useMemo(
+    () => new Map(automationCards.map((c) => [c.id, c])),
+    [automationCards],
+  );
+
+  // The one place a mission's pipeline is actually started and progressively
+  // recorded. `onProgress` fires after every stage transition inside
+  // runHermesPipeline, so the UI updates live rather than only at the end.
+  const startHermesPipeline = useCallback(
+    async (mission: HermesMission) => {
+      const card = automationCardsByLeadId.get(mission.leadId);
+      const guard = canQueuePipeline(mission, card, hermesPipelines[mission.missionId]);
+      if (!guard.ok || !card) return;
+
+      await runHermesPipeline(mission, card, (pipeline) => {
+        setHermesPipelines((prev) => ({ ...prev, [mission.missionId]: pipeline }));
+      });
+    },
+    [hermesPipelines, automationCardsByLeadId],
+  );
+
+  // "Approval becomes execution trigger" (A5): approving a gated mission
+  // both records the founder's decision and starts its pipeline in the same
+  // click — no separate "Hermes Çalıştır" step remains for those missions.
+  // The mission passed to startHermesPipeline is a shallow clone with
+  // decisionState overridden to "approved", since the snapshot from this
+  // render still reads "pending" and hermesMissions won't recompute until
+  // the next render.
+  const approveAndStartPipeline = useCallback(
+    (mission: HermesMission) => {
+      approveHermesTask(mission.primaryTaskId);
+      void startHermesPipeline({ ...mission, decisionState: "approved" });
+    },
+    [approveHermesTask, startHermesPipeline],
+  );
 
   // followUpMergedLeads is computed separately so it can react to local mutations immediately.
   // On each onFollowUpMutation() call, followUpMutVersion increments → this memo reruns →
@@ -312,6 +396,17 @@ export default function V2Shell({ scoredLeads }: Props) {
     ? (scoredLeadsById.get(selectedQueueRowId) ?? null)
     : null;
 
+  // The context panel shows either a Hermes Mission Decision Center or a
+  // lead detail — never both. Selecting one side clears the other.
+  const handleSelectHermesMission = useCallback((mission: HermesMission) => {
+    setSelectedHermesMission(mission);
+    setSelectedAutomationCard(null);
+  }, []);
+  const handleSelectAutomationCard = useCallback((card: AutomationCard) => {
+    setSelectedAutomationCard(card);
+    setSelectedHermesMission(null);
+  }, []);
+
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
     setSelectedQueueRowId(null);
@@ -326,6 +421,7 @@ export default function V2Shell({ scoredLeads }: Props) {
     setSelectedCommandCard(null);
     setSelectedAnalyticsCard(null);
     setSelectedAutomationCard(null);
+    setSelectedHermesMission(null);
   }
 
   // Used by the Founder Command Center's "Kişiyi Doğrula" / "AI Yeniden
@@ -385,6 +481,7 @@ export default function V2Shell({ scoredLeads }: Props) {
         counts={{
           "revenue-queue": rows.length,
           "follow-ups": followUpCards.length,
+          "automation-center": hermesMissions.filter((m) => missionBucketOf(m) === "approval").length,
         }}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
@@ -555,11 +652,35 @@ export default function V2Shell({ scoredLeads }: Props) {
               <AutomationCenterScreen
                 leads={allLeads}
                 selectedId={selectedAutomationCard?.id ?? null}
-                onSelect={setSelectedAutomationCard}
+                onSelect={handleSelectAutomationCard}
+                monitor={hermesMonitor}
+                missions={hermesMissions}
+                selectedHermesMissionId={selectedHermesMission?.missionId ?? null}
+                onSelectHermesMission={handleSelectHermesMission}
+                hermesDecisions={hermesDecisions}
+                onApproveMission={approveAndStartPipeline}
+                onRejectTask={rejectHermesTask}
+                hermesPipelines={hermesPipelines}
+                onStartPipeline={startHermesPipeline}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
                 summary={automationSummary}
+                hermesSummary={hermesMonitor.summary}
+                missionCount={hermesMissions.length}
+                selectedHermesMission={selectedHermesMission}
+                selectedHermesMomentum={
+                  selectedHermesMission
+                    ? (executionQueue.find((i) => i.leadId === selectedHermesMission.leadId)
+                        ?.operationalMomentum ?? null)
+                    : null
+                }
+                onApproveMission={approveAndStartPipeline}
+                onRejectTask={rejectHermesTask}
+                pipeline={
+                  selectedHermesMission ? (hermesPipelines[selectedHermesMission.missionId] ?? null) : null
+                }
+                onStartPipeline={startHermesPipeline}
               />
             </>
           ) : (

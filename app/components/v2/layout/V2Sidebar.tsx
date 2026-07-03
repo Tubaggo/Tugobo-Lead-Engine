@@ -97,7 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Lead Import", icon: "import", screen: "lead-import" as const },
       { label: "Veri Kaynakları", icon: "database", screen: "data-sources" as const },
-      { label: "Otomasyonlar", icon: "automation", screen: "automation-center" as const },
+      { label: "Hermes Workspace", icon: "automation", screen: "automation-center" as const },
     ],
   },
 ];

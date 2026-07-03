@@ -3,7 +3,27 @@
 import { useState, useEffect } from "react";
 import type { AutomationCard, AutomationSummary } from "@/app/components/v2/adapters/automation-center-adapter";
 import { QUEUE_LABELS } from "@/app/components/v2/adapters/automation-center-adapter";
+import { formatMrr } from "@/app/components/v2/adapters/revenue-recovery-adapter";
 import { useLeadMutations } from "@/app/hooks/useLeadMutations";
+import { SALES_PRIORITY_LABELS } from "@/lib/verified-opportunity/priority-engine";
+import { HERMES_AGENT_REGISTRY } from "@/app/lib/hermes-monitor";
+import type { HermesAgentKey, HermesMonitorSummary, ShadowTask } from "@/app/lib/hermes-monitor";
+import {
+  MISSION_STAGE_ACCENT_CLS,
+  MISSION_STAGE_BAR_CLS,
+  TASK_TYPE_LABELS,
+} from "@/app/components/v2/adapters/hermes-mission-adapter";
+import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
+import { actionLabelOf } from "@/app/components/v2/hermes-execution";
+import {
+  PIPELINE_STATE_LABELS,
+  STAGE_SHORT_LABELS,
+  buildPipelineTimelineEntries,
+  computeMissionPipelineUiState,
+  pipelineAgentFlow,
+} from "@/app/components/v2/hermes-pipeline-engine";
+import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
+import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
 
@@ -450,16 +470,494 @@ const EMPTY_MSG: MsgApiState = { loading: false, result: null, error: null, gene
 const EMPTY_CF: CfApiState = { loading: false, result: null, error: null, foundAt: null };
 const EMPTY_ENRICH: ReEnrichApiState = { loading: false, result: null, error: null };
 
+/* ── Hermes Mission Decision Center (A3.6) ───────────────────────── */
+
+const HERMES_DECISION_LABELS: Record<ShadowTask["decision"], string> = {
+  RUN: "Otomatik Çalıştırılır",
+  APPROVAL: "Onay Bekliyor",
+  ESCALATE: "Founder Kararı",
+  WAIT: "İzlemede",
+  SKIP: "Atlandı",
+};
+
+const HERMES_CONFIDENCE_LABELS: Record<ShadowTask["confidence"], string> = {
+  high: "Yüksek",
+  medium: "Orta",
+  low: "Düşük",
+};
+
+const MOMENTUM_LABELS: Record<OperationalMomentum, string> = {
+  accelerating: "Hızlanıyor",
+  stable: "Stabil",
+  slowing: "Yavaşlıyor",
+  stalled: "Durdu",
+  recovering: "Toparlanıyor",
+  reactivated: "Yeniden Aktif",
+};
+
+const EXEC_STATE_LABELS: Record<ExecutionState, string> = {
+  dormant: "Uykuda",
+  ready: "Hazır",
+  blocked: "Engelli",
+  waiting: "Yanıt Bekleniyor",
+  scheduled: "Planlandı",
+  completed: "Tamamlandı",
+};
+
+const REASON_DOT: Record<string, string> = {
+  critical: "bg-rose-400",
+  major: "bg-amber-400",
+  minor: "bg-zinc-600",
+};
+
+function MissionDecisionCenter({
+  mission,
+  momentum,
+  pipeline,
+  onApprove,
+  onReject,
+  onStartPipeline,
+}: {
+  mission: HermesMission;
+  momentum: OperationalMomentum | null;
+  pipeline: HermesPipeline | null;
+  onApprove: (mission: HermesMission) => void;
+  onReject: (taskId: string) => void;
+  onStartPipeline: (mission: HermesMission) => void;
+}) {
+  const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
+  const reasons = primaryTask.reasons.slice(0, 6);
+  const pipelineUiState = computeMissionPipelineUiState(mission, pipeline ?? undefined);
+  const agentFlow = pipeline ? pipelineAgentFlow(pipeline) : null;
+  const currentAgentLabel = agentFlow
+    ? agentFlow.current
+      ? HERMES_AGENT_REGISTRY[agentFlow.current].label
+      : pipeline?.state === "completed"
+        ? "Tamamlandı"
+        : "—"
+    : mission.currentAgentLabel;
+  const currentAgentIntent = agentFlow
+    ? agentFlow.current
+      ? HERMES_AGENT_REGISTRY[agentFlow.current].shadowIntent
+      : pipeline?.state === "completed"
+        ? "Mission kapandı — aktif ajan yok"
+        : "Beklemede"
+    : mission.currentAgent === null
+      ? "Mission kapandı — aktif ajan yok"
+      : mission.currentAgent === "founder"
+        ? "Şu an sıra Founder'da — mission kararını bekliyor"
+        : HERMES_AGENT_REGISTRY[mission.currentAgent].shadowIntent;
+  const nextAgentLabel = agentFlow
+    ? agentFlow.next
+      ? HERMES_AGENT_REGISTRY[agentFlow.next].label
+      : "—"
+    : mission.nextAgentLabel;
+  const nextAgentIntent = agentFlow
+    ? agentFlow.next
+      ? HERMES_AGENT_REGISTRY[agentFlow.next].shadowIntent
+      : "Belirlenmiş bir sonraki adım yok"
+    : mission.nextAgent === null
+      ? "Belirlenmiş bir sonraki adım yok"
+      : mission.nextAgent === "founder"
+        ? "Hazırlık tamamlandığında Founder onayı istenecek"
+        : HERMES_AGENT_REGISTRY[mission.nextAgent].shadowIntent;
+  const completedSteps = pipeline?.steps.filter((s) => s.status === "succeeded") ?? [];
+  const remainingSteps = pipeline?.steps.filter((s) => s.status === "queued") ?? [];
+  const currentStep = pipeline?.currentStageIndex !== null && pipeline ? pipeline.steps[pipeline.currentStageIndex!] : undefined;
+  const lastFinishedStep = [...(pipeline?.steps ?? [])].reverse().find((s) => s.finishedAt !== null);
+  const timeline = [...mission.timeline, ...buildPipelineTimelineEntries(pipeline ?? undefined)].sort(
+    (a, b) => a.at - b.at,
+  );
+
+  return (
+    <div className={PANEL}>
+      {/* Header */}
+      <div className={SEC}>
+        <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400">
+          Hermes Karar Merkezi
+        </p>
+        <p className="mt-1.5 text-[14px] font-semibold leading-snug text-zinc-100">
+          {mission.hotelName}
+        </p>
+        <p className="mt-1 text-[11px] text-zinc-500">{mission.city}</p>
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          <span
+            className={`rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold ${pipeline ? "" : MISSION_STAGE_ACCENT_CLS[mission.stage]}`}
+          >
+            {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.stageLabel}
+          </span>
+          <span className="rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] text-zinc-400">
+            {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.status}
+          </span>
+        </div>
+      </div>
+
+      {/* Mission Overview */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Mission Özeti</p>
+        <p className="text-[11.5px] leading-relaxed text-zinc-200">
+          &ldquo;{primaryTask.suggestedAction.label}.&rdquo;
+        </p>
+        <div className="mt-2.5 grid grid-cols-2 gap-2">
+          {[
+            { label: "Görev", value: mission.taskCount },
+            { label: "Tamamlanan", value: mission.completedTaskCount },
+            { label: "Engellenen", value: mission.blockedTaskCount },
+            { label: "İzlemede", value: mission.waitingTaskCount },
+          ].map((s) => (
+            <div key={s.label} className="rounded-lg bg-white/[0.02] px-2.5 py-2">
+              <p className="text-[13px] font-bold tabular-nums text-zinc-200">{s.value}</p>
+              <p className="text-[9px] text-zinc-600">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Mission Progress — reflects real pipeline stage completion once one exists */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Mission İlerlemesi</p>
+        <div className="flex items-center gap-2.5">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+            <div
+              className={`h-full rounded-full ${
+                pipeline
+                  ? pipeline.state === "blocked"
+                    ? "bg-rose-400"
+                    : pipeline.state === "completed"
+                      ? "bg-emerald-400"
+                      : "bg-amber-400"
+                  : MISSION_STAGE_BAR_CLS[mission.stage]
+              }`}
+              style={{
+                width: `${pipeline ? Math.round((completedSteps.length / pipeline.steps.length) * 100) : mission.progress}%`,
+              }}
+            />
+          </div>
+          <span
+            className={`text-[12px] font-bold tabular-nums ${pipeline ? "" : MISSION_STAGE_ACCENT_CLS[mission.stage]}`}
+          >
+            {pipeline ? Math.round((completedSteps.length / pipeline.steps.length) * 100) : mission.progress}%
+          </span>
+        </div>
+        <p className="mt-1.5 text-[10px] text-zinc-600">
+          {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : `${mission.stageLabel} — ${mission.status}`}
+        </p>
+      </div>
+
+      {/* Current Agent */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Mevcut Ajan</p>
+        <p className="text-[12px] font-semibold text-zinc-100">{currentAgentLabel}</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{currentAgentIntent}</p>
+      </div>
+
+      {/* Next Agent */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Sıradaki Ajan</p>
+        <p className="text-[12px] font-semibold text-zinc-100">{nextAgentLabel}</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{nextAgentIntent}</p>
+      </div>
+
+      {/* Evidence */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Kanıt</p>
+        <ul className="space-y-1.5">
+          {reasons.map((r, i) => (
+            <li key={`${r.source}-${i}`} className="flex items-start gap-2">
+              <span
+                className={`mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full ${REASON_DOT[r.severity ?? "minor"] ?? "bg-zinc-600"}`}
+              />
+              <span className="text-[10.5px] leading-relaxed text-zinc-400">{r.message}</span>
+            </li>
+          ))}
+          {reasons.length === 0 && (
+            <li className="text-[10px] text-zinc-600">Çalışma zamanı gerekçesi bulunamadı</li>
+          )}
+        </ul>
+      </div>
+
+      {/* Execution Context (borrowed judgements, never recalculated) */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Execution Context</p>
+        <div className="space-y-2">
+          <div className={ROW}>
+            <span className={LABEL}>Öncelik</span>
+            <span className={VALUE}>{SALES_PRIORITY_LABELS[mission.priority]}</span>
+          </div>
+          <div className={ROW}>
+            <span className={LABEL}>Güven</span>
+            <span className={VALUE}>{HERMES_CONFIDENCE_LABELS[mission.confidence]}</span>
+          </div>
+          <div className={ROW}>
+            <span className={LABEL}>Momentum</span>
+            <span className={VALUE}>{momentum ? MOMENTUM_LABELS[momentum] : "—"}</span>
+          </div>
+          <div className={ROW}>
+            <span className={LABEL}>Yürütme Durumu</span>
+            <span className={VALUE}>{EXEC_STATE_LABELS[primaryTask.executionState]}</span>
+          </div>
+          <div className={ROW}>
+            <span className={LABEL}>Görev Türü</span>
+            <span className={VALUE}>{TASK_TYPE_LABELS[primaryTask.taskType]}</span>
+          </div>
+          <div className={ROW}>
+            <span className={LABEL}>Ham Karar</span>
+            <span className={VALUE}>{HERMES_DECISION_LABELS[primaryTask.decision]}</span>
+          </div>
+          <div className={ROW}>
+            <span className={LABEL}>Tahmini Etki</span>
+            <span className={VALUE}>
+              {mission.estimatedImpact > 0 ? `${formatMrr(mission.estimatedImpact)}/ay` : "—"}
+            </span>
+          </div>
+        </div>
+        <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+          {primaryTask.suggestedAction.reason}
+        </p>
+      </div>
+
+      {/* Related Lead */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>İlgili Lead</p>
+        <p className="text-[12px] font-semibold text-zinc-100">{mission.hotelName}</p>
+        <p className="mt-0.5 text-[10px] text-zinc-500">{mission.city}</p>
+        <p className="mt-1.5 text-[9px] text-zinc-600">
+          Lead detayına Destek Görünümü — Otomasyon Kuyrukları tablosundan ulaşabilirsin.
+        </p>
+      </div>
+
+      {/* Founder Decision */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Founder Kararı</p>
+        {mission.decisionState === "approved" ? (
+          <div className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.08] px-3 py-2.5">
+            <span className="text-[10px] font-semibold text-emerald-400">✓</span>
+            <span className="text-[10px] text-emerald-400">
+              Onaylandı — pipeline aşağıdan takip edilebilir
+            </span>
+          </div>
+        ) : mission.decisionState === "rejected" ? (
+          <div className="flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/[0.08] px-3 py-2.5">
+            <span className="text-[10px] font-semibold text-rose-400">✕</span>
+            <span className="text-[10px] text-rose-400">Reddedildi — Hermes bu mission&apos;ı bırakır</span>
+          </div>
+        ) : mission.decisionState === "pending" ? (
+          <>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => onApprove(mission)}
+                className="flex h-8 flex-1 items-center justify-center rounded-lg bg-emerald-500/[0.14] text-[11px] font-semibold text-emerald-400 ring-1 ring-inset ring-emerald-500/25 transition-colors duration-150 hover:bg-emerald-500/[0.22]"
+              >
+                Onayla — Pipeline&apos;ı Başlat
+              </button>
+              <button
+                type="button"
+                onClick={() => onReject(mission.primaryTaskId)}
+                className="flex h-8 flex-1 items-center justify-center rounded-lg bg-rose-500/[0.10] text-[11px] font-semibold text-rose-400 ring-1 ring-inset ring-rose-500/20 transition-colors duration-150 hover:bg-rose-500/[0.16]"
+              >
+                Reddet
+              </button>
+            </div>
+            <p className="mt-2 text-[9px] leading-relaxed text-zinc-600">
+              Onay, 4 aşamalı pipeline&apos;ı hemen başlatır — Hermes sonrasını tek başına yürütür.
+            </p>
+          </>
+        ) : (
+          <p className="text-[10px] leading-relaxed text-zinc-500">
+            Onay gerekmiyor — güvenli iç görev; tek tıkla pipeline başlatılabilir.
+          </p>
+        )}
+      </div>
+
+      {/* Hermes Pipeline (A5) — the only place a mission can actually run, autonomously across 4 stages */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Hermes Pipeline</p>
+
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-zinc-500">Pipeline Durumu</span>
+          <span
+            className={`text-[10px] font-semibold ${
+              pipeline?.state === "blocked"
+                ? "text-rose-400"
+                : pipeline?.state === "completed"
+                  ? "text-emerald-400"
+                  : pipeline
+                    ? "text-amber-400"
+                    : "text-zinc-500"
+            }`}
+          >
+            {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : "Henüz başlatılmadı"}
+          </span>
+        </div>
+
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className="text-[10px] text-zinc-500">Mevcut Aşama</span>
+          <span className="text-[10px] font-medium text-zinc-300">
+            {currentStep ? STAGE_SHORT_LABELS[currentStep.stage] : "—"}
+          </span>
+        </div>
+
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <div className="rounded-lg bg-white/[0.02] px-2.5 py-2">
+            <p className="text-[13px] font-bold tabular-nums text-emerald-400">{completedSteps.length}</p>
+            <p className="text-[9px] text-zinc-600">
+              Tamamlanan{completedSteps.length > 0 ? `: ${completedSteps.map((s) => STAGE_SHORT_LABELS[s.stage]).join(", ")}` : ""}
+            </p>
+          </div>
+          <div className="rounded-lg bg-white/[0.02] px-2.5 py-2">
+            <p className="text-[13px] font-bold tabular-nums text-zinc-300">{remainingSteps.length}</p>
+            <p className="text-[9px] text-zinc-600">
+              Kalan{remainingSteps.length > 0 ? `: ${remainingSteps.map((s) => STAGE_SHORT_LABELS[s.stage]).join(", ")}` : ""}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-2.5">
+          <p className="text-[10px] text-zinc-500">Yürütme Sonucu</p>
+          {lastFinishedStep?.result ? (
+            <p
+              className={`mt-1 text-[10px] leading-relaxed ${lastFinishedStep.result.status === "failed" ? "text-rose-400" : "text-zinc-400"}`}
+            >
+              {actionLabelOf(lastFinishedStep.stage)}: {lastFinishedStep.result.message}
+              {lastFinishedStep.result.detail ? ` — ${lastFinishedStep.result.detail}` : ""}
+            </p>
+          ) : (
+            <p className="mt-1 text-[10px] text-zinc-600">Henüz sonuç yok</p>
+          )}
+        </div>
+
+        {pipelineUiState === "ready" && (
+          <button
+            type="button"
+            onClick={() => onStartPipeline(mission)}
+            className="mt-3 flex h-8 w-full items-center justify-center rounded-lg bg-indigo-500 text-[11px] font-semibold text-white transition-colors duration-150 hover:bg-indigo-400"
+          >
+            Hermes Çalıştır
+          </button>
+        )}
+        {pipelineUiState === "gated" && (
+          <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">
+            Önce Founder onayı gerekli — onaylandığında pipeline hemen başlar.
+          </p>
+        )}
+        {pipelineUiState === "waiting" && (
+          <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">
+            Yanıt veya takip zamanı bekleniyor — pipeline henüz başlatılamaz.
+          </p>
+        )}
+        {pipelineUiState === "unsupported" && (
+          <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">Bu görev A6&apos;da bağlanacak.</p>
+        )}
+
+        <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+          Güvenli iç aksiyon · Dış iletişim yok
+        </p>
+
+        <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+          Pipeline Zaman Akışı
+        </p>
+        <div className="mt-1.5 max-h-[200px] space-y-1.5 overflow-y-auto">
+          {timeline.length === 0 ? (
+            <p className="text-[10px] text-zinc-600">Henüz aktivite yok</p>
+          ) : (
+            timeline.map((item, i) => (
+              <div key={`${item.at}-${i}`} className="flex items-baseline gap-2">
+                <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                  {new Date(item.at).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <span className={`w-[56px] shrink-0 text-[9px] font-semibold ${item.actorCls}`}>
+                  {item.actorLabel}
+                </span>
+                <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                  {item.text}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Shadow-mode note */}
+      <div className={SEC}>
+        <p className="text-[9px] leading-relaxed text-zinc-600">
+          Hermes hiçbir aksiyonu kendisi yürütmez. Bu mission, mevcut Execution
+          Runtime kararlarının gölge projeksiyonudur ve her yüklemede yeniden
+          hesaplanır.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ── Empty / summary state ──────────────────────────────────────── */
 
-function SummaryView({ summary }: { summary: AutomationSummary }) {
+function SummaryView({
+  summary,
+  hermesSummary,
+  missionCount,
+}: {
+  summary: AutomationSummary;
+  hermesSummary: HermesMonitorSummary;
+  missionCount: number;
+}) {
+  const agentEntries = (
+    Object.keys(HERMES_AGENT_REGISTRY) as HermesAgentKey[]
+  ).map((key) => ({
+    meta: HERMES_AGENT_REGISTRY[key],
+    count: hermesSummary.agentTaskCounts[key] ?? 0,
+  }));
+
   return (
     <div className={PANEL}>
       <div className={SEC}>
-        <p className={SEC_TITLE}>Otomasyon Merkezi</p>
+        <p className={SEC_TITLE}>Hermes Workspace</p>
         <p className="text-[11px] leading-relaxed text-zinc-500">
-          Çalıştırılacak bir lead seçin veya kuyruk tipine göre filtreleyin.
+          AI işgücü çalışıyor — sen denetliyorsun. Mission kuyruğundan bir mission seç,
+          Karar Merkezi burada açılır.
         </p>
+      </div>
+
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Hermes Özeti</p>
+        <div className="space-y-2">
+          {[
+            { label: "Değerlendirilen Lead", value: hermesSummary.leadsEvaluated, color: undefined },
+            { label: "Aktif Mission", value: missionCount, color: undefined },
+            { label: "Onay Bekliyor", value: hermesSummary.approvalCandidates.length, color: "text-amber-400" },
+            { label: "Founder Kararı", value: hermesSummary.escalations.length, color: "text-rose-400" },
+            { label: "Otomatik (A4)", value: hermesSummary.decisionCounts.RUN, color: "text-emerald-400" },
+            { label: "İzlemede", value: hermesSummary.decisionCounts.WAIT, color: "text-sky-400" },
+          ].map((row) => (
+            <div key={row.label} className={ROW}>
+              <span className={LABEL}>{row.label}</span>
+              <span className={`text-[14px] font-bold tabular-nums ${row.color ?? "text-zinc-200"}`}>
+                {row.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Hermes Ajanları</p>
+        <div className="space-y-2">
+          {agentEntries.map(({ meta, count }) => (
+            <div key={meta.key} className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className={`text-[10.5px] font-semibold ${count > 0 ? "text-zinc-200" : "text-zinc-500"}`}>
+                  {meta.label}
+                </p>
+                <p className="text-[9px] leading-snug text-zinc-600">{meta.shadowIntent}</p>
+              </div>
+              <span
+                className={`shrink-0 text-[12px] font-bold tabular-nums ${count > 0 ? "text-violet-300" : "text-zinc-700"}`}
+              >
+                {count}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className={SEC}>
@@ -932,9 +1430,43 @@ function DetailView({ card }: { card: AutomationCard }) {
 type Props = {
   selectedCard: AutomationCard | null;
   summary: AutomationSummary;
+  hermesSummary: HermesMonitorSummary;
+  missionCount: number;
+  selectedHermesMission: HermesMission | null;
+  selectedHermesMomentum: OperationalMomentum | null;
+  onApproveMission: (mission: HermesMission) => void;
+  onRejectTask: (taskId: string) => void;
+  pipeline: HermesPipeline | null;
+  onStartPipeline: (mission: HermesMission) => void;
 };
 
-export default function AutomationCenterContextPanel({ selectedCard, summary }: Props) {
-  if (!selectedCard) return <SummaryView summary={summary} />;
+export default function AutomationCenterContextPanel({
+  selectedCard,
+  summary,
+  hermesSummary,
+  missionCount,
+  selectedHermesMission,
+  selectedHermesMomentum,
+  onApproveMission,
+  onRejectTask,
+  pipeline,
+  onStartPipeline,
+}: Props) {
+  if (selectedHermesMission) {
+    return (
+      <MissionDecisionCenter
+        key={selectedHermesMission.missionId}
+        mission={selectedHermesMission}
+        momentum={selectedHermesMomentum}
+        pipeline={pipeline}
+        onApprove={onApproveMission}
+        onReject={onRejectTask}
+        onStartPipeline={onStartPipeline}
+      />
+    );
+  }
+  if (!selectedCard) {
+    return <SummaryView summary={summary} hermesSummary={hermesSummary} missionCount={missionCount} />;
+  }
   return <DetailView key={selectedCard.id} card={selectedCard} />;
 }

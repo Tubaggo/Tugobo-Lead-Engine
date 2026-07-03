@@ -87,6 +87,31 @@ function hydrateEntry(v: unknown): LeadStatusUpdate {
 }
 
 /**
+ * Standalone equivalent of the `scheduleFollowUp` hook callback below, for
+ * callers that need to schedule a follow-up without mounting
+ * `useLeadMutations` for that lead — e.g. Hermes A4 execution, which acts on
+ * whichever mission the founder just approved in the Mission Queue, not
+ * necessarily a lead with an open detail panel. Same storage key, same
+ * patch shape as the hook — one persistence path either way, no duplicated
+ * mutation semantics.
+ */
+export function scheduleFollowUpForLead(leadId: string, timestamp: number): void {
+  const state = loadStateMap();
+  const current = state[leadId] ?? DEFAULT_STATE;
+  const next: StateMap = {
+    ...state,
+    [leadId]: {
+      ...DEFAULT_STATE,
+      ...current,
+      nextFollowUpAt: timestamp,
+      status: "needs_follow_up",
+      updatedAt: Date.now(),
+    },
+  };
+  saveStateMap(next);
+}
+
+/**
  * Mutation hook for a single lead's workflow state.
  * Reads and writes `tugobo-lead-engine:state-v1` in localStorage —
  * the same storage key used by Dashboard.tsx, so mutations are immediately
