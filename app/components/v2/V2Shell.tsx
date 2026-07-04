@@ -53,6 +53,14 @@ import { buildHermesMissions, missionBucketOf } from "@/app/components/v2/adapte
 import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import { canQueuePipeline, runHermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
 import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
+import {
+  canCreateDraft,
+  createOutreachDraft,
+  applyDraftEdit,
+  applyDraftApproval,
+  applyDraftRejection,
+} from "@/app/components/v2/hermes-courier";
+import type { HermesOutboundDraft } from "@/app/components/v2/hermes-courier";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -226,6 +234,12 @@ export default function V2Shell({ scoredLeads }: Props) {
   // `automationCards` (from `derived`) is in scope.
   const [hermesPipelines, setHermesPipelines] = useState<Record<string, HermesPipeline>>({});
 
+  // Courier Draft Runtime (v4.1.0-A): session-only draft bookkeeping, keyed by
+  // missionId — same convention as hermesPipelines. NOT a sending sprint: a
+  // draft's "approved" status only means the founder signed off on the text,
+  // it never triggers a fetch to any outbound channel.
+  const [hermesDrafts, setHermesDrafts] = useState<Record<string, HermesOutboundDraft>>({});
+
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.
   const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
@@ -284,6 +298,32 @@ export default function V2Shell({ scoredLeads }: Props) {
     [automationCards],
   );
 
+  // Courier Draft Runtime (v4.1.0-A): channel resolution reuses Communication
+  // Intelligence's own verified/likely channel signals — same join key
+  // (leadId) as automationCardsByLeadId, no new signal source.
+  const commCardsByLeadId = useMemo(
+    () => new Map(commCards.map((c) => [c.id, c])),
+    [commCards],
+  );
+
+  // Fired once, right when a mission's pipeline reaches "completed" — the
+  // spec's exact trigger point ("mission pipeline completes safe internal
+  // steps successfully"). Uses functional setState so it never needs
+  // hermesDrafts in its own deps and can't race with a manual create.
+  const maybeCreateDraftForMission = useCallback(
+    (mission: HermesMission, card: AutomationCard) => {
+      setHermesDrafts((prev) => {
+        if (prev[mission.missionId]) return prev;
+        const guard = canCreateDraft(mission, card, false);
+        if (!guard.ok) return prev;
+        const comm = commCardsByLeadId.get(mission.leadId);
+        const draft = createOutreachDraft(mission, card, comm, "pipeline-complete");
+        return { ...prev, [mission.missionId]: draft };
+      });
+    },
+    [commCardsByLeadId],
+  );
+
   // The one place a mission's pipeline is actually started and progressively
   // recorded. `onProgress` fires after every stage transition inside
   // runHermesPipeline, so the UI updates live rather than only at the end.
@@ -295,10 +335,52 @@ export default function V2Shell({ scoredLeads }: Props) {
 
       await runHermesPipeline(mission, card, (pipeline) => {
         setHermesPipelines((prev) => ({ ...prev, [mission.missionId]: pipeline }));
+        if (pipeline.state === "completed") {
+          maybeCreateDraftForMission(mission, card);
+        }
       });
     },
-    [hermesPipelines, automationCardsByLeadId],
+    [hermesPipelines, automationCardsByLeadId, maybeCreateDraftForMission],
   );
+
+  // Founder-triggered manual draft creation (Decision Center) — the one path
+  // that may bypass the low-confidence gate (`forced = true`). DNC / closed /
+  // no-evidence remain absolute and are never bypassed.
+  const createDraftManually = useCallback(
+    (mission: HermesMission) => {
+      const card = automationCardsByLeadId.get(mission.leadId);
+      const guard = canCreateDraft(mission, card, true);
+      if (!guard.ok || !card) return;
+      const comm = commCardsByLeadId.get(mission.leadId);
+      const draft = createOutreachDraft(mission, card, comm, "founder-manual");
+      setHermesDrafts((prev) => ({ ...prev, [mission.missionId]: draft }));
+    },
+    [automationCardsByLeadId, commCardsByLeadId],
+  );
+
+  const editHermesDraft = useCallback((missionId: string, newBody: string) => {
+    setHermesDrafts((prev) => {
+      const d = prev[missionId];
+      if (!d) return prev;
+      return { ...prev, [missionId]: applyDraftEdit(d, newBody) };
+    });
+  }, []);
+
+  const approveHermesDraft = useCallback((missionId: string) => {
+    setHermesDrafts((prev) => {
+      const d = prev[missionId];
+      if (!d) return prev;
+      return { ...prev, [missionId]: applyDraftApproval(d) };
+    });
+  }, []);
+
+  const rejectHermesDraft = useCallback((missionId: string) => {
+    setHermesDrafts((prev) => {
+      const d = prev[missionId];
+      if (!d) return prev;
+      return { ...prev, [missionId]: applyDraftRejection(d) };
+    });
+  }, []);
 
   // "Approval becomes execution trigger" (A5): approving a gated mission
   // both records the founder's decision and starts its pipeline in the same
@@ -662,6 +744,9 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onRejectTask={rejectHermesTask}
                 hermesPipelines={hermesPipelines}
                 onStartPipeline={startHermesPipeline}
+                hermesDrafts={hermesDrafts}
+                onApproveDraft={approveHermesDraft}
+                onRejectDraft={rejectHermesDraft}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
@@ -681,6 +766,18 @@ export default function V2Shell({ scoredLeads }: Props) {
                   selectedHermesMission ? (hermesPipelines[selectedHermesMission.missionId] ?? null) : null
                 }
                 onStartPipeline={startHermesPipeline}
+                draft={
+                  selectedHermesMission ? (hermesDrafts[selectedHermesMission.missionId] ?? null) : null
+                }
+                manualDraftGuard={
+                  selectedHermesMission
+                    ? canCreateDraft(selectedHermesMission, automationCardsByLeadId.get(selectedHermesMission.leadId), true)
+                    : { ok: false, reason: "" }
+                }
+                onCreateDraft={() => selectedHermesMission && createDraftManually(selectedHermesMission)}
+                onEditDraft={editHermesDraft}
+                onApproveDraft={approveHermesDraft}
+                onRejectDraft={rejectHermesDraft}
               />
             </>
           ) : (

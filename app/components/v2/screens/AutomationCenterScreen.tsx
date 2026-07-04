@@ -35,6 +35,15 @@ import {
   type MissionPipelineUiState,
 } from "@/app/components/v2/hermes-pipeline-engine";
 import {
+  DRAFT_CHANNEL_LABELS,
+  DRAFT_STATUS_LABELS,
+  NO_SEND_NOTE,
+  buildDraftTimelineEntries,
+  type DraftChannel,
+  type DraftStatus,
+  type HermesOutboundDraft,
+} from "@/app/components/v2/hermes-courier";
+import {
   selectCls,
   inputCls,
   kpiStripCls,
@@ -61,6 +70,9 @@ type Props = {
   onRejectTask: (taskId: string) => void;
   hermesPipelines: Record<string, HermesPipeline>;
   onStartPipeline: (mission: HermesMission) => void;
+  hermesDrafts: Record<string, HermesOutboundDraft>;
+  onApproveDraft: (missionId: string) => void;
+  onRejectDraft: (missionId: string) => void;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -187,6 +199,7 @@ function workforceStatus(
   decisions: HermesDecisionMap,
   missions: HermesMission[],
   pipelines: Record<string, HermesPipeline>,
+  drafts: Record<string, HermesOutboundDraft>,
 ): WorkforceStatus {
   // Alive first: is this agent the one actively running a pipeline stage
   // right now? If so, that overrides the generic task-count status below —
@@ -209,13 +222,19 @@ function workforceStatus(
   if (agent === "medic") {
     return { label: "Boşta — hata yok", dot: "bg-zinc-600", active: false };
   }
+  if (agent === "scribe") {
+    const draftCount = Object.keys(drafts).length;
+    return draftCount > 0
+      ? { label: `${draftCount} taslak hazırladı`, dot: "bg-violet-400", active: true }
+      : { label: "Taslak yok", dot: "bg-zinc-600", active: false };
+  }
   if (agent === "courier") {
-    const approvedDrafts = tasks.filter(
-      (t) => t.taskType === "outreach-draft" && decisions[t.id]?.status === "approved",
+    const pendingDrafts = Object.values(drafts).filter(
+      (d) => d.status === "draft_ready" || d.status === "edited",
     ).length;
-    return approvedDrafts > 0
-      ? { label: `Gönderime hazır · ${approvedDrafts} (A6)`, dot: "bg-amber-400", active: true }
-      : { label: "Onay kapısında", dot: "bg-zinc-600", active: false };
+    return pendingDrafts > 0
+      ? { label: `${pendingDrafts} taslak onay bekliyor`, dot: "bg-amber-400", active: true }
+      : { label: "Onay bekleyen yok", dot: "bg-zinc-600", active: false };
   }
   if (agent === "listener") {
     const watching = mine.filter((t) => t.decision === "WAIT").length;
@@ -239,11 +258,13 @@ function WorkforceStrip({
   decisions,
   missions,
   pipelines,
+  drafts,
 }: {
   tasks: ShadowTask[];
   decisions: HermesDecisionMap;
   missions: HermesMission[];
   pipelines: Record<string, HermesPipeline>;
+  drafts: Record<string, HermesOutboundDraft>;
 }) {
   const agents = Object.keys(HERMES_AGENT_REGISTRY) as HermesAgentKey[];
   return (
@@ -254,7 +275,7 @@ function WorkforceStrip({
         </span>
         {agents.map((key) => {
           const meta = HERMES_AGENT_REGISTRY[key];
-          const st = workforceStatus(key, tasks, decisions, missions, pipelines);
+          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts);
           return (
             <span key={key} className="flex items-center gap-1.5" title={meta.shadowIntent}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.dot} ${st.label.startsWith("Çalışıyor") ? "animate-pulse" : ""}`} />
@@ -395,6 +416,7 @@ function MissionCard({
   isSelected,
   isExpanded,
   pipeline,
+  draft,
   onSelect,
   onToggleExpand,
   onApprove,
@@ -405,6 +427,7 @@ function MissionCard({
   isSelected: boolean;
   isExpanded: boolean;
   pipeline: HermesPipeline | undefined;
+  draft: HermesOutboundDraft | undefined;
   onSelect: (mission: HermesMission) => void;
   onToggleExpand: (missionId: string) => void;
   onApprove: (mission: HermesMission) => void;
@@ -421,7 +444,9 @@ function MissionCard({
   const nextSlot = agentFlow ? agentFlow.next : mission.nextAgent;
   const nextLabel = agentFlow ? (agentFlow.next ? HERMES_AGENT_REGISTRY[agentFlow.next].label : "—") : mission.nextAgentLabel;
   const displayStatus = pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.status;
-  const timeline = [...mission.timeline, ...buildPipelineTimelineEntries(pipeline)].sort((a, b) => a.at - b.at);
+  const timeline = [...mission.timeline, ...buildPipelineTimelineEntries(pipeline), ...buildDraftTimelineEntries(draft)].sort(
+    (a, b) => a.at - b.at,
+  );
 
   return (
     <div
@@ -626,6 +651,7 @@ function MissionQueue({
   onRejectTask,
   hermesPipelines,
   onStartPipeline,
+  hermesDrafts,
 }: {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
@@ -636,6 +662,7 @@ function MissionQueue({
   onRejectTask: (taskId: string) => void;
   hermesPipelines: Record<string, HermesPipeline>;
   onStartPipeline: (mission: HermesMission) => void;
+  hermesDrafts: Record<string, HermesOutboundDraft>;
 }) {
   const order: MissionBucket[] = ["approval", "ready", "in-progress", "completed"];
   const groups = order
@@ -679,6 +706,7 @@ function MissionQueue({
                   isSelected={mission.missionId === selectedHermesMissionId}
                   isExpanded={mission.missionId === expandedMissionId}
                   pipeline={hermesPipelines[mission.missionId]}
+                  draft={hermesDrafts[mission.missionId]}
                   onSelect={onSelectHermesMission}
                   onToggleExpand={onToggleExpand}
                   onApprove={onApproveMission}
@@ -694,7 +722,122 @@ function MissionQueue({
   );
 }
 
-/* ── 4. Today's Hermes Activity timeline ──────────────────────────
+/* ── 4. Courier Taslakları ──────────────────────────────────────── */
+
+const DRAFT_STATUS_DOT: Record<DraftStatus, string> = {
+  draft_ready: "bg-sky-400",
+  edited: "bg-amber-400",
+  approved: "bg-emerald-400",
+  rejected: "bg-rose-400",
+};
+
+function DraftStatusBadge({ status }: { status: DraftStatus }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DRAFT_STATUS_DOT[status]}`} />
+      {DRAFT_STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+function DraftChannelBadge({ channel }: { channel: DraftChannel }) {
+  const cls =
+    channel === "unknown"
+      ? "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20"
+      : "bg-sky-500/[0.10] text-sky-400 ring-sky-500/20";
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${cls}`}>
+      {DRAFT_CHANNEL_LABELS[channel]}
+    </span>
+  );
+}
+
+function CourierDraftsSection({
+  drafts,
+  missions,
+  onSelectHermesMission,
+  onApproveDraft,
+  onRejectDraft,
+}: {
+  drafts: Record<string, HermesOutboundDraft>;
+  missions: HermesMission[];
+  onSelectHermesMission: (mission: HermesMission) => void;
+  onApproveDraft: (missionId: string) => void;
+  onRejectDraft: (missionId: string) => void;
+}) {
+  const list = Object.values(drafts).sort((a, b) => b.createdAt - a.createdAt);
+  if (list.length === 0) return null;
+  const pendingCount = list.filter((d) => d.status === "draft_ready" || d.status === "edited").length;
+
+  return (
+    <div className="border-b border-white/[0.06] px-5 py-4">
+      <div className="flex items-baseline gap-2">
+        <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
+          Courier Taslakları
+        </p>
+        <span className="text-[10px] text-zinc-600">
+          {pendingCount} onay bekliyor · {list.length} toplam
+        </span>
+      </div>
+      <div className="mt-3 space-y-2">
+        {list.map((draft) => {
+          const mission = missions.find((m) => m.missionId === draft.missionId);
+          const preview = draft.body.length > 72 ? `${draft.body.slice(0, 72)}…` : draft.body;
+          const decided = draft.status === "approved" || draft.status === "rejected";
+          return (
+            <div
+              key={draft.id}
+              className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <p className="truncate text-[12px] font-semibold text-zinc-100">{draft.hotelName}</p>
+                  <DraftChannelBadge channel={draft.channel} />
+                  <DraftStatusBadge status={draft.status} />
+                </div>
+                <p className="mt-1 truncate text-[10.5px] text-zinc-500" title={draft.body}>
+                  {preview}
+                </p>
+              </div>
+              <span className="hidden shrink-0 text-[9px] text-zinc-600 sm:inline">
+                {CONFIDENCE_LABELS[draft.confidence]}
+              </span>
+              <div className="flex shrink-0 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => mission && onSelectHermesMission(mission)}
+                  disabled={!mission}
+                  className="rounded-md border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-zinc-300 transition-colors duration-100 hover:bg-white/[0.08] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  İncele
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onApproveDraft(draft.missionId)}
+                  disabled={decided}
+                  className="rounded-md bg-emerald-500/[0.12] px-2.5 py-1 text-[10px] font-semibold text-emerald-400 ring-1 ring-inset ring-emerald-500/25 transition-colors duration-100 hover:bg-emerald-500/[0.20] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Onayla
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRejectDraft(draft.missionId)}
+                  disabled={decided}
+                  className="rounded-md bg-rose-500/[0.10] px-2.5 py-1 text-[10px] font-semibold text-rose-400 ring-1 ring-inset ring-rose-500/20 transition-colors duration-100 hover:bg-rose-500/[0.16] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Reddet
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2.5 text-[9px] text-zinc-600">{NO_SEND_NOTE}</p>
+    </div>
+  );
+}
+
+/* ── 5. Today's Hermes Activity timeline ──────────────────────────
    Now includes real pipeline execution events (stage started/result),
    not just shadow-task prep and approvals. */
 
@@ -714,6 +857,7 @@ function buildTimeline(
   decisions: HermesDecisionMap,
   missions: HermesMission[],
   pipelines: Record<string, HermesPipeline>,
+  drafts: Record<string, HermesOutboundDraft>,
 ): TimelineItem[] {
   const hermesItems: TimelineItem[] = [];
 
@@ -779,7 +923,18 @@ function buildTimeline(
     }));
   });
 
-  return [...capped, ...founderItems, ...pipelineItems].sort((a, b) => a.at - b.at);
+  const draftItems: TimelineItem[] = missions.flatMap((m) => {
+    const d = drafts[m.missionId];
+    if (!d) return [];
+    return buildDraftTimelineEntries(d).map((e) => ({
+      at: e.at,
+      actor: e.actorLabel,
+      actorCls: e.actorCls,
+      text: `${e.text} — ${m.hotelName}`,
+    }));
+  });
+
+  return [...capped, ...founderItems, ...pipelineItems, ...draftItems].sort((a, b) => a.at - b.at);
 }
 
 function TodayTimeline({
@@ -787,13 +942,15 @@ function TodayTimeline({
   decisions,
   missions,
   pipelines,
+  drafts,
 }: {
   monitor: HermesMonitor;
   decisions: HermesDecisionMap;
   missions: HermesMission[];
   pipelines: Record<string, HermesPipeline>;
+  drafts: Record<string, HermesOutboundDraft>;
 }) {
-  const items = buildTimeline(monitor, decisions, missions, pipelines);
+  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts);
   return (
     <div className="border-b border-white/[0.06] px-5 py-4">
       <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
@@ -821,7 +978,7 @@ function TodayTimeline({
   );
 }
 
-/* ── 5. Supporting: automation queues (demoted, collapsible) ────── */
+/* ── 6. Supporting: automation queues (demoted, collapsible) ────── */
 
 const QUEUE_FILTER_OPTIONS: Array<{ value: AutomationQueueType | "all"; label: string }> = [
   { value: "all", label: "Tüm Kuyruklar" },
@@ -1162,6 +1319,9 @@ export default function AutomationCenterScreen({
   onRejectTask,
   hermesPipelines,
   onStartPipeline,
+  hermesDrafts,
+  onApproveDraft,
+  onRejectDraft,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -1176,7 +1336,13 @@ export default function AutomationCenterScreen({
         <MissionBrief monitor={monitor} missions={missions} pipelines={hermesPipelines} />
 
         {/* 2 — Workforce: who is doing what right now (alive during a running pipeline) */}
-        <WorkforceStrip tasks={monitor.tasks} decisions={hermesDecisions} missions={missions} pipelines={hermesPipelines} />
+        <WorkforceStrip
+          tasks={monitor.tasks}
+          decisions={hermesDecisions}
+          missions={missions}
+          pipelines={hermesPipelines}
+          drafts={hermesDrafts}
+        />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
@@ -1189,12 +1355,28 @@ export default function AutomationCenterScreen({
           onRejectTask={onRejectTask}
           hermesPipelines={hermesPipelines}
           onStartPipeline={onStartPipeline}
+          hermesDrafts={hermesDrafts}
         />
 
-        {/* 4 — Today's activity feed (all missions + real pipeline events) */}
-        <TodayTimeline monitor={monitor} decisions={hermesDecisions} missions={missions} pipelines={hermesPipelines} />
+        {/* 4 — Courier Taslakları: founder approval queue for prepared drafts (v4.1.0-A) */}
+        <CourierDraftsSection
+          drafts={hermesDrafts}
+          missions={missions}
+          onSelectHermesMission={onSelectHermesMission}
+          onApproveDraft={onApproveDraft}
+          onRejectDraft={onRejectDraft}
+        />
 
-        {/* 5 — Supporting: the old automation view, demoted and collapsed */}
+        {/* 5 — Today's activity feed (all missions + real pipeline events) */}
+        <TodayTimeline
+          monitor={monitor}
+          decisions={hermesDecisions}
+          missions={missions}
+          pipelines={hermesPipelines}
+          drafts={hermesDrafts}
+        />
+
+        {/* 6 — Supporting: the old automation view, demoted and collapsed */}
         <AutomationSection leads={leads} selectedId={selectedId} onSelect={onSelect} />
       </div>
     </div>

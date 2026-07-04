@@ -23,6 +23,17 @@ import {
   pipelineAgentFlow,
 } from "@/app/components/v2/hermes-pipeline-engine";
 import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
+import {
+  DRAFT_CHANNEL_LABELS,
+  DRAFT_STATUS_LABELS,
+  FOUNDER_DECISION_NEEDED,
+  NO_SEND_NOTE,
+  NOT_SENT_LABEL,
+  UNVERIFIED_CHANNEL_WARNING,
+  buildDraftTimelineEntries,
+  type DraftGuardResult,
+  type HermesOutboundDraft,
+} from "@/app/components/v2/hermes-courier";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -517,6 +528,12 @@ function MissionDecisionCenter({
   onApprove,
   onReject,
   onStartPipeline,
+  draft,
+  manualDraftGuard,
+  onCreateDraft,
+  onEditDraft,
+  onApproveDraft,
+  onRejectDraft,
 }: {
   mission: HermesMission;
   momentum: OperationalMomentum | null;
@@ -524,6 +541,12 @@ function MissionDecisionCenter({
   onApprove: (mission: HermesMission) => void;
   onReject: (taskId: string) => void;
   onStartPipeline: (mission: HermesMission) => void;
+  draft: HermesOutboundDraft | null;
+  manualDraftGuard: DraftGuardResult;
+  onCreateDraft: () => void;
+  onEditDraft: (missionId: string, body: string) => void;
+  onApproveDraft: (missionId: string) => void;
+  onRejectDraft: (missionId: string) => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
@@ -565,9 +588,11 @@ function MissionDecisionCenter({
   const remainingSteps = pipeline?.steps.filter((s) => s.status === "queued") ?? [];
   const currentStep = pipeline?.currentStageIndex !== null && pipeline ? pipeline.steps[pipeline.currentStageIndex!] : undefined;
   const lastFinishedStep = [...(pipeline?.steps ?? [])].reverse().find((s) => s.finishedAt !== null);
-  const timeline = [...mission.timeline, ...buildPipelineTimelineEntries(pipeline ?? undefined)].sort(
-    (a, b) => a.at - b.at,
-  );
+  const timeline = [
+    ...mission.timeline,
+    ...buildPipelineTimelineEntries(pipeline ?? undefined),
+    ...buildDraftTimelineEntries(draft ?? undefined),
+  ].sort((a, b) => a.at - b.at);
 
   return (
     <div className={PANEL}>
@@ -876,6 +901,79 @@ function MissionDecisionCenter({
             ))
           )}
         </div>
+      </div>
+
+      {/* Courier Taslağı (v4.1.0-A) — draft prep + founder review, never a send */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Courier Taslağı</p>
+        {draft ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center rounded-full bg-sky-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-sky-400 ring-1 ring-inset ring-sky-500/20">
+                {DRAFT_CHANNEL_LABELS[draft.channel]}
+              </span>
+              <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+                {DRAFT_STATUS_LABELS[draft.status]}
+              </span>
+            </div>
+            {draft.channel === "unknown" && (
+              <p className="mt-2 text-[10px] leading-relaxed text-amber-400">{UNVERIFIED_CHANNEL_WARNING}</p>
+            )}
+            {draft.reason && (
+              <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{draft.reason}</p>
+            )}
+            {draft.subject && (
+              <div className="mt-2.5">
+                <p className={LABEL}>Konu</p>
+                <p className={`${VALUE} mt-0.5`}>{draft.subject}</p>
+              </div>
+            )}
+            <textarea
+              value={draft.body}
+              onChange={(e) => onEditDraft(draft.missionId, e.target.value)}
+              disabled={draft.status === "approved" || draft.status === "rejected"}
+              rows={7}
+              className="mt-2.5 w-full resize-none rounded-lg border border-white/[0.08] bg-black/20 px-3 py-2 text-[11px] leading-relaxed text-zinc-200 focus:border-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500/30 disabled:opacity-60"
+            />
+            {draft.status === "edited" && draft.body !== draft.originalBody && (
+              <div className="mt-2 rounded-lg bg-white/[0.02] p-2.5">
+                <p className={SEC_TITLE}>Orijinal Taslak</p>
+                <p className="whitespace-pre-wrap text-[10px] leading-relaxed text-zinc-600">
+                  {draft.originalBody}
+                </p>
+              </div>
+            )}
+            <div className="mt-2.5 flex gap-1.5">
+              <Btn
+                label="Onayla"
+                variant="primary"
+                onClick={() => onApproveDraft(draft.missionId)}
+                disabled={draft.status === "approved" || draft.status === "rejected"}
+              />
+              <Btn
+                label="Reddet"
+                variant="danger"
+                onClick={() => onRejectDraft(draft.missionId)}
+                disabled={draft.status === "approved" || draft.status === "rejected"}
+              />
+            </div>
+            {draft.status === "approved" && (
+              <p className="mt-2 text-[10px] font-semibold text-emerald-400">
+                Onaylandı — {NOT_SENT_LABEL}
+              </p>
+            )}
+            <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+              {NO_SEND_NOTE}
+            </p>
+          </>
+        ) : manualDraftGuard.ok ? (
+          <>
+            <p className="text-[10px] leading-relaxed text-zinc-500">{FOUNDER_DECISION_NEEDED}</p>
+            <Btn label="Taslak Oluştur" onClick={onCreateDraft} />
+          </>
+        ) : (
+          <p className="text-[10px] leading-relaxed text-zinc-600">{manualDraftGuard.reason}</p>
+        )}
       </div>
 
       {/* Shadow-mode note */}
@@ -1438,6 +1536,12 @@ type Props = {
   onRejectTask: (taskId: string) => void;
   pipeline: HermesPipeline | null;
   onStartPipeline: (mission: HermesMission) => void;
+  draft: HermesOutboundDraft | null;
+  manualDraftGuard: DraftGuardResult;
+  onCreateDraft: () => void;
+  onEditDraft: (missionId: string, body: string) => void;
+  onApproveDraft: (missionId: string) => void;
+  onRejectDraft: (missionId: string) => void;
 };
 
 export default function AutomationCenterContextPanel({
@@ -1451,6 +1555,12 @@ export default function AutomationCenterContextPanel({
   onRejectTask,
   pipeline,
   onStartPipeline,
+  draft,
+  manualDraftGuard,
+  onCreateDraft,
+  onEditDraft,
+  onApproveDraft,
+  onRejectDraft,
 }: Props) {
   if (selectedHermesMission) {
     return (
@@ -1462,6 +1572,12 @@ export default function AutomationCenterContextPanel({
         onApprove={onApproveMission}
         onReject={onRejectTask}
         onStartPipeline={onStartPipeline}
+        draft={draft}
+        manualDraftGuard={manualDraftGuard}
+        onCreateDraft={onCreateDraft}
+        onEditDraft={onEditDraft}
+        onApproveDraft={onApproveDraft}
+        onRejectDraft={onRejectDraft}
       />
     );
   }
