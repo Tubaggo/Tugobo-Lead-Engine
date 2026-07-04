@@ -34,6 +34,15 @@ import {
   type DraftGuardResult,
   type HermesOutboundDraft,
 } from "@/app/components/v2/hermes-courier";
+import {
+  DELIVERY_PROVIDER_LABELS,
+  DELIVERY_STATUS_LABELS,
+  GATEWAY_STOP_NOTE,
+  NO_SEND_BUTTON_NOTE,
+  buildDeliveryTimelineEntries,
+  type DeliveryGuardResult,
+  type HermesDeliveryRequest,
+} from "@/app/components/v2/hermes-delivery-gateway";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -534,6 +543,8 @@ function MissionDecisionCenter({
   onEditDraft,
   onApproveDraft,
   onRejectDraft,
+  delivery,
+  deliveryGuard,
 }: {
   mission: HermesMission;
   momentum: OperationalMomentum | null;
@@ -547,6 +558,8 @@ function MissionDecisionCenter({
   onEditDraft: (missionId: string, body: string) => void;
   onApproveDraft: (missionId: string) => void;
   onRejectDraft: (missionId: string) => void;
+  delivery: HermesDeliveryRequest | null;
+  deliveryGuard: DeliveryGuardResult;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
@@ -592,6 +605,7 @@ function MissionDecisionCenter({
     ...mission.timeline,
     ...buildPipelineTimelineEntries(pipeline ?? undefined),
     ...buildDraftTimelineEntries(draft ?? undefined),
+    ...buildDeliveryTimelineEntries(delivery ?? undefined),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -974,6 +988,70 @@ function MissionDecisionCenter({
         ) : (
           <p className="text-[10px] leading-relaxed text-zinc-600">{manualDraftGuard.reason}</p>
         )}
+      </div>
+
+      {/* Delivery Gateway (v4.2.0) — validates, resolves provider, queues to
+          "ready", then stops. No send button anywhere in this section. */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Delivery Gateway</p>
+        {delivery ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+                {DELIVERY_STATUS_LABELS[delivery.status]}
+              </span>
+              <span className="inline-flex items-center rounded-full bg-sky-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-sky-400 ring-1 ring-inset ring-sky-500/20">
+                {DELIVERY_PROVIDER_LABELS[delivery.provider]}
+              </span>
+            </div>
+            <div className="mt-2.5 space-y-2">
+              <div className={ROW}>
+                <span className={LABEL}>Kanal</span>
+                <span className={VALUE}>{DRAFT_CHANNEL_LABELS[delivery.channel]}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Alıcı</span>
+                <span className={VALUE}>{delivery.recipient ?? "—"}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Doğrulama Sonucu</span>
+                <span
+                  className={`text-[11px] font-medium ${deliveryGuard.allowed ? "text-emerald-400" : "text-rose-400"}`}
+                >
+                  {deliveryGuard.reason}
+                </span>
+              </div>
+            </div>
+            <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+              Audit Trail
+            </p>
+            <div className="mt-1.5 max-h-[160px] space-y-1.5 overflow-y-auto">
+              {delivery.audit.map((entry, i) => (
+                <div key={`${entry.timestamp}-${i}`} className="flex items-baseline gap-2">
+                  <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                    {new Date(entry.timestamp).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                  <span className="w-[56px] shrink-0 text-[9px] font-semibold text-indigo-300">
+                    {entry.actor}
+                  </span>
+                  <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                    {entry.details}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+              {GATEWAY_STOP_NOTE}
+            </p>
+          </>
+        ) : (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            {draft?.status === "approved"
+              ? deliveryGuard.reason
+              : "Taslak onaylandığında teslimat isteği otomatik olarak oluşturulur."}
+          </p>
+        )}
+        <p className="mt-2.5 text-[9px] text-zinc-600">{NO_SEND_BUTTON_NOTE}</p>
       </div>
 
       {/* Shadow-mode note */}
@@ -1542,6 +1620,8 @@ type Props = {
   onEditDraft: (missionId: string, body: string) => void;
   onApproveDraft: (missionId: string) => void;
   onRejectDraft: (missionId: string) => void;
+  delivery: HermesDeliveryRequest | null;
+  deliveryGuard: DeliveryGuardResult;
 };
 
 export default function AutomationCenterContextPanel({
@@ -1561,6 +1641,8 @@ export default function AutomationCenterContextPanel({
   onEditDraft,
   onApproveDraft,
   onRejectDraft,
+  delivery,
+  deliveryGuard,
 }: Props) {
   if (selectedHermesMission) {
     return (
@@ -1578,6 +1660,8 @@ export default function AutomationCenterContextPanel({
         onEditDraft={onEditDraft}
         onApproveDraft={onApproveDraft}
         onRejectDraft={onRejectDraft}
+        delivery={delivery}
+        deliveryGuard={deliveryGuard}
       />
     );
   }

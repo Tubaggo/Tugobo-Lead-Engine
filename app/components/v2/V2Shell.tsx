@@ -61,6 +61,8 @@ import {
   applyDraftRejection,
 } from "@/app/components/v2/hermes-courier";
 import type { HermesOutboundDraft } from "@/app/components/v2/hermes-courier";
+import { canDeliver, startDeliveryGateway } from "@/app/components/v2/hermes-delivery-gateway";
+import type { HermesDeliveryRequest } from "@/app/components/v2/hermes-delivery-gateway";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -240,6 +242,12 @@ export default function V2Shell({ scoredLeads }: Props) {
   // it never triggers a fetch to any outbound channel.
   const [hermesDrafts, setHermesDrafts] = useState<Record<string, HermesOutboundDraft>>({});
 
+  // Hermes Delivery Gateway (v4.2.0): session-only delivery bookkeeping, keyed
+  // by missionId — same convention as hermesDrafts/hermesPipelines. Reaches
+  // "ready" (Ready For Provider) and stops there — no fetch, no provider SDK,
+  // no send, ever, in this module.
+  const [hermesDeliveries, setHermesDeliveries] = useState<Record<string, HermesDeliveryRequest>>({});
+
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.
   const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
@@ -366,13 +374,27 @@ export default function V2Shell({ scoredLeads }: Props) {
     });
   }, []);
 
-  const approveHermesDraft = useCallback((missionId: string) => {
-    setHermesDrafts((prev) => {
-      const d = prev[missionId];
-      if (!d) return prev;
-      return { ...prev, [missionId]: applyDraftApproval(d) };
-    });
-  }, []);
+  // "Approval becomes delivery trigger" (v4.2.0) — the same convention A5
+  // established for missions: approving a draft both records the founder's
+  // decision and, in the same click, runs it through the Delivery Gateway.
+  // Two sequential setState calls (not nested) — same shape as
+  // startHermesPipeline's onProgress callback above.
+  const approveHermesDraft = useCallback(
+    (missionId: string) => {
+      const draft = hermesDrafts[missionId];
+      if (!draft) return;
+      const approvedDraft = applyDraftApproval(draft);
+      setHermesDrafts((prev) => ({ ...prev, [missionId]: approvedDraft }));
+
+      const card = automationCardsByLeadId.get(approvedDraft.leadId);
+      setHermesDeliveries((prev) => {
+        const guard = canDeliver(approvedDraft, card, prev[missionId]);
+        if (!guard.allowed) return prev;
+        return { ...prev, [missionId]: startDeliveryGateway(approvedDraft, card!) };
+      });
+    },
+    [hermesDrafts, automationCardsByLeadId],
+  );
 
   const rejectHermesDraft = useCallback((missionId: string) => {
     setHermesDrafts((prev) => {
@@ -563,7 +585,9 @@ export default function V2Shell({ scoredLeads }: Props) {
         counts={{
           "revenue-queue": rows.length,
           "follow-ups": followUpCards.length,
-          "automation-center": hermesMissions.filter((m) => missionBucketOf(m) === "approval").length,
+          "automation-center":
+            hermesMissions.filter((m) => missionBucketOf(m) === "approval").length +
+            Object.values(hermesDeliveries).filter((d) => d.status === "ready").length,
         }}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
@@ -747,6 +771,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                 hermesDrafts={hermesDrafts}
                 onApproveDraft={approveHermesDraft}
                 onRejectDraft={rejectHermesDraft}
+                hermesDeliveries={hermesDeliveries}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
@@ -778,6 +803,18 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onEditDraft={editHermesDraft}
                 onApproveDraft={approveHermesDraft}
                 onRejectDraft={rejectHermesDraft}
+                delivery={
+                  selectedHermesMission ? (hermesDeliveries[selectedHermesMission.missionId] ?? null) : null
+                }
+                deliveryGuard={
+                  selectedHermesMission
+                    ? canDeliver(
+                        hermesDrafts[selectedHermesMission.missionId],
+                        automationCardsByLeadId.get(selectedHermesMission.leadId),
+                        hermesDeliveries[selectedHermesMission.missionId],
+                      )
+                    : { allowed: false, reason: "" }
+                }
               />
             </>
           ) : (
