@@ -51,6 +51,12 @@ import {
   type MissionDeliveryUiState,
 } from "@/app/components/v2/hermes-delivery-gateway";
 import {
+  MISSION_CONNECTOR_STATE_LABELS,
+  buildConnectorTimelineEntries,
+  type HermesProviderReceipt,
+  type MissionConnectorUiState,
+} from "@/app/components/v2/hermes-provider-connectors";
+import {
   selectCls,
   inputCls,
   kpiStripCls,
@@ -81,6 +87,8 @@ type Props = {
   onApproveDraft: (missionId: string) => void;
   onRejectDraft: (missionId: string) => void;
   hermesDeliveries: Record<string, HermesDeliveryRequest>;
+  hermesProviderReceipts: Record<string, HermesProviderReceipt>;
+  onRunShadowSend: (missionId: string) => void;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -209,6 +217,7 @@ function workforceStatus(
   pipelines: Record<string, HermesPipeline>,
   drafts: Record<string, HermesOutboundDraft>,
   deliveries: Record<string, HermesDeliveryRequest>,
+  receipts: Record<string, HermesProviderReceipt>,
 ): WorkforceStatus {
   // Alive first: is this agent the one actively running a pipeline stage
   // right now? If so, that overrides the generic task-count status below —
@@ -238,22 +247,29 @@ function workforceStatus(
       : { label: "Taslak yok", dot: "bg-zinc-600", active: false };
   }
   if (agent === "courier") {
-    // Courier's status now reflects the furthest-along delivery stage across
-    // all missions (v4.2.0): Preparing Delivery (pending draft) → Queued →
-    // Ready For Provider. Nothing here ever implies a message left the system.
-    const readyCount = Object.values(deliveries).filter((d) => d.status === "ready").length;
-    if (readyCount > 0) {
-      return { label: `${readyCount} sağlayıcı için hazır`, dot: "bg-emerald-400", active: true };
+    // Courier's status now reflects the furthest-along stage across all
+    // missions (v4.4.0): pending draft → ready for provider → Shadow Send
+    // Ready → Shadow Send Completed. Never "sent"/"delivered" — those imply
+    // a message actually left the system, which nothing here ever does.
+    const shadowSentCount = Object.values(receipts).filter((r) => r.status === "shadow_sent").length;
+    if (shadowSentCount > 0) {
+      return { label: `${shadowSentCount} shadow send tamamlandı`, dot: "bg-sky-400", active: true };
+    }
+    const shadowReadyCount = Object.values(deliveries).filter(
+      (d) => d.status === "ready" && !receipts[d.missionId],
+    ).length;
+    if (shadowReadyCount > 0) {
+      return { label: `${shadowReadyCount} shadow send hazır`, dot: "bg-emerald-400", active: true };
     }
     const queuedCount = Object.values(deliveries).filter((d) => d.status === "queued").length;
     if (queuedCount > 0) {
-      return { label: `${queuedCount} kuyrukta`, dot: "bg-amber-400", active: true };
+      return { label: `${queuedCount} teslimat kuyrukta`, dot: "bg-amber-400", active: true };
     }
     const pendingDrafts = Object.values(drafts).filter(
       (d) => d.status === "draft_ready" || d.status === "edited",
     ).length;
     return pendingDrafts > 0
-      ? { label: `${pendingDrafts} taslak onay bekliyor (teslimat hazırlanıyor)`, dot: "bg-amber-400", active: true }
+      ? { label: `${pendingDrafts} taslak onay bekliyor`, dot: "bg-amber-400", active: true }
       : { label: "Onay bekleyen yok", dot: "bg-zinc-600", active: false };
   }
   if (agent === "listener") {
@@ -280,6 +296,7 @@ function WorkforceStrip({
   pipelines,
   drafts,
   deliveries,
+  receipts,
 }: {
   tasks: ShadowTask[];
   decisions: HermesDecisionMap;
@@ -287,6 +304,7 @@ function WorkforceStrip({
   pipelines: Record<string, HermesPipeline>;
   drafts: Record<string, HermesOutboundDraft>;
   deliveries: Record<string, HermesDeliveryRequest>;
+  receipts: Record<string, HermesProviderReceipt>;
 }) {
   const agents = Object.keys(HERMES_AGENT_REGISTRY) as HermesAgentKey[];
   return (
@@ -297,7 +315,7 @@ function WorkforceStrip({
         </span>
         {agents.map((key) => {
           const meta = HERMES_AGENT_REGISTRY[key];
-          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries);
+          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries, receipts);
           return (
             <span key={key} className="flex items-center gap-1.5" title={meta.shadowIntent}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.dot} ${st.label.startsWith("Çalışıyor") ? "animate-pulse" : ""}`} />
@@ -468,6 +486,38 @@ function DeliveryStateBadge({ state }: { state: MissionDeliveryUiState }) {
   );
 }
 
+/**
+ * Workspace-card-only connector state — same simplification as
+ * simpleDeliveryUiState above: a delivery only ever reaches "ready" once
+ * canDeliver already confirmed a known provider + recipient, so the only
+ * gap this simplified view can't see is a DNC flag set *after* the delivery
+ * was created — that full nuance lives in Decision Center, which has the
+ * AutomationCard this list doesn't.
+ */
+function simpleConnectorUiState(
+  delivery: HermesDeliveryRequest | undefined,
+  receipt: HermesProviderReceipt | undefined,
+): MissionConnectorUiState | null {
+  if (receipt) return "shadow-sent";
+  if (!delivery) return null;
+  return delivery.status === "ready" ? "shadow-ready" : "not-ready";
+}
+
+const CONNECTOR_BADGE_CLS: Record<MissionConnectorUiState, string> = {
+  "not-ready": "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+  blocked: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
+  "shadow-ready": "bg-emerald-500/[0.12] text-emerald-400 ring-emerald-500/25",
+  "shadow-sent": "bg-sky-500/[0.12] text-sky-400 ring-sky-500/25",
+};
+
+function ConnectorStateBadge({ state }: { state: MissionConnectorUiState }) {
+  return (
+    <span className={`inline-flex items-center rounded-md px-2 py-1 text-[10px] font-semibold ring-1 ring-inset ${CONNECTOR_BADGE_CLS[state]}`}>
+      {MISSION_CONNECTOR_STATE_LABELS[state]}
+    </span>
+  );
+}
+
 function MissionCard({
   mission,
   isSelected,
@@ -475,11 +525,13 @@ function MissionCard({
   pipeline,
   draft,
   delivery,
+  receipt,
   onSelect,
   onToggleExpand,
   onApprove,
   onReject,
   onStartPipeline,
+  onRunShadowSend,
 }: {
   mission: HermesMission;
   isSelected: boolean;
@@ -487,11 +539,13 @@ function MissionCard({
   pipeline: HermesPipeline | undefined;
   draft: HermesOutboundDraft | undefined;
   delivery: HermesDeliveryRequest | undefined;
+  receipt: HermesProviderReceipt | undefined;
   onSelect: (mission: HermesMission) => void;
   onToggleExpand: (missionId: string) => void;
   onApprove: (mission: HermesMission) => void;
   onReject: (taskId: string) => void;
   onStartPipeline: (mission: HermesMission) => void;
+  onRunShadowSend: (missionId: string) => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0];
   const uiState = computeMissionPipelineUiState(mission, pipeline);
@@ -504,11 +558,13 @@ function MissionCard({
   const nextLabel = agentFlow ? (agentFlow.next ? HERMES_AGENT_REGISTRY[agentFlow.next].label : "—") : mission.nextAgentLabel;
   const displayStatus = pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.status;
   const deliveryUiState = simpleDeliveryUiState(draft, delivery);
+  const connectorUiState = simpleConnectorUiState(delivery, receipt);
   const timeline = [
     ...mission.timeline,
     ...buildPipelineTimelineEntries(pipeline),
     ...buildDraftTimelineEntries(draft),
     ...buildDeliveryTimelineEntries(delivery),
+    ...buildConnectorTimelineEntries(receipt),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -689,6 +745,31 @@ function MissionCard({
             </div>
           )}
 
+          {connectorUiState && (
+            <div>
+              <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                Provider Connector
+              </p>
+              <ConnectorStateBadge state={connectorUiState} />
+              {receipt && (
+                <p className="mt-1.5 text-[10px] text-zinc-500">{receipt.resultMessage}</p>
+              )}
+              {connectorUiState === "shadow-ready" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRunShadowSend(mission.missionId);
+                  }}
+                  className="mt-2 rounded-md bg-indigo-500 px-2.5 py-1 text-[10px] font-semibold text-white transition-colors duration-100 hover:bg-indigo-400"
+                >
+                  Shadow Send Önizle
+                </button>
+              )}
+              <p className="mt-1.5 text-[9px] text-zinc-600">Canlı gönderim kapalı — gönderim yapılmadı.</p>
+            </div>
+          )}
+
           <div>
             <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
               Zaman Akışı
@@ -731,6 +812,8 @@ function MissionQueue({
   onStartPipeline,
   hermesDrafts,
   hermesDeliveries,
+  hermesProviderReceipts,
+  onRunShadowSend,
 }: {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
@@ -743,6 +826,8 @@ function MissionQueue({
   onStartPipeline: (mission: HermesMission) => void;
   hermesDrafts: Record<string, HermesOutboundDraft>;
   hermesDeliveries: Record<string, HermesDeliveryRequest>;
+  hermesProviderReceipts: Record<string, HermesProviderReceipt>;
+  onRunShadowSend: (missionId: string) => void;
 }) {
   const order: MissionBucket[] = ["approval", "ready", "in-progress", "completed"];
   const groups = order
@@ -788,11 +873,13 @@ function MissionQueue({
                   pipeline={hermesPipelines[mission.missionId]}
                   draft={hermesDrafts[mission.missionId]}
                   delivery={hermesDeliveries[mission.missionId]}
+                  receipt={hermesProviderReceipts[mission.missionId]}
                   onSelect={onSelectHermesMission}
                   onToggleExpand={onToggleExpand}
                   onApprove={onApproveMission}
                   onReject={onRejectTask}
                   onStartPipeline={onStartPipeline}
+                  onRunShadowSend={onRunShadowSend}
                 />
               ))}
             </div>
@@ -940,6 +1027,7 @@ function buildTimeline(
   pipelines: Record<string, HermesPipeline>,
   drafts: Record<string, HermesOutboundDraft>,
   deliveries: Record<string, HermesDeliveryRequest>,
+  receipts: Record<string, HermesProviderReceipt>,
 ): TimelineItem[] {
   const hermesItems: TimelineItem[] = [];
 
@@ -1027,7 +1115,20 @@ function buildTimeline(
     }));
   });
 
-  return [...capped, ...founderItems, ...pipelineItems, ...draftItems, ...deliveryItems].sort((a, b) => a.at - b.at);
+  const connectorItems: TimelineItem[] = missions.flatMap((m) => {
+    const r = receipts[m.missionId];
+    if (!r) return [];
+    return buildConnectorTimelineEntries(r).map((e) => ({
+      at: e.at,
+      actor: e.actorLabel,
+      actorCls: e.actorCls,
+      text: `${e.text} — ${m.hotelName}`,
+    }));
+  });
+
+  return [...capped, ...founderItems, ...pipelineItems, ...draftItems, ...deliveryItems, ...connectorItems].sort(
+    (a, b) => a.at - b.at,
+  );
 }
 
 function TodayTimeline({
@@ -1037,6 +1138,7 @@ function TodayTimeline({
   pipelines,
   drafts,
   deliveries,
+  receipts,
 }: {
   monitor: HermesMonitor;
   decisions: HermesDecisionMap;
@@ -1044,8 +1146,9 @@ function TodayTimeline({
   pipelines: Record<string, HermesPipeline>;
   drafts: Record<string, HermesOutboundDraft>;
   deliveries: Record<string, HermesDeliveryRequest>;
+  receipts: Record<string, HermesProviderReceipt>;
 }) {
-  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries);
+  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries, receipts);
   return (
     <div className="border-b border-white/[0.06] px-5 py-4">
       <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
@@ -1418,6 +1521,8 @@ export default function AutomationCenterScreen({
   onApproveDraft,
   onRejectDraft,
   hermesDeliveries,
+  hermesProviderReceipts,
+  onRunShadowSend,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -1439,6 +1544,7 @@ export default function AutomationCenterScreen({
           pipelines={hermesPipelines}
           drafts={hermesDrafts}
           deliveries={hermesDeliveries}
+          receipts={hermesProviderReceipts}
         />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
@@ -1454,6 +1560,8 @@ export default function AutomationCenterScreen({
           onStartPipeline={onStartPipeline}
           hermesDrafts={hermesDrafts}
           hermesDeliveries={hermesDeliveries}
+          hermesProviderReceipts={hermesProviderReceipts}
+          onRunShadowSend={onRunShadowSend}
         />
 
         {/* 4 — Courier Taslakları: founder approval queue for prepared drafts (v4.1.0-A) */}
@@ -1473,6 +1581,7 @@ export default function AutomationCenterScreen({
           pipelines={hermesPipelines}
           drafts={hermesDrafts}
           deliveries={hermesDeliveries}
+          receipts={hermesProviderReceipts}
         />
 
         {/* 6 — Supporting: the old automation view, demoted and collapsed */}

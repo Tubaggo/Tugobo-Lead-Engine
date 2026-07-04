@@ -63,6 +63,8 @@ import {
 import type { HermesOutboundDraft } from "@/app/components/v2/hermes-courier";
 import { canDeliver, startDeliveryGateway } from "@/app/components/v2/hermes-delivery-gateway";
 import type { HermesDeliveryRequest } from "@/app/components/v2/hermes-delivery-gateway";
+import { PROVIDER_CONNECTORS, canProviderSend, runShadowSend } from "@/app/components/v2/hermes-provider-connectors";
+import type { HermesProviderReceipt } from "@/app/components/v2/hermes-provider-connectors";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -248,6 +250,12 @@ export default function V2Shell({ scoredLeads }: Props) {
   // no send, ever, in this module.
   const [hermesDeliveries, setHermesDeliveries] = useState<Record<string, HermesDeliveryRequest>>({});
 
+  // Hermes Provider Connector Runtime (v4.4.0): session-only receipt
+  // bookkeeping, keyed by missionId — same convention as every other Hermes
+  // Record above. Only ever reaches "shadow_sent" — a fully local
+  // simulation. No fetch, no provider SDK, no live send exists yet.
+  const [hermesProviderReceipts, setHermesProviderReceipts] = useState<Record<string, HermesProviderReceipt>>({});
+
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.
   const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
@@ -403,6 +411,27 @@ export default function V2Shell({ scoredLeads }: Props) {
       return { ...prev, [missionId]: applyDraftRejection(d) };
     });
   }, []);
+
+  // Founder-triggered only (v4.4.0) — Delivery Gateway reaching "ready" never
+  // auto-runs this. Founder must click "Shadow Send Önizle" in the Workspace
+  // or Decision Center. Guarded by canProviderSend; runShadowSend is a pure,
+  // synchronous, local simulation — no fetch, no provider SDK, no send.
+  const runProviderShadowSend = useCallback(
+    (missionId: string) => {
+      const delivery = hermesDeliveries[missionId];
+      const draft = hermesDrafts[missionId];
+      if (!delivery || !draft) return;
+      const card = automationCardsByLeadId.get(delivery.leadId);
+      const connector = PROVIDER_CONNECTORS[delivery.provider];
+
+      setHermesProviderReceipts((prev) => {
+        const guard = canProviderSend("shadow_send", delivery, draft, card, prev[missionId]);
+        if (!guard.allowed) return prev;
+        return { ...prev, [missionId]: runShadowSend(delivery, draft, connector) };
+      });
+    },
+    [hermesDeliveries, hermesDrafts, automationCardsByLeadId],
+  );
 
   // "Approval becomes execution trigger" (A5): approving a gated mission
   // both records the founder's decision and starts its pipeline in the same
@@ -587,7 +616,11 @@ export default function V2Shell({ scoredLeads }: Props) {
           "follow-ups": followUpCards.length,
           "automation-center":
             hermesMissions.filter((m) => missionBucketOf(m) === "approval").length +
-            Object.values(hermesDeliveries).filter((d) => d.status === "ready").length,
+            // Ready-for-provider AND not yet shadow-sent — a completed shadow
+            // receipt is done, not pending, so it must not inflate this count.
+            Object.values(hermesDeliveries).filter(
+              (d) => d.status === "ready" && !hermesProviderReceipts[d.missionId],
+            ).length,
         }}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
@@ -772,6 +805,8 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onApproveDraft={approveHermesDraft}
                 onRejectDraft={rejectHermesDraft}
                 hermesDeliveries={hermesDeliveries}
+                hermesProviderReceipts={hermesProviderReceipts}
+                onRunShadowSend={runProviderShadowSend}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
@@ -815,6 +850,21 @@ export default function V2Shell({ scoredLeads }: Props) {
                       )
                     : { allowed: false, reason: "" }
                 }
+                receipt={
+                  selectedHermesMission ? (hermesProviderReceipts[selectedHermesMission.missionId] ?? null) : null
+                }
+                connectorGuard={
+                  selectedHermesMission
+                    ? canProviderSend(
+                        "shadow_send",
+                        hermesDeliveries[selectedHermesMission.missionId],
+                        hermesDrafts[selectedHermesMission.missionId],
+                        automationCardsByLeadId.get(selectedHermesMission.leadId),
+                        hermesProviderReceipts[selectedHermesMission.missionId],
+                      )
+                    : { allowed: false, reason: "" }
+                }
+                onRunShadowSend={runProviderShadowSend}
               />
             </>
           ) : (

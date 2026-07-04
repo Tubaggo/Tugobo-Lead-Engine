@@ -43,6 +43,14 @@ import {
   type DeliveryGuardResult,
   type HermesDeliveryRequest,
 } from "@/app/components/v2/hermes-delivery-gateway";
+import {
+  RECEIPT_STATUS_LABELS,
+  SEND_MODE_LABELS,
+  SHADOW_SEND_DISCLAIMER,
+  buildConnectorTimelineEntries,
+  type HermesProviderReceipt,
+  type ProviderGuardResult,
+} from "@/app/components/v2/hermes-provider-connectors";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -545,6 +553,9 @@ function MissionDecisionCenter({
   onRejectDraft,
   delivery,
   deliveryGuard,
+  receipt,
+  connectorGuard,
+  onRunShadowSend,
 }: {
   mission: HermesMission;
   momentum: OperationalMomentum | null;
@@ -560,6 +571,9 @@ function MissionDecisionCenter({
   onRejectDraft: (missionId: string) => void;
   delivery: HermesDeliveryRequest | null;
   deliveryGuard: DeliveryGuardResult;
+  receipt: HermesProviderReceipt | null;
+  connectorGuard: ProviderGuardResult;
+  onRunShadowSend: (missionId: string) => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
@@ -606,6 +620,7 @@ function MissionDecisionCenter({
     ...buildPipelineTimelineEntries(pipeline ?? undefined),
     ...buildDraftTimelineEntries(draft ?? undefined),
     ...buildDeliveryTimelineEntries(delivery ?? undefined),
+    ...buildConnectorTimelineEntries(receipt ?? undefined),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -1052,6 +1067,91 @@ function MissionDecisionCenter({
           </p>
         )}
         <p className="mt-2.5 text-[9px] text-zinc-600">{NO_SEND_BUTTON_NOTE}</p>
+      </div>
+
+      {/* Provider Connector (v4.4.0) — Shadow Send only. No "Gönder"/"Send"
+          button anywhere in this section; live send stays disabled. */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Provider Connector</p>
+        {delivery ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center rounded-full bg-sky-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-sky-400 ring-1 ring-inset ring-sky-500/20">
+                {DELIVERY_PROVIDER_LABELS[delivery.provider]}
+              </span>
+              <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+                {SEND_MODE_LABELS.shadow_send}
+              </span>
+            </div>
+            <div className="mt-2.5 space-y-2">
+              <div className={ROW}>
+                <span className={LABEL}>Alıcı</span>
+                <span className={VALUE}>{delivery.recipient ?? "—"}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Connector Durumu</span>
+                <span className={VALUE}>
+                  {receipt ? RECEIPT_STATUS_LABELS[receipt.status] : "Shadow Send Hazır"}
+                </span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Guardrail Sonucu</span>
+                <span
+                  className={`text-[11px] font-medium ${connectorGuard.allowed ? "text-emerald-400" : "text-rose-400"}`}
+                >
+                  {connectorGuard.reason}
+                </span>
+              </div>
+            </div>
+
+            {receipt ? (
+              <>
+                <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                  Sağlayıcı Önizlemesi
+                </p>
+                <div className="mt-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] p-3">
+                  <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-300">
+                    {receipt.previewBody}
+                  </p>
+                </div>
+                <p className="mt-2 text-[10px] font-semibold text-sky-400">{receipt.resultMessage}</p>
+                <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                  Audit Trail
+                </p>
+                <div className="mt-1.5 max-h-[160px] space-y-1.5 overflow-y-auto">
+                  {receipt.audit.map((entry, i) => (
+                    <div key={`${entry.timestamp}-${i}`} className="flex items-baseline gap-2">
+                      <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                        {new Date(entry.timestamp).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <span className="w-[56px] shrink-0 text-[9px] font-semibold text-indigo-300">
+                        {entry.actor}
+                      </span>
+                      <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                        {entry.details}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : connectorGuard.allowed ? (
+              <div className="mt-2.5">
+                <Btn label="Shadow Send Önizle" variant="primary" onClick={() => onRunShadowSend(mission.missionId)} />
+              </div>
+            ) : null}
+
+            <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+              {SHADOW_SEND_DISCLAIMER}
+            </p>
+            <p className="mt-1.5 text-[9px] text-zinc-600">
+              Canlı gönderim kapalı — Canlı gönderim sonraki sprintte bağlanacak.
+            </p>
+          </>
+        ) : (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            Teslimat isteği hazır olduğunda Provider Connector burada görünür.
+          </p>
+        )}
       </div>
 
       {/* Shadow-mode note */}
@@ -1622,6 +1722,9 @@ type Props = {
   onRejectDraft: (missionId: string) => void;
   delivery: HermesDeliveryRequest | null;
   deliveryGuard: DeliveryGuardResult;
+  receipt: HermesProviderReceipt | null;
+  connectorGuard: ProviderGuardResult;
+  onRunShadowSend: (missionId: string) => void;
 };
 
 export default function AutomationCenterContextPanel({
@@ -1643,6 +1746,9 @@ export default function AutomationCenterContextPanel({
   onRejectDraft,
   delivery,
   deliveryGuard,
+  receipt,
+  connectorGuard,
+  onRunShadowSend,
 }: Props) {
   if (selectedHermesMission) {
     return (
@@ -1662,6 +1768,9 @@ export default function AutomationCenterContextPanel({
         onRejectDraft={onRejectDraft}
         delivery={delivery}
         deliveryGuard={deliveryGuard}
+        receipt={receipt}
+        connectorGuard={connectorGuard}
+        onRunShadowSend={onRunShadowSend}
       />
     );
   }
