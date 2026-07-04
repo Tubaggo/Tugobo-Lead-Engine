@@ -65,6 +65,8 @@ import { canDeliver, startDeliveryGateway } from "@/app/components/v2/hermes-del
 import type { HermesDeliveryRequest } from "@/app/components/v2/hermes-delivery-gateway";
 import { PROVIDER_CONNECTORS, canProviderSend, runShadowSend } from "@/app/components/v2/hermes-provider-connectors";
 import type { HermesProviderReceipt } from "@/app/components/v2/hermes-provider-connectors";
+import { buildProviderSessions, canUseProviderSession } from "@/app/components/v2/hermes-provider-sessions";
+import type { HermesProviderSession } from "@/app/components/v2/hermes-provider-sessions";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -320,6 +322,15 @@ export default function V2Shell({ scoredLeads }: Props) {
   const commCardsByLeadId = useMemo(
     () => new Map(commCards.map((c) => [c.id, c])),
     [commCards],
+  );
+
+  // Provider Session Runtime (v4.5.0): a deterministic, global projection —
+  // five sessions (one per DeliveryProvider), independent of any mission.
+  // Computed once; not session state, not persisted, no network involved.
+  const providerSessions = useMemo(() => buildProviderSessions(), []);
+  const providerSessionsByProvider = useMemo(
+    () => new Map(providerSessions.map((s) => [s.provider, s])),
+    [providerSessions],
   );
 
   // Fired once, right when a mission's pipeline reaches "completed" — the
@@ -807,6 +818,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                 hermesDeliveries={hermesDeliveries}
                 hermesProviderReceipts={hermesProviderReceipts}
                 onRunShadowSend={runProviderShadowSend}
+                providerSessions={providerSessions}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
@@ -865,6 +877,20 @@ export default function V2Shell({ scoredLeads }: Props) {
                     : { allowed: false, reason: "" }
                 }
                 onRunShadowSend={runProviderShadowSend}
+                providerSession={
+                  (() => {
+                    const d = selectedHermesMission ? hermesDeliveries[selectedHermesMission.missionId] : undefined;
+                    return d ? (providerSessionsByProvider.get(d.provider) ?? null) : null;
+                  })()
+                }
+                providerSessionGuard={
+                  (() => {
+                    const d = selectedHermesMission ? hermesDeliveries[selectedHermesMission.missionId] : undefined;
+                    if (!d) return { allowed: false, reason: "" };
+                    const r = selectedHermesMission ? hermesProviderReceipts[selectedHermesMission.missionId] : undefined;
+                    return canUseProviderSession("shadow_send", d, r, providerSessionsByProvider.get(d.provider));
+                  })()
+                }
               />
             </>
           ) : (

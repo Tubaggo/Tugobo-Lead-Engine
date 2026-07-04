@@ -57,6 +57,14 @@ import {
   type MissionConnectorUiState,
 } from "@/app/components/v2/hermes-provider-connectors";
 import {
+  LIVE_SEND_CLOSED_LABEL,
+  PROVIDER_NOT_LIVE_READY_WARNING,
+  SESSION_STATUS_LABELS,
+  SHADOW_READY_LABEL,
+  buildSessionTimelineEntries,
+  type HermesProviderSession,
+} from "@/app/components/v2/hermes-provider-sessions";
+import {
   selectCls,
   inputCls,
   kpiStripCls,
@@ -89,6 +97,7 @@ type Props = {
   hermesDeliveries: Record<string, HermesDeliveryRequest>;
   hermesProviderReceipts: Record<string, HermesProviderReceipt>;
   onRunShadowSend: (missionId: string) => void;
+  providerSessions: HermesProviderSession[];
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -333,6 +342,49 @@ function WorkforceStrip({
   );
 }
 
+/* ── 2.5. Provider Sessions (v4.5.0) — compact, deterministic, no setup UI ── */
+
+const REAL_PROVIDERS_FOR_DISPLAY: Array<HermesProviderSession["provider"]> = [
+  "whatsapp",
+  "instagram",
+  "email",
+  "sms",
+];
+
+const SESSION_HEALTH_DOT: Record<HermesProviderSession["health"], string> = {
+  healthy: "bg-emerald-400",
+  warning: "bg-amber-400",
+  blocked: "bg-rose-400",
+};
+
+/** Compact strip only — this supports Hermes operations, it is not a settings page. No connect/setup buttons. */
+function ProviderSessionsStrip({ sessions }: { sessions: HermesProviderSession[] }) {
+  const byProvider = new Map(sessions.map((s) => [s.provider, s]));
+  return (
+    <div className="border-b border-white/[0.06] px-5 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+        <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
+          Provider Oturumu
+        </span>
+        {REAL_PROVIDERS_FOR_DISPLAY.map((provider) => {
+          const session = byProvider.get(provider);
+          if (!session) return null;
+          return (
+            <span key={provider} className="flex items-center gap-1.5" title={session.setupHint}>
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${SESSION_HEALTH_DOT[session.health]}`} />
+              <span className="text-[10px] font-semibold text-zinc-200">{session.label}</span>
+              <span className="text-[9px] text-zinc-600">
+                {session.canShadowSend ? SHADOW_READY_LABEL : SESSION_STATUS_LABELS[session.status]} ·{" "}
+                {LIVE_SEND_CLOSED_LABEL}
+              </span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ── 3. Mission Queue (hero) ────────────────────────────────────── */
 
 const MISSION_BUCKET_META: Record<MissionBucket, { title: string; hint: string; accent: string }> = {
@@ -518,6 +570,24 @@ function ConnectorStateBadge({ state }: { state: MissionConnectorUiState }) {
   );
 }
 
+/** Mission-card-only session labels — "Ready for Shadow" wins whenever shadow send works, since that never depends on a live connection. */
+type SessionCardState = "ready-for-shadow" | "setup-required" | "not-connected" | "live-disabled";
+
+const SESSION_CARD_LABELS: Record<SessionCardState, string> = {
+  "ready-for-shadow": "Ready for Shadow",
+  "setup-required": "Setup Required",
+  "not-connected": "Not Connected",
+  "live-disabled": "Live Disabled",
+};
+
+function computeSessionCardState(session: HermesProviderSession | undefined): SessionCardState {
+  if (!session) return "not-connected";
+  if (session.canShadowSend) return "ready-for-shadow";
+  if (!session.configured) return "setup-required";
+  if (!session.connected) return "not-connected";
+  return "live-disabled";
+}
+
 function MissionCard({
   mission,
   isSelected,
@@ -526,6 +596,7 @@ function MissionCard({
   draft,
   delivery,
   receipt,
+  providerSessions,
   onSelect,
   onToggleExpand,
   onApprove,
@@ -540,6 +611,7 @@ function MissionCard({
   draft: HermesOutboundDraft | undefined;
   delivery: HermesDeliveryRequest | undefined;
   receipt: HermesProviderReceipt | undefined;
+  providerSessions: HermesProviderSession[];
   onSelect: (mission: HermesMission) => void;
   onToggleExpand: (missionId: string) => void;
   onApprove: (mission: HermesMission) => void;
@@ -559,12 +631,15 @@ function MissionCard({
   const displayStatus = pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.status;
   const deliveryUiState = simpleDeliveryUiState(draft, delivery);
   const connectorUiState = simpleConnectorUiState(delivery, receipt);
+  const providerSession = delivery ? providerSessions.find((s) => s.provider === delivery.provider) : undefined;
+  const sessionCardState = delivery ? computeSessionCardState(providerSession) : null;
   const timeline = [
     ...mission.timeline,
     ...buildPipelineTimelineEntries(pipeline),
     ...buildDraftTimelineEntries(draft),
     ...buildDeliveryTimelineEntries(delivery),
     ...buildConnectorTimelineEntries(receipt),
+    ...buildSessionTimelineEntries(providerSession),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -767,6 +842,19 @@ function MissionCard({
                 </button>
               )}
               <p className="mt-1.5 text-[9px] text-zinc-600">Canlı gönderim kapalı — gönderim yapılmadı.</p>
+
+              {sessionCardState && (
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2">
+                  <p className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
+                    Provider Session: {SESSION_CARD_LABELS[sessionCardState]}
+                  </p>
+                  {delivery?.status === "ready" && providerSession?.status !== "ready" && (
+                    <p className="mt-1 text-[9px] leading-relaxed text-amber-400">
+                      {PROVIDER_NOT_LIVE_READY_WARNING}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -814,6 +902,7 @@ function MissionQueue({
   hermesDeliveries,
   hermesProviderReceipts,
   onRunShadowSend,
+  providerSessions,
 }: {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
@@ -828,6 +917,7 @@ function MissionQueue({
   hermesDeliveries: Record<string, HermesDeliveryRequest>;
   hermesProviderReceipts: Record<string, HermesProviderReceipt>;
   onRunShadowSend: (missionId: string) => void;
+  providerSessions: HermesProviderSession[];
 }) {
   const order: MissionBucket[] = ["approval", "ready", "in-progress", "completed"];
   const groups = order
@@ -874,6 +964,7 @@ function MissionQueue({
                   draft={hermesDrafts[mission.missionId]}
                   delivery={hermesDeliveries[mission.missionId]}
                   receipt={hermesProviderReceipts[mission.missionId]}
+                  providerSessions={providerSessions}
                   onSelect={onSelectHermesMission}
                   onToggleExpand={onToggleExpand}
                   onApprove={onApproveMission}
@@ -1523,6 +1614,7 @@ export default function AutomationCenterScreen({
   hermesDeliveries,
   hermesProviderReceipts,
   onRunShadowSend,
+  providerSessions,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -1547,6 +1639,9 @@ export default function AutomationCenterScreen({
           receipts={hermesProviderReceipts}
         />
 
+        {/* 2.5 — Provider Sessions: compact readiness strip, not a settings page */}
+        <ProviderSessionsStrip sessions={providerSessions} />
+
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
           missions={missions}
@@ -1562,6 +1657,7 @@ export default function AutomationCenterScreen({
           hermesDeliveries={hermesDeliveries}
           hermesProviderReceipts={hermesProviderReceipts}
           onRunShadowSend={onRunShadowSend}
+          providerSessions={providerSessions}
         />
 
         {/* 4 — Courier Taslakları: founder approval queue for prepared drafts (v4.1.0-A) */}

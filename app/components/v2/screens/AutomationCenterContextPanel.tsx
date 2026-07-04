@@ -51,6 +51,19 @@ import {
   type HermesProviderReceipt,
   type ProviderGuardResult,
 } from "@/app/components/v2/hermes-provider-connectors";
+import {
+  NOT_AUTHORIZED_LABEL,
+  NOT_CONFIGURED_LABEL,
+  NOT_CONNECTED_LABEL,
+  PROVIDER_NOT_LIVE_READY_WARNING,
+  SESSION_HEALTH_LABELS,
+  SESSION_STATUS_LABELS,
+  SETUP_REQUIRED_LABEL,
+  SHADOW_READY_LABEL,
+  buildSessionTimelineEntries,
+  type HermesProviderSession,
+  type ProviderSessionGuardResult,
+} from "@/app/components/v2/hermes-provider-sessions";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -556,6 +569,8 @@ function MissionDecisionCenter({
   receipt,
   connectorGuard,
   onRunShadowSend,
+  providerSession,
+  providerSessionGuard,
 }: {
   mission: HermesMission;
   momentum: OperationalMomentum | null;
@@ -574,6 +589,8 @@ function MissionDecisionCenter({
   receipt: HermesProviderReceipt | null;
   connectorGuard: ProviderGuardResult;
   onRunShadowSend: (missionId: string) => void;
+  providerSession: HermesProviderSession | null;
+  providerSessionGuard: ProviderSessionGuardResult;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
@@ -621,6 +638,7 @@ function MissionDecisionCenter({
     ...buildDraftTimelineEntries(draft ?? undefined),
     ...buildDeliveryTimelineEntries(delivery ?? undefined),
     ...buildConnectorTimelineEntries(receipt ?? undefined),
+    ...buildSessionTimelineEntries(providerSession ?? undefined),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -1150,6 +1168,124 @@ function MissionDecisionCenter({
         ) : (
           <p className="text-[10px] leading-relaxed text-zinc-600">
             Teslimat isteği hazır olduğunda Provider Connector burada görünür.
+          </p>
+        )}
+      </div>
+
+      {/* Provider Session (v4.5.0) — readiness projection only. No setup
+          form, no connect button; that flow (if it ever exists) belongs to
+          a settings screen, not here. */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>Provider Oturumu</p>
+        {providerSession ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+                {SESSION_STATUS_LABELS[providerSession.status]}
+              </span>
+              <span
+                className={[
+                  "inline-flex items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset",
+                  providerSession.health === "healthy"
+                    ? "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20"
+                    : providerSession.health === "warning"
+                      ? "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20"
+                      : "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
+                ].join(" ")}
+              >
+                {SESSION_HEALTH_LABELS[providerSession.health]}
+              </span>
+            </div>
+
+            <div className="mt-2.5 space-y-2">
+              <div className={ROW}>
+                <span className={LABEL}>Yapılandırma</span>
+                <span className={VALUE}>{providerSession.configured ? "Var" : NOT_CONFIGURED_LABEL}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Bağlantı</span>
+                <span className={VALUE}>{providerSession.connected ? "Bağlandı" : NOT_CONNECTED_LABEL}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Yetki</span>
+                <span className={VALUE}>{providerSession.authorized ? "Yetkili" : NOT_AUTHORIZED_LABEL}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Shadow Send</span>
+                <span
+                  className={`text-[11px] font-medium ${providerSession.canShadowSend ? "text-emerald-400" : "text-rose-400"}`}
+                >
+                  {providerSession.canShadowSend ? SHADOW_READY_LABEL : "Kullanılamaz"}
+                </span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Canlı Gönderim</span>
+                <span className="text-[11px] font-medium text-rose-400">Canlı Gönderim Kapalı</span>
+              </div>
+            </div>
+
+            {providerSession.requiresSetup && (
+              <p className="mt-2.5 text-[10px] leading-relaxed text-amber-400">
+                {SETUP_REQUIRED_LABEL} — {providerSession.setupHint}
+              </p>
+            )}
+
+            <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+              Yetenekler
+            </p>
+            <div className="mt-1.5 space-y-1.5">
+              {providerSession.capabilities.map((cap) => (
+                <div key={cap.key} className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className={`text-[10.5px] font-medium ${cap.enabled ? "text-zinc-200" : "text-zinc-500"}`}>
+                      {cap.label}
+                    </p>
+                    <p className="text-[9px] leading-snug text-zinc-600">{cap.reason}</p>
+                  </div>
+                  <span
+                    className={`shrink-0 text-[9px] font-semibold ${cap.enabled ? "text-emerald-400" : "text-zinc-700"}`}
+                  >
+                    {cap.enabled ? "Aktif" : "Kapalı"}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+              <span className={LABEL}>Hazırlık Sonucu (Shadow)</span>
+              <p
+                className={`mt-1 text-[11px] font-medium ${providerSessionGuard.allowed ? "text-emerald-400" : "text-rose-400"}`}
+              >
+                {providerSessionGuard.reason}
+              </p>
+            </div>
+
+            {delivery?.status === "ready" && providerSession.status !== "ready" && (
+              <p className="mt-2 text-[10px] leading-relaxed text-amber-400">{PROVIDER_NOT_LIVE_READY_WARNING}</p>
+            )}
+
+            <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+              Audit Trail
+            </p>
+            <div className="mt-1.5 max-h-[160px] space-y-1.5 overflow-y-auto">
+              {providerSession.audit.map((entry, i) => (
+                <div key={`${entry.timestamp}-${i}`} className="flex items-baseline gap-2">
+                  <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                    {new Date(entry.timestamp).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                  <span className="w-[56px] shrink-0 text-[9px] font-semibold text-indigo-300">
+                    {entry.actor}
+                  </span>
+                  <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                    {entry.details}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            Teslimat isteği hazır olduğunda Provider Oturumu burada görünür.
           </p>
         )}
       </div>
@@ -1725,6 +1861,8 @@ type Props = {
   receipt: HermesProviderReceipt | null;
   connectorGuard: ProviderGuardResult;
   onRunShadowSend: (missionId: string) => void;
+  providerSession: HermesProviderSession | null;
+  providerSessionGuard: ProviderSessionGuardResult;
 };
 
 export default function AutomationCenterContextPanel({
@@ -1749,6 +1887,8 @@ export default function AutomationCenterContextPanel({
   receipt,
   connectorGuard,
   onRunShadowSend,
+  providerSession,
+  providerSessionGuard,
 }: Props) {
   if (selectedHermesMission) {
     return (
@@ -1771,6 +1911,8 @@ export default function AutomationCenterContextPanel({
         receipt={receipt}
         connectorGuard={connectorGuard}
         onRunShadowSend={onRunShadowSend}
+        providerSession={providerSession}
+        providerSessionGuard={providerSessionGuard}
       />
     );
   }
