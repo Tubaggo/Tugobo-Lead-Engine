@@ -64,6 +64,20 @@ import {
   type HermesProviderSession,
   type ProviderSessionGuardResult,
 } from "@/app/components/v2/hermes-provider-sessions";
+import {
+  CANCEL_GATE_BUTTON_LABEL,
+  CONFIRM_GATE_BUTTON_LABEL,
+  GATE_DRY_CONFIRM_NOTE,
+  GATE_NOT_SENT_LABEL,
+  GATE_POLICY_WARNING,
+  GATE_SECTION_TITLE,
+  GATE_STATUS_LABELS,
+  MISSION_GATE_STATE_LABELS,
+  OPEN_GATE_BUTTON_LABEL,
+  buildGateTimelineEntries,
+  type HermesLiveSendGate,
+  type LiveSendGateGuardResult,
+} from "@/app/components/v2/hermes-live-send-gate";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -571,6 +585,11 @@ function MissionDecisionCenter({
   onRunShadowSend,
   providerSession,
   providerSessionGuard,
+  liveSendGate,
+  liveSendGateGuard,
+  onOpenLiveSendGate,
+  onConfirmLiveSendGate,
+  onCancelLiveSendGate,
 }: {
   mission: HermesMission;
   momentum: OperationalMomentum | null;
@@ -591,6 +610,11 @@ function MissionDecisionCenter({
   onRunShadowSend: (missionId: string) => void;
   providerSession: HermesProviderSession | null;
   providerSessionGuard: ProviderSessionGuardResult;
+  liveSendGate: HermesLiveSendGate | null;
+  liveSendGateGuard: LiveSendGateGuardResult;
+  onOpenLiveSendGate: () => void;
+  onConfirmLiveSendGate: (missionId: string) => void;
+  onCancelLiveSendGate: (missionId: string) => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
@@ -639,6 +663,7 @@ function MissionDecisionCenter({
     ...buildDeliveryTimelineEntries(delivery ?? undefined),
     ...buildConnectorTimelineEntries(receipt ?? undefined),
     ...buildSessionTimelineEntries(providerSession ?? undefined),
+    ...buildGateTimelineEntries(liveSendGate ?? undefined),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -1290,6 +1315,94 @@ function MissionDecisionCenter({
         )}
       </div>
 
+      {/* Live Send Gate (v4.6.0) — the final supervised checkpoint before
+          any FUTURE live send. This sprint never sends: confirming always
+          resolves to "confirmed_but_blocked". */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>{GATE_SECTION_TITLE}</p>
+        {!receipt ? (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            Shadow send makbuzu oluşturulduğunda Live Send Gate burada görünür.
+          </p>
+        ) : liveSendGate ? (
+          <>
+            <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+              {GATE_STATUS_LABELS[liveSendGate.status]}
+            </span>
+            <div className="mt-2.5 space-y-2">
+              <div className={ROW}>
+                <span className={LABEL}>Politika</span>
+                <span className="text-[11px] font-medium text-rose-400">Canlı Gönderim Kapalı</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Provider Oturumu</span>
+                <span className={VALUE}>
+                  {providerSession ? SESSION_STATUS_LABELS[providerSession.status] : "—"}
+                </span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Shadow Receipt</span>
+                <span className={VALUE}>{RECEIPT_STATUS_LABELS[receipt.status]}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Founder Onayı</span>
+                <span className={VALUE}>{liveSendGate.confirmedAt ? "Onaylandı (dry-run)" : "Bekleniyor"}</span>
+              </div>
+            </div>
+            <p className="mt-2.5 text-[10px] leading-relaxed text-zinc-500">{liveSendGate.reason}</p>
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              {liveSendGate.status !== "cancelled" && liveSendGate.status !== "confirmed_but_blocked" && (
+                <Btn
+                  label={CONFIRM_GATE_BUTTON_LABEL}
+                  variant="primary"
+                  onClick={() => onConfirmLiveSendGate(mission.missionId)}
+                />
+              )}
+              {liveSendGate.status !== "cancelled" && (
+                <Btn
+                  label={CANCEL_GATE_BUTTON_LABEL}
+                  variant="danger"
+                  onClick={() => onCancelLiveSendGate(mission.missionId)}
+                />
+              )}
+            </div>
+            <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+              {GATE_POLICY_WARNING}
+            </p>
+            <p className="mt-1.5 text-[9px] text-zinc-600">{GATE_NOT_SENT_LABEL}</p>
+            <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+              Audit Trail
+            </p>
+            <div className="mt-1.5 max-h-[160px] space-y-1.5 overflow-y-auto">
+              {liveSendGate.audit.map((entry, i) => (
+                <div key={`${entry.timestamp}-${i}`} className="flex items-baseline gap-2">
+                  <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                    {new Date(entry.timestamp).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                  <span className="w-[56px] shrink-0 text-[9px] font-semibold text-indigo-300">
+                    {entry.actor}
+                  </span>
+                  <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                    {entry.details}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              {MISSION_GATE_STATE_LABELS["not-opened"]}
+            </p>
+            <p className="mt-1 text-[10px] leading-relaxed text-zinc-600">{liveSendGateGuard.reason}</p>
+            <div className="mt-2.5">
+              <Btn label={OPEN_GATE_BUTTON_LABEL} onClick={onOpenLiveSendGate} />
+            </div>
+            <p className="mt-2.5 text-[9px] text-zinc-600">{GATE_DRY_CONFIRM_NOTE}</p>
+          </>
+        )}
+      </div>
+
       {/* Shadow-mode note */}
       <div className={SEC}>
         <p className="text-[9px] leading-relaxed text-zinc-600">
@@ -1863,6 +1976,11 @@ type Props = {
   onRunShadowSend: (missionId: string) => void;
   providerSession: HermesProviderSession | null;
   providerSessionGuard: ProviderSessionGuardResult;
+  liveSendGate: HermesLiveSendGate | null;
+  liveSendGateGuard: LiveSendGateGuardResult;
+  onOpenLiveSendGate: () => void;
+  onConfirmLiveSendGate: (missionId: string) => void;
+  onCancelLiveSendGate: (missionId: string) => void;
 };
 
 export default function AutomationCenterContextPanel({
@@ -1889,6 +2007,11 @@ export default function AutomationCenterContextPanel({
   onRunShadowSend,
   providerSession,
   providerSessionGuard,
+  liveSendGate,
+  liveSendGateGuard,
+  onOpenLiveSendGate,
+  onConfirmLiveSendGate,
+  onCancelLiveSendGate,
 }: Props) {
   if (selectedHermesMission) {
     return (
@@ -1913,6 +2036,11 @@ export default function AutomationCenterContextPanel({
         onRunShadowSend={onRunShadowSend}
         providerSession={providerSession}
         providerSessionGuard={providerSessionGuard}
+        liveSendGate={liveSendGate}
+        liveSendGateGuard={liveSendGateGuard}
+        onOpenLiveSendGate={onOpenLiveSendGate}
+        onConfirmLiveSendGate={onConfirmLiveSendGate}
+        onCancelLiveSendGate={onCancelLiveSendGate}
       />
     );
   }

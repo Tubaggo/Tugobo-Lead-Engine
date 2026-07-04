@@ -65,6 +65,16 @@ import {
   type HermesProviderSession,
 } from "@/app/components/v2/hermes-provider-sessions";
 import {
+  CANCEL_GATE_BUTTON_LABEL,
+  CONFIRM_GATE_BUTTON_LABEL,
+  GATE_NOT_SENT_LABEL,
+  MISSION_GATE_STATE_LABELS,
+  OPEN_GATE_BUTTON_LABEL,
+  buildGateTimelineEntries,
+  type HermesLiveSendGate,
+  type MissionGateUiState,
+} from "@/app/components/v2/hermes-live-send-gate";
+import {
   selectCls,
   inputCls,
   kpiStripCls,
@@ -98,6 +108,10 @@ type Props = {
   hermesProviderReceipts: Record<string, HermesProviderReceipt>;
   onRunShadowSend: (missionId: string) => void;
   providerSessions: HermesProviderSession[];
+  hermesLiveSendGates: Record<string, HermesLiveSendGate>;
+  onOpenLiveSendGate: (missionId: string) => void;
+  onConfirmLiveSendGate: (missionId: string) => void;
+  onCancelLiveSendGate: (missionId: string) => void;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -227,6 +241,7 @@ function workforceStatus(
   drafts: Record<string, HermesOutboundDraft>,
   deliveries: Record<string, HermesDeliveryRequest>,
   receipts: Record<string, HermesProviderReceipt>,
+  gates: Record<string, HermesLiveSendGate>,
 ): WorkforceStatus {
   // Alive first: is this agent the one actively running a pipeline stage
   // right now? If so, that overrides the generic task-count status below —
@@ -257,12 +272,26 @@ function workforceStatus(
   }
   if (agent === "courier") {
     // Courier's status now reflects the furthest-along stage across all
-    // missions (v4.4.0): pending draft → ready for provider → Shadow Send
-    // Ready → Shadow Send Completed. Never "sent"/"delivered" — those imply
-    // a message actually left the system, which nothing here ever does.
-    const shadowSentCount = Object.values(receipts).filter((r) => r.status === "shadow_sent").length;
-    if (shadowSentCount > 0) {
-      return { label: `${shadowSentCount} shadow send tamamlandı`, dot: "bg-sky-400", active: true };
+    // missions (v4.6.0): pending draft → ready for provider → Live Gate
+    // Ready → Awaiting final confirmation → Live blocked by policy. Never
+    // "sent"/"delivered"/"sending" — those imply a message actually left
+    // the system, which nothing here ever does.
+    const gateList = Object.values(gates);
+    const blockedGateCount = gateList.filter(
+      (g) => g.status === "blocked" || g.status === "confirmed_but_blocked",
+    ).length;
+    if (blockedGateCount > 0) {
+      return { label: `${blockedGateCount} live blocked by policy`, dot: "bg-rose-400", active: true };
+    }
+    const pendingGateCount = gateList.filter((g) => g.status === "pending_confirmation").length;
+    if (pendingGateCount > 0) {
+      return { label: `${pendingGateCount} awaiting final confirmation`, dot: "bg-amber-400", active: true };
+    }
+    const gateReadyCount = Object.values(receipts).filter(
+      (r) => r.status === "shadow_sent" && !gates[r.missionId],
+    ).length;
+    if (gateReadyCount > 0) {
+      return { label: `${gateReadyCount} live gate ready`, dot: "bg-emerald-400", active: true };
     }
     const shadowReadyCount = Object.values(deliveries).filter(
       (d) => d.status === "ready" && !receipts[d.missionId],
@@ -306,6 +335,7 @@ function WorkforceStrip({
   drafts,
   deliveries,
   receipts,
+  gates,
 }: {
   tasks: ShadowTask[];
   decisions: HermesDecisionMap;
@@ -314,6 +344,7 @@ function WorkforceStrip({
   drafts: Record<string, HermesOutboundDraft>;
   deliveries: Record<string, HermesDeliveryRequest>;
   receipts: Record<string, HermesProviderReceipt>;
+  gates: Record<string, HermesLiveSendGate>;
 }) {
   const agents = Object.keys(HERMES_AGENT_REGISTRY) as HermesAgentKey[];
   return (
@@ -324,7 +355,7 @@ function WorkforceStrip({
         </span>
         {agents.map((key) => {
           const meta = HERMES_AGENT_REGISTRY[key];
-          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries, receipts);
+          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries, receipts, gates);
           return (
             <span key={key} className="flex items-center gap-1.5" title={meta.shadowIntent}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.dot} ${st.label.startsWith("Çalışıyor") ? "animate-pulse" : ""}`} />
@@ -570,6 +601,24 @@ function ConnectorStateBadge({ state }: { state: MissionConnectorUiState }) {
   );
 }
 
+const GATE_BADGE_CLS: Record<MissionGateUiState, string> = {
+  "not-opened": "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+  pending_confirmation: "bg-amber-500/[0.12] text-amber-400 ring-amber-500/25",
+  confirmed_but_blocked: "bg-rose-500/[0.12] text-rose-400 ring-rose-500/25",
+  ready_for_future_live_send: "bg-emerald-500/[0.12] text-emerald-400 ring-emerald-500/25",
+  blocked: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
+  cancelled: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+  expired: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+};
+
+function GateStateBadge({ state }: { state: MissionGateUiState }) {
+  return (
+    <span className={`inline-flex items-center rounded-md px-2 py-1 text-[10px] font-semibold ring-1 ring-inset ${GATE_BADGE_CLS[state]}`}>
+      {MISSION_GATE_STATE_LABELS[state]}
+    </span>
+  );
+}
+
 /** Mission-card-only session labels — "Ready for Shadow" wins whenever shadow send works, since that never depends on a live connection. */
 type SessionCardState = "ready-for-shadow" | "setup-required" | "not-connected" | "live-disabled";
 
@@ -597,12 +646,16 @@ function MissionCard({
   delivery,
   receipt,
   providerSessions,
+  gate,
   onSelect,
   onToggleExpand,
   onApprove,
   onReject,
   onStartPipeline,
   onRunShadowSend,
+  onOpenLiveSendGate,
+  onConfirmLiveSendGate,
+  onCancelLiveSendGate,
 }: {
   mission: HermesMission;
   isSelected: boolean;
@@ -612,12 +665,16 @@ function MissionCard({
   delivery: HermesDeliveryRequest | undefined;
   receipt: HermesProviderReceipt | undefined;
   providerSessions: HermesProviderSession[];
+  gate: HermesLiveSendGate | undefined;
   onSelect: (mission: HermesMission) => void;
   onToggleExpand: (missionId: string) => void;
   onApprove: (mission: HermesMission) => void;
   onReject: (taskId: string) => void;
   onStartPipeline: (mission: HermesMission) => void;
   onRunShadowSend: (missionId: string) => void;
+  onOpenLiveSendGate: (missionId: string) => void;
+  onConfirmLiveSendGate: (missionId: string) => void;
+  onCancelLiveSendGate: (missionId: string) => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0];
   const uiState = computeMissionPipelineUiState(mission, pipeline);
@@ -633,6 +690,7 @@ function MissionCard({
   const connectorUiState = simpleConnectorUiState(delivery, receipt);
   const providerSession = delivery ? providerSessions.find((s) => s.provider === delivery.provider) : undefined;
   const sessionCardState = delivery ? computeSessionCardState(providerSession) : null;
+  const gateUiState: MissionGateUiState | null = receipt ? (gate ? gate.status : "not-opened") : null;
   const timeline = [
     ...mission.timeline,
     ...buildPipelineTimelineEntries(pipeline),
@@ -640,6 +698,7 @@ function MissionCard({
     ...buildDeliveryTimelineEntries(delivery),
     ...buildConnectorTimelineEntries(receipt),
     ...buildSessionTimelineEntries(providerSession),
+    ...buildGateTimelineEntries(gate),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -858,6 +917,55 @@ function MissionCard({
             </div>
           )}
 
+          {gateUiState && (
+            <div>
+              <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                Live Send Gate
+              </p>
+              <GateStateBadge state={gateUiState} />
+              {gate && <p className="mt-1.5 text-[10px] text-zinc-500">{gate.reason}</p>}
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {gateUiState === "not-opened" && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenLiveSendGate(mission.missionId);
+                    }}
+                    className="rounded-md bg-indigo-500 px-2.5 py-1 text-[10px] font-semibold text-white transition-colors duration-100 hover:bg-indigo-400"
+                  >
+                    {OPEN_GATE_BUTTON_LABEL}
+                  </button>
+                )}
+                {gate && gate.status !== "cancelled" && gate.status !== "confirmed_but_blocked" && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onConfirmLiveSendGate(mission.missionId);
+                    }}
+                    className="rounded-md bg-amber-500/[0.14] px-2.5 py-1 text-[10px] font-semibold text-amber-400 ring-1 ring-inset ring-amber-500/25 transition-colors duration-100 hover:bg-amber-500/[0.22]"
+                  >
+                    {CONFIRM_GATE_BUTTON_LABEL}
+                  </button>
+                )}
+                {gate && gate.status !== "cancelled" && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCancelLiveSendGate(mission.missionId);
+                    }}
+                    className="rounded-md bg-rose-500/[0.10] px-2.5 py-1 text-[10px] font-semibold text-rose-400 ring-1 ring-inset ring-rose-500/20 transition-colors duration-100 hover:bg-rose-500/[0.16]"
+                  >
+                    {CANCEL_GATE_BUTTON_LABEL}
+                  </button>
+                )}
+              </div>
+              <p className="mt-1.5 text-[9px] text-zinc-600">{GATE_NOT_SENT_LABEL}</p>
+            </div>
+          )}
+
           <div>
             <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
               Zaman Akışı
@@ -903,6 +1011,10 @@ function MissionQueue({
   hermesProviderReceipts,
   onRunShadowSend,
   providerSessions,
+  hermesLiveSendGates,
+  onOpenLiveSendGate,
+  onConfirmLiveSendGate,
+  onCancelLiveSendGate,
 }: {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
@@ -918,6 +1030,10 @@ function MissionQueue({
   hermesProviderReceipts: Record<string, HermesProviderReceipt>;
   onRunShadowSend: (missionId: string) => void;
   providerSessions: HermesProviderSession[];
+  hermesLiveSendGates: Record<string, HermesLiveSendGate>;
+  onOpenLiveSendGate: (missionId: string) => void;
+  onConfirmLiveSendGate: (missionId: string) => void;
+  onCancelLiveSendGate: (missionId: string) => void;
 }) {
   const order: MissionBucket[] = ["approval", "ready", "in-progress", "completed"];
   const groups = order
@@ -965,12 +1081,16 @@ function MissionQueue({
                   delivery={hermesDeliveries[mission.missionId]}
                   receipt={hermesProviderReceipts[mission.missionId]}
                   providerSessions={providerSessions}
+                  gate={hermesLiveSendGates[mission.missionId]}
                   onSelect={onSelectHermesMission}
                   onToggleExpand={onToggleExpand}
                   onApprove={onApproveMission}
                   onReject={onRejectTask}
                   onStartPipeline={onStartPipeline}
                   onRunShadowSend={onRunShadowSend}
+                  onOpenLiveSendGate={onOpenLiveSendGate}
+                  onConfirmLiveSendGate={onConfirmLiveSendGate}
+                  onCancelLiveSendGate={onCancelLiveSendGate}
                 />
               ))}
             </div>
@@ -1119,6 +1239,7 @@ function buildTimeline(
   drafts: Record<string, HermesOutboundDraft>,
   deliveries: Record<string, HermesDeliveryRequest>,
   receipts: Record<string, HermesProviderReceipt>,
+  gates: Record<string, HermesLiveSendGate>,
 ): TimelineItem[] {
   const hermesItems: TimelineItem[] = [];
 
@@ -1217,9 +1338,26 @@ function buildTimeline(
     }));
   });
 
-  return [...capped, ...founderItems, ...pipelineItems, ...draftItems, ...deliveryItems, ...connectorItems].sort(
-    (a, b) => a.at - b.at,
-  );
+  const gateItems: TimelineItem[] = missions.flatMap((m) => {
+    const g = gates[m.missionId];
+    if (!g) return [];
+    return buildGateTimelineEntries(g).map((e) => ({
+      at: e.at,
+      actor: e.actorLabel,
+      actorCls: e.actorCls,
+      text: `${e.text} — ${m.hotelName}`,
+    }));
+  });
+
+  return [
+    ...capped,
+    ...founderItems,
+    ...pipelineItems,
+    ...draftItems,
+    ...deliveryItems,
+    ...connectorItems,
+    ...gateItems,
+  ].sort((a, b) => a.at - b.at);
 }
 
 function TodayTimeline({
@@ -1230,6 +1368,7 @@ function TodayTimeline({
   drafts,
   deliveries,
   receipts,
+  gates,
 }: {
   monitor: HermesMonitor;
   decisions: HermesDecisionMap;
@@ -1238,8 +1377,9 @@ function TodayTimeline({
   drafts: Record<string, HermesOutboundDraft>;
   deliveries: Record<string, HermesDeliveryRequest>;
   receipts: Record<string, HermesProviderReceipt>;
+  gates: Record<string, HermesLiveSendGate>;
 }) {
-  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries, receipts);
+  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries, receipts, gates);
   return (
     <div className="border-b border-white/[0.06] px-5 py-4">
       <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
@@ -1615,6 +1755,10 @@ export default function AutomationCenterScreen({
   hermesProviderReceipts,
   onRunShadowSend,
   providerSessions,
+  hermesLiveSendGates,
+  onOpenLiveSendGate,
+  onConfirmLiveSendGate,
+  onCancelLiveSendGate,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -1637,6 +1781,7 @@ export default function AutomationCenterScreen({
           drafts={hermesDrafts}
           deliveries={hermesDeliveries}
           receipts={hermesProviderReceipts}
+          gates={hermesLiveSendGates}
         />
 
         {/* 2.5 — Provider Sessions: compact readiness strip, not a settings page */}
@@ -1658,6 +1803,10 @@ export default function AutomationCenterScreen({
           hermesProviderReceipts={hermesProviderReceipts}
           onRunShadowSend={onRunShadowSend}
           providerSessions={providerSessions}
+          hermesLiveSendGates={hermesLiveSendGates}
+          onOpenLiveSendGate={onOpenLiveSendGate}
+          onConfirmLiveSendGate={onConfirmLiveSendGate}
+          onCancelLiveSendGate={onCancelLiveSendGate}
         />
 
         {/* 4 — Courier Taslakları: founder approval queue for prepared drafts (v4.1.0-A) */}
@@ -1678,6 +1827,7 @@ export default function AutomationCenterScreen({
           drafts={hermesDrafts}
           deliveries={hermesDeliveries}
           receipts={hermesProviderReceipts}
+          gates={hermesLiveSendGates}
         />
 
         {/* 6 — Supporting: the old automation view, demoted and collapsed */}

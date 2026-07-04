@@ -67,6 +67,14 @@ import { PROVIDER_CONNECTORS, canProviderSend, runShadowSend } from "@/app/compo
 import type { HermesProviderReceipt } from "@/app/components/v2/hermes-provider-connectors";
 import { buildProviderSessions, canUseProviderSession } from "@/app/components/v2/hermes-provider-sessions";
 import type { HermesProviderSession } from "@/app/components/v2/hermes-provider-sessions";
+import {
+  canCreateLiveSendGateRecord,
+  canOpenLiveSendGate,
+  cancelLiveSendGate,
+  confirmLiveSendGate,
+  openLiveSendGate,
+} from "@/app/components/v2/hermes-live-send-gate";
+import type { HermesLiveSendGate } from "@/app/components/v2/hermes-live-send-gate";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -258,6 +266,12 @@ export default function V2Shell({ scoredLeads }: Props) {
   // simulation. No fetch, no provider SDK, no live send exists yet.
   const [hermesProviderReceipts, setHermesProviderReceipts] = useState<Record<string, HermesProviderReceipt>>({});
 
+  // Hermes Live Send Gate (v4.6.0): session-only gate bookkeeping, keyed by
+  // missionId — same convention as every other Hermes Record above. The
+  // final supervised checkpoint before any *future* live send — this sprint
+  // never sends; confirming a gate always resolves to "confirmed_but_blocked".
+  const [hermesLiveSendGates, setHermesLiveSendGates] = useState<Record<string, HermesLiveSendGate>>({});
+
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.
   const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
@@ -443,6 +457,48 @@ export default function V2Shell({ scoredLeads }: Props) {
     },
     [hermesDeliveries, hermesDrafts, automationCardsByLeadId],
   );
+
+  // Founder-triggered only (v4.6.0) — a Shadow Send receipt existing never
+  // auto-opens the gate. Founder must click "Canlı Gönderim Kapısını Aç".
+  // openLiveSendGate is pure/synchronous; provider-session readiness (or the
+  // lack of it) only decides the gate's initial status/reason, never
+  // whether it gets created.
+  const openLiveSendGateForMission = useCallback(
+    (missionId: string) => {
+      const delivery = hermesDeliveries[missionId];
+      const draft = hermesDrafts[missionId];
+      const receipt = hermesProviderReceipts[missionId];
+      if (!delivery || !draft || !receipt) return;
+      const card = automationCardsByLeadId.get(delivery.leadId);
+      const session = providerSessionsByProvider.get(delivery.provider);
+
+      setHermesLiveSendGates((prev) => {
+        const guard = canCreateLiveSendGateRecord(draft, delivery, receipt, card, prev[missionId]);
+        if (!guard.allowed) return prev;
+        return { ...prev, [missionId]: openLiveSendGate(draft, delivery, receipt, session, card) };
+      });
+    },
+    [hermesDeliveries, hermesDrafts, hermesProviderReceipts, automationCardsByLeadId, providerSessionsByProvider],
+  );
+
+  // "Canlı Gönderimi Onayla" — an intentionally dry final confirmation.
+  // Never sends; always resolves to "confirmed_but_blocked" since this
+  // sprint's policy hard-disables liveSendEnabled regardless of gate state.
+  const confirmLiveSendGateForMission = useCallback((missionId: string) => {
+    setHermesLiveSendGates((prev) => {
+      const gate = prev[missionId];
+      if (!gate || gate.status === "cancelled" || gate.status === "confirmed_but_blocked") return prev;
+      return { ...prev, [missionId]: confirmLiveSendGate(gate) };
+    });
+  }, []);
+
+  const cancelLiveSendGateForMission = useCallback((missionId: string) => {
+    setHermesLiveSendGates((prev) => {
+      const gate = prev[missionId];
+      if (!gate || gate.status === "cancelled") return prev;
+      return { ...prev, [missionId]: cancelLiveSendGate(gate) };
+    });
+  }, []);
 
   // "Approval becomes execution trigger" (A5): approving a gated mission
   // both records the founder's decision and starts its pipeline in the same
@@ -631,7 +687,10 @@ export default function V2Shell({ scoredLeads }: Props) {
             // receipt is done, not pending, so it must not inflate this count.
             Object.values(hermesDeliveries).filter(
               (d) => d.status === "ready" && !hermesProviderReceipts[d.missionId],
-            ).length,
+            ).length +
+            // Gates awaiting final confirmation only — cancelled/blocked/
+            // confirmed gates are resolved, not pending founder attention.
+            Object.values(hermesLiveSendGates).filter((g) => g.status === "pending_confirmation").length,
         }}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
@@ -819,6 +878,10 @@ export default function V2Shell({ scoredLeads }: Props) {
                 hermesProviderReceipts={hermesProviderReceipts}
                 onRunShadowSend={runProviderShadowSend}
                 providerSessions={providerSessions}
+                hermesLiveSendGates={hermesLiveSendGates}
+                onOpenLiveSendGate={openLiveSendGateForMission}
+                onConfirmLiveSendGate={confirmLiveSendGateForMission}
+                onCancelLiveSendGate={cancelLiveSendGateForMission}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
@@ -891,6 +954,23 @@ export default function V2Shell({ scoredLeads }: Props) {
                     return canUseProviderSession("shadow_send", d, r, providerSessionsByProvider.get(d.provider));
                   })()
                 }
+                liveSendGate={
+                  selectedHermesMission ? (hermesLiveSendGates[selectedHermesMission.missionId] ?? null) : null
+                }
+                liveSendGateGuard={
+                  (() => {
+                    if (!selectedHermesMission) return { allowed: false, reason: "" };
+                    const d = hermesDrafts[selectedHermesMission.missionId];
+                    const del = hermesDeliveries[selectedHermesMission.missionId];
+                    const r = hermesProviderReceipts[selectedHermesMission.missionId];
+                    const card = automationCardsByLeadId.get(selectedHermesMission.leadId);
+                    const s = del ? providerSessionsByProvider.get(del.provider) : undefined;
+                    return canOpenLiveSendGate(d, del, r, s, card, hermesLiveSendGates[selectedHermesMission.missionId]);
+                  })()
+                }
+                onOpenLiveSendGate={() => selectedHermesMission && openLiveSendGateForMission(selectedHermesMission.missionId)}
+                onConfirmLiveSendGate={confirmLiveSendGateForMission}
+                onCancelLiveSendGate={cancelLiveSendGateForMission}
               />
             </>
           ) : (
