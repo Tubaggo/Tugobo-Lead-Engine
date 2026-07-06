@@ -79,6 +79,14 @@ import {
 import type { HermesLiveSendGate } from "@/app/components/v2/hermes-live-send-gate";
 import { canBuildProviderApiDryRequest, getProviderApiAdapter, runProviderApiDryMode } from "@/app/components/v2/hermes-provider-api-runtime";
 import type { HermesProviderApiDryResponse } from "@/app/components/v2/hermes-provider-api-runtime";
+import {
+  DEFAULT_CONTROLLED_LIVE_SEND_POLICY,
+  attemptControlledLiveSend,
+  canAttemptControlledLiveSend,
+  canCreateControlledLiveSendResultRecord,
+  getLiveProviderAdapter,
+} from "@/app/components/v2/hermes-live-provider-adapters";
+import type { HermesLiveSendResult } from "@/app/components/v2/hermes-live-provider-adapters";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -284,6 +292,13 @@ export default function V2Shell({ scoredLeads }: Props) {
   const [hermesProviderApiDryResponses, setHermesProviderApiDryResponses] = useState<
     Record<string, HermesProviderApiDryResponse>
   >({});
+
+  // Hermes Controlled Live Provider Adapter (v4.9.0): session-only result
+  // bookkeeping, keyed by missionId — same convention as every other Hermes
+  // Record above. Only ever reaches "blocked" — no messaging credential, no
+  // test-mode config, and no enabled live policy exist anywhere in this
+  // codebase. No fetch, no provider SDK, no real network call, ever.
+  const [hermesLiveSendResults, setHermesLiveSendResults] = useState<Record<string, HermesLiveSendResult>>({});
 
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.
@@ -563,6 +578,51 @@ export default function V2Shell({ scoredLeads }: Props) {
     ],
   );
 
+  // Founder-triggered only (v4.9.0) — an "API Dry Mode" completion never
+  // auto-runs this. Founder must click "Canlı Gönderim Denetimi Çalıştır".
+  // attemptControlledLiveSend is pure/synchronous/local and always resolves
+  // to "blocked" — no messaging credential, no test-mode config, and no
+  // enabled live policy exist anywhere in this codebase. No fetch, no
+  // provider SDK, no real network call, ever.
+  const attemptControlledLiveSendForMission = useCallback(
+    (missionId: string) => {
+      const delivery = hermesDeliveries[missionId];
+      const draft = hermesDrafts[missionId];
+      const receipt = hermesProviderReceipts[missionId];
+      const gate = hermesLiveSendGates[missionId];
+      const apiDryResponse = hermesProviderApiDryResponses[missionId];
+      if (!delivery || !draft || !receipt || !gate || !apiDryResponse) return;
+      const runtime = providerRuntimesByProvider.get(delivery.provider);
+      const session = providerSessionsByProvider.get(delivery.provider);
+      const adapter = getLiveProviderAdapter(delivery.provider);
+
+      setHermesLiveSendResults((prev) => {
+        const guard = canCreateControlledLiveSendResultRecord(
+          draft,
+          delivery,
+          receipt,
+          gate,
+          apiDryResponse,
+          prev[missionId],
+        );
+        if (!guard.allowed) return prev;
+        return {
+          ...prev,
+          [missionId]: attemptControlledLiveSend(draft, delivery, receipt, gate, apiDryResponse, runtime, session, adapter),
+        };
+      });
+    },
+    [
+      hermesDeliveries,
+      hermesDrafts,
+      hermesProviderReceipts,
+      hermesLiveSendGates,
+      hermesProviderApiDryResponses,
+      providerRuntimesByProvider,
+      providerSessionsByProvider,
+    ],
+  );
+
   // "Approval becomes execution trigger" (A5): approving a gated mission
   // both records the founder's decision and starts its pipeline in the same
   // click — no separate "Hermes Çalıştır" step remains for those missions.
@@ -759,6 +819,13 @@ export default function V2Shell({ scoredLeads }: Props) {
             // pending, so it must not inflate this count (no overcounting).
             Object.values(hermesLiveSendGates).filter(
               (g) => g.status === "confirmed_but_blocked" && !hermesProviderApiDryResponses[g.missionId],
+            ).length +
+            // Controlled live checks pending only — dry_ready responses that
+            // don't yet have a live-send result. A completed (always
+            // "blocked") result is resolved, not pending, so it must not
+            // inflate this count (no overcounting).
+            Object.entries(hermesProviderApiDryResponses).filter(
+              ([missionId, r]) => r.status === "dry_ready" && !hermesLiveSendResults[missionId],
             ).length,
         }}
       />
@@ -954,6 +1021,8 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onCancelLiveSendGate={cancelLiveSendGateForMission}
                 hermesProviderApiDryResponses={hermesProviderApiDryResponses}
                 onRunProviderApiDryMode={runProviderApiDryModeForMission}
+                hermesLiveSendResults={hermesLiveSendResults}
+                onAttemptControlledLiveSend={attemptControlledLiveSendForMission}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
@@ -1084,6 +1153,43 @@ export default function V2Shell({ scoredLeads }: Props) {
                 }
                 onRunProviderApiDryMode={() =>
                   selectedHermesMission && runProviderApiDryModeForMission(selectedHermesMission.missionId)
+                }
+                liveAdapter={
+                  (() => {
+                    const d = selectedHermesMission ? hermesDeliveries[selectedHermesMission.missionId] : undefined;
+                    return d ? getLiveProviderAdapter(d.provider) : null;
+                  })()
+                }
+                liveSendResult={
+                  selectedHermesMission ? (hermesLiveSendResults[selectedHermesMission.missionId] ?? null) : null
+                }
+                liveSendGuard={
+                  (() => {
+                    if (!selectedHermesMission) return { allowed: false, reason: "" };
+                    const draft = hermesDrafts[selectedHermesMission.missionId];
+                    const delivery = hermesDeliveries[selectedHermesMission.missionId];
+                    const receipt = hermesProviderReceipts[selectedHermesMission.missionId];
+                    const gate = hermesLiveSendGates[selectedHermesMission.missionId];
+                    const apiDryResponse = hermesProviderApiDryResponses[selectedHermesMission.missionId];
+                    const runtime = delivery ? providerRuntimesByProvider.get(delivery.provider) : undefined;
+                    const session = delivery ? providerSessionsByProvider.get(delivery.provider) : undefined;
+                    const adapter = delivery ? getLiveProviderAdapter(delivery.provider) : undefined;
+                    return canAttemptControlledLiveSend(
+                      draft,
+                      delivery,
+                      receipt,
+                      gate,
+                      apiDryResponse,
+                      runtime,
+                      session,
+                      adapter,
+                      DEFAULT_CONTROLLED_LIVE_SEND_POLICY,
+                      hermesLiveSendResults[selectedHermesMission.missionId],
+                    );
+                  })()
+                }
+                onAttemptControlledLiveSend={() =>
+                  selectedHermesMission && attemptControlledLiveSendForMission(selectedHermesMission.missionId)
                 }
               />
             </>

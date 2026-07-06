@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import WhatsAppProviderReadinessCard from "@/app/components/v2/screens/WhatsAppProviderReadinessCard";
 import {
   adaptScoredLeadsToAutomationCards,
   computeAutomationSummary,
@@ -93,6 +94,18 @@ import {
   type MissionApiDryUiState,
 } from "@/app/components/v2/hermes-provider-api-runtime";
 import {
+  CONTROLLED_LIVE_ADAPTER_SECTION_LABEL,
+  CONTROLLED_LIVE_SEND_WARNING,
+  LIVE_SEND_RESULT_STATUS_LABELS,
+  MISSION_LIVE_ADAPTER_STATE_LABELS,
+  RUN_LIVE_SEND_AUDIT_BUTTON_LABEL,
+  buildLiveSendTimelineEntries,
+  computeMissionLiveAdapterUiState,
+  getLiveProviderAdapter,
+  type HermesLiveSendResult,
+  type MissionLiveAdapterUiState,
+} from "@/app/components/v2/hermes-live-provider-adapters";
+import {
   selectCls,
   inputCls,
   kpiStripCls,
@@ -133,6 +146,8 @@ type Props = {
   onCancelLiveSendGate: (missionId: string) => void;
   hermesProviderApiDryResponses: Record<string, HermesProviderApiDryResponse>;
   onRunProviderApiDryMode: (missionId: string) => void;
+  hermesLiveSendResults: Record<string, HermesLiveSendResult>;
+  onAttemptControlledLiveSend: (missionId: string) => void;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -264,6 +279,7 @@ function workforceStatus(
   receipts: Record<string, HermesProviderReceipt>,
   gates: Record<string, HermesLiveSendGate>,
   dryResponses: Record<string, HermesProviderApiDryResponse>,
+  liveSendResults: Record<string, HermesLiveSendResult>,
 ): WorkforceStatus {
   // Alive first: is this agent the one actively running a pipeline stage
   // right now? If so, that overrides the generic task-count status below —
@@ -294,13 +310,24 @@ function workforceStatus(
   }
   if (agent === "courier") {
     // Courier's status now reflects the furthest-along stage across all
-    // missions (v4.8.0): pending draft → ready for provider → Live Gate
+    // missions (v4.9.0): pending draft → ready for provider → Live Gate
     // Ready → Awaiting final confirmation → Live API Disabled → API Dry
-    // Ready → API Dry Completed. Never "sent"/"delivered"/"sending" — those
-    // imply a message actually left the system, which nothing here ever does.
-    const dryCompletedCount = Object.keys(dryResponses).length;
-    if (dryCompletedCount > 0) {
-      return { label: `${dryCompletedCount} API Dry Completed`, dot: "bg-emerald-400", active: true };
+    // Ready → Live Adapter Blocked → Controlled Result Ready. Never
+    // "sent"/"delivered"/"sending" — those imply a message actually left
+    // the system, which nothing here ever does.
+    const liveResultCount = Object.keys(liveSendResults).length;
+    if (liveResultCount > 0) {
+      return { label: `${liveResultCount} Controlled Result Ready`, dot: "bg-sky-400", active: true };
+    }
+    // A dry response only ever reaches "dry_ready" (v4.8.0's only reachable
+    // status) — so any dry response without a live result yet is precisely
+    // the "controlled live check available, but the live adapter itself is
+    // disabled by policy" state.
+    const liveBlockedCount = Object.entries(dryResponses).filter(
+      ([missionId, r]) => r.status === "dry_ready" && !liveSendResults[missionId],
+    ).length;
+    if (liveBlockedCount > 0) {
+      return { label: `${liveBlockedCount} Live Adapter Blocked`, dot: "bg-rose-400", active: true };
     }
     const gateList = Object.values(gates);
     const dryReadyCount = gateList.filter(
@@ -367,6 +394,7 @@ function WorkforceStrip({
   receipts,
   gates,
   dryResponses,
+  liveSendResults,
 }: {
   tasks: ShadowTask[];
   decisions: HermesDecisionMap;
@@ -377,6 +405,7 @@ function WorkforceStrip({
   receipts: Record<string, HermesProviderReceipt>;
   gates: Record<string, HermesLiveSendGate>;
   dryResponses: Record<string, HermesProviderApiDryResponse>;
+  liveSendResults: Record<string, HermesLiveSendResult>;
 }) {
   const agents = Object.keys(HERMES_AGENT_REGISTRY) as HermesAgentKey[];
   return (
@@ -387,7 +416,7 @@ function WorkforceStrip({
         </span>
         {agents.map((key) => {
           const meta = HERMES_AGENT_REGISTRY[key];
-          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries, receipts, gates, dryResponses);
+          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries, receipts, gates, dryResponses, liveSendResults);
           return (
             <span key={key} className="flex items-center gap-1.5" title={meta.shadowIntent}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.dot} ${st.label.startsWith("Çalışıyor") ? "animate-pulse" : ""}`} />
@@ -685,6 +714,7 @@ function MissionCard({
   providerRuntimes,
   gate,
   dryResponse,
+  liveSendResult,
   onSelect,
   onToggleExpand,
   onApprove,
@@ -695,6 +725,7 @@ function MissionCard({
   onConfirmLiveSendGate,
   onCancelLiveSendGate,
   onRunProviderApiDryMode,
+  onAttemptControlledLiveSend,
 }: {
   mission: HermesMission;
   isSelected: boolean;
@@ -707,6 +738,7 @@ function MissionCard({
   providerRuntimes: HermesProvider[];
   gate: HermesLiveSendGate | undefined;
   dryResponse: HermesProviderApiDryResponse | undefined;
+  liveSendResult: HermesLiveSendResult | undefined;
   onSelect: (mission: HermesMission) => void;
   onToggleExpand: (missionId: string) => void;
   onApprove: (mission: HermesMission) => void;
@@ -717,6 +749,7 @@ function MissionCard({
   onConfirmLiveSendGate: (missionId: string) => void;
   onCancelLiveSendGate: (missionId: string) => void;
   onRunProviderApiDryMode: (missionId: string) => void;
+  onAttemptControlledLiveSend: (missionId: string) => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0];
   const uiState = computeMissionPipelineUiState(mission, pipeline);
@@ -746,6 +779,14 @@ function MissionCard({
         ? "dry-ready"
         : "not-ready"
     : null;
+  const liveAdapter = delivery ? getLiveProviderAdapter(delivery.provider) : undefined;
+  // Simplified projection only — same convention as apiDryUiState above:
+  // "blocked" (the full guard's real reason) only ever shows in Decision
+  // Center; this list only distinguishes "not shown yet" / "ready to run" /
+  // "already ran".
+  const liveAdapterUiState: MissionLiveAdapterUiState | null = dryResponse
+    ? computeMissionLiveAdapterUiState(dryResponse, liveSendResult)
+    : null;
   const timeline = [
     ...mission.timeline,
     ...buildPipelineTimelineEntries(pipeline),
@@ -756,6 +797,7 @@ function MissionCard({
     ...buildSessionTimelineEntries(providerSession),
     ...buildGateTimelineEntries(gate),
     ...buildProviderApiDryTimelineEntries(dryResponse),
+    ...buildLiveSendTimelineEntries(liveSendResult),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -1078,6 +1120,52 @@ function MissionCard({
             </div>
           )}
 
+          {liveAdapterUiState && (
+            <div>
+              <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                {CONTROLLED_LIVE_ADAPTER_SECTION_LABEL}
+              </p>
+              <span
+                className={[
+                  "inline-flex items-center rounded-md px-2 py-1 text-[10px] font-semibold ring-1 ring-inset",
+                  liveAdapterUiState === "completed"
+                    ? "bg-sky-500/[0.12] text-sky-400 ring-sky-500/25"
+                    : liveAdapterUiState === "ready"
+                      ? "bg-emerald-500/[0.12] text-emerald-400 ring-emerald-500/25"
+                      : "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+                ].join(" ")}
+              >
+                {MISSION_LIVE_ADAPTER_STATE_LABELS[liveAdapterUiState]}
+              </span>
+              {liveAdapter && (
+                <p className="mt-1.5 text-[10px] text-zinc-500">
+                  {liveAdapter.endpointLabel} · {AUTH_TYPE_LABELS[liveAdapter.authType]}
+                </p>
+              )}
+              {liveSendResult && (
+                <p className="mt-1.5 text-[10px] text-zinc-500">{liveSendResult.resultMessage}</p>
+              )}
+              {liveAdapterUiState === "ready" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAttemptControlledLiveSend(mission.missionId);
+                  }}
+                  className="mt-2 rounded-md bg-indigo-500 px-2.5 py-1 text-[10px] font-semibold text-white transition-colors duration-100 hover:bg-indigo-400"
+                >
+                  {RUN_LIVE_SEND_AUDIT_BUTTON_LABEL}
+                </button>
+              )}
+              {liveAdapterUiState === "not-ready" && (
+                <p className="mt-1.5 text-[10px] text-zinc-600">
+                  API Dry Mode tamamlandığında Controlled Live Adapter kullanılabilir.
+                </p>
+              )}
+              <p className="mt-1.5 text-[9px] text-zinc-600">{CONTROLLED_LIVE_SEND_WARNING}</p>
+            </div>
+          )}
+
           <div>
             <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
               Zaman Akışı
@@ -1130,6 +1218,8 @@ function MissionQueue({
   onCancelLiveSendGate,
   hermesProviderApiDryResponses,
   onRunProviderApiDryMode,
+  hermesLiveSendResults,
+  onAttemptControlledLiveSend,
 }: {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
@@ -1152,6 +1242,8 @@ function MissionQueue({
   onCancelLiveSendGate: (missionId: string) => void;
   hermesProviderApiDryResponses: Record<string, HermesProviderApiDryResponse>;
   onRunProviderApiDryMode: (missionId: string) => void;
+  hermesLiveSendResults: Record<string, HermesLiveSendResult>;
+  onAttemptControlledLiveSend: (missionId: string) => void;
 }) {
   const order: MissionBucket[] = ["approval", "ready", "in-progress", "completed"];
   const groups = order
@@ -1202,6 +1294,7 @@ function MissionQueue({
                   providerRuntimes={providerRuntimes}
                   gate={hermesLiveSendGates[mission.missionId]}
                   dryResponse={hermesProviderApiDryResponses[mission.missionId]}
+                  liveSendResult={hermesLiveSendResults[mission.missionId]}
                   onSelect={onSelectHermesMission}
                   onToggleExpand={onToggleExpand}
                   onApprove={onApproveMission}
@@ -1212,6 +1305,7 @@ function MissionQueue({
                   onConfirmLiveSendGate={onConfirmLiveSendGate}
                   onCancelLiveSendGate={onCancelLiveSendGate}
                   onRunProviderApiDryMode={onRunProviderApiDryMode}
+                  onAttemptControlledLiveSend={onAttemptControlledLiveSend}
                 />
               ))}
             </div>
@@ -1362,6 +1456,7 @@ function buildTimeline(
   receipts: Record<string, HermesProviderReceipt>,
   gates: Record<string, HermesLiveSendGate>,
   dryResponses: Record<string, HermesProviderApiDryResponse>,
+  liveSendResults: Record<string, HermesLiveSendResult>,
 ): TimelineItem[] {
   const hermesItems: TimelineItem[] = [];
 
@@ -1486,6 +1581,21 @@ function buildTimeline(
     }));
   });
 
+  // Controlled live-send events — same "only when relevant" convention as
+  // dryResponseItems above: gated per-mission on a result actually
+  // existing, a founder-triggered per-mission audit, never a repeated
+  // global snapshot.
+  const liveSendItems: TimelineItem[] = missions.flatMap((m) => {
+    const r = liveSendResults[m.missionId];
+    if (!r) return [];
+    return buildLiveSendTimelineEntries(r).map((e) => ({
+      at: e.at,
+      actor: e.actorLabel,
+      actorCls: e.actorCls,
+      text: `${e.text} — ${m.hotelName}`,
+    }));
+  });
+
   return [
     ...capped,
     ...founderItems,
@@ -1495,6 +1605,7 @@ function buildTimeline(
     ...connectorItems,
     ...gateItems,
     ...dryResponseItems,
+    ...liveSendItems,
   ].sort((a, b) => a.at - b.at);
 }
 
@@ -1508,6 +1619,7 @@ function TodayTimeline({
   receipts,
   gates,
   dryResponses,
+  liveSendResults,
 }: {
   monitor: HermesMonitor;
   decisions: HermesDecisionMap;
@@ -1518,8 +1630,9 @@ function TodayTimeline({
   receipts: Record<string, HermesProviderReceipt>;
   gates: Record<string, HermesLiveSendGate>;
   dryResponses: Record<string, HermesProviderApiDryResponse>;
+  liveSendResults: Record<string, HermesLiveSendResult>;
 }) {
-  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries, receipts, gates, dryResponses);
+  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries, receipts, gates, dryResponses, liveSendResults);
   return (
     <div className="border-b border-white/[0.06] px-5 py-4">
       <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
@@ -1902,6 +2015,8 @@ export default function AutomationCenterScreen({
   onCancelLiveSendGate,
   hermesProviderApiDryResponses,
   onRunProviderApiDryMode,
+  hermesLiveSendResults,
+  onAttemptControlledLiveSend,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -1926,10 +2041,16 @@ export default function AutomationCenterScreen({
           receipts={hermesProviderReceipts}
           gates={hermesLiveSendGates}
           dryResponses={hermesProviderApiDryResponses}
+          liveSendResults={hermesLiveSendResults}
         />
 
         {/* 2.5 — Provider Runtime: compact readiness strip, not a settings page */}
         <ProviderRuntimeStrip providers={providerRuntimes} />
+
+        {/* 2.6 — WhatsApp Provider Readiness (v5.0.0): self-contained,
+            fetches its own status, no props from this screen. First real
+            provider Hermes will eventually integrate with live. */}
+        <WhatsAppProviderReadinessCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
@@ -1954,6 +2075,8 @@ export default function AutomationCenterScreen({
           onCancelLiveSendGate={onCancelLiveSendGate}
           hermesProviderApiDryResponses={hermesProviderApiDryResponses}
           onRunProviderApiDryMode={onRunProviderApiDryMode}
+          hermesLiveSendResults={hermesLiveSendResults}
+          onAttemptControlledLiveSend={onAttemptControlledLiveSend}
         />
 
         {/* 4 — Courier Taslakları: founder approval queue for prepared drafts (v4.1.0-A) */}
@@ -1976,6 +2099,7 @@ export default function AutomationCenterScreen({
           receipts={hermesProviderReceipts}
           gates={hermesLiveSendGates}
           dryResponses={hermesProviderApiDryResponses}
+          liveSendResults={hermesLiveSendResults}
         />
 
         {/* 6 — Supporting: the old automation view, demoted and collapsed */}

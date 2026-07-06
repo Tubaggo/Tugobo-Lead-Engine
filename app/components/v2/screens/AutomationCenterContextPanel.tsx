@@ -100,6 +100,18 @@ import {
   type HermesProviderApiDryResponse,
   type HermesProviderApiValidationResult,
 } from "@/app/components/v2/hermes-provider-api-runtime";
+import {
+  CONTROLLED_LIVE_ADAPTER_SECTION_LABEL,
+  CONTROLLED_LIVE_SEND_WARNING,
+  LIVE_ADAPTER_STATUS_LABELS,
+  LIVE_POLICY_DISABLED_LABEL,
+  LIVE_SEND_RESULT_STATUS_LABELS,
+  RUN_LIVE_SEND_AUDIT_BUTTON_LABEL,
+  buildLiveSendTimelineEntries,
+  type HermesControlledLiveSendGuardResult,
+  type HermesLiveProviderAdapter,
+  type HermesLiveSendResult,
+} from "@/app/components/v2/hermes-live-provider-adapters";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -617,6 +629,10 @@ function MissionDecisionCenter({
   dryResponse,
   apiDryGuard,
   onRunProviderApiDryMode,
+  liveAdapter,
+  liveSendResult,
+  liveSendGuard,
+  onAttemptControlledLiveSend,
 }: {
   mission: HermesMission;
   momentum: OperationalMomentum | null;
@@ -647,6 +663,10 @@ function MissionDecisionCenter({
   dryResponse: HermesProviderApiDryResponse | null;
   apiDryGuard: HermesProviderApiValidationResult;
   onRunProviderApiDryMode: () => void;
+  liveAdapter: HermesLiveProviderAdapter | null;
+  liveSendResult: HermesLiveSendResult | null;
+  liveSendGuard: HermesControlledLiveSendGuardResult;
+  onAttemptControlledLiveSend: () => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
@@ -698,6 +718,7 @@ function MissionDecisionCenter({
     ...buildSessionTimelineEntries(providerSession ?? undefined),
     ...buildGateTimelineEntries(liveSendGate ?? undefined),
     ...buildProviderApiDryTimelineEntries(dryResponse ?? undefined),
+    ...buildLiveSendTimelineEntries(liveSendResult ?? undefined),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -1677,6 +1698,104 @@ function MissionDecisionCenter({
         )}
       </div>
 
+      {/* Controlled Live Adapter (v4.9.0) — the safe adapter layer a future
+          live integration would plug into. Read-only guardrail display: no
+          "Gönder"/"Send"/"Live Send" button anywhere in this section. Every
+          reachable result this sprint is "blocked" — no messaging
+          credential, no test-mode config, and no enabled live policy exist
+          anywhere in this codebase. */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>{CONTROLLED_LIVE_ADAPTER_SECTION_LABEL}</p>
+        {!dryResponse || dryResponse.status !== "dry_ready" ? (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            API Dry Mode tamamlandığında Controlled Live Adapter burada görünür.
+          </p>
+        ) : (
+          <>
+            {liveAdapter && (
+              <div className="space-y-2">
+                <div className={ROW}>
+                  <span className={LABEL}>Adapter</span>
+                  <span className={VALUE}>{liveAdapter.label}</span>
+                </div>
+                <div className={ROW}>
+                  <span className={LABEL}>Mode</span>
+                  <span className={VALUE}>{liveAdapter.mode}</span>
+                </div>
+                <div className={ROW}>
+                  <span className={LABEL}>Policy</span>
+                  <span className="text-[11px] font-medium text-rose-400">{LIVE_POLICY_DISABLED_LABEL}</span>
+                </div>
+                <div className={ROW}>
+                  <span className={LABEL}>Adapter Durumu</span>
+                  <span className={VALUE}>{LIVE_ADAPTER_STATUS_LABELS[liveAdapter.status]}</span>
+                </div>
+                <div>
+                  <span className={LABEL}>Required Stages</span>
+                  <p className="mt-1 text-[10.5px] leading-relaxed text-zinc-400">
+                    Draft Onaylandı → Delivery Hazır → Shadow Receipt → Live Send Gate Onaylandı → API Dry Mode
+                    Tamamlandı → Founder Final Aksiyon
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {liveSendResult ? (
+              <>
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <span className={LABEL}>Result</span>
+                  <span className="ml-2 inline-flex items-center rounded-full bg-rose-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-rose-400 ring-1 ring-inset ring-rose-500/20">
+                    {LIVE_SEND_RESULT_STATUS_LABELS[liveSendResult.status]}
+                  </span>
+                </div>
+                <p className="mt-2.5 text-[10px] font-semibold text-rose-400">{liveSendResult.resultMessage}</p>
+                <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                  Audit Trail
+                </p>
+                <div className="mt-1.5 max-h-[160px] space-y-1.5 overflow-y-auto">
+                  {liveSendResult.audit.map((entry, i) => (
+                    <div key={`${entry.timestamp}-${i}`} className="flex items-baseline gap-2">
+                      <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                        {new Date(entry.timestamp).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <span className="w-[56px] shrink-0 text-[9px] font-semibold text-indigo-300">
+                        {entry.actor}
+                      </span>
+                      <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                        {entry.details}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <span className={LABEL}>Guardrail Result</span>
+                  <p
+                    className={`mt-1 text-[11px] font-medium ${liveSendGuard.allowed ? "text-emerald-400" : "text-rose-400"}`}
+                  >
+                    {liveSendGuard.reason}
+                  </p>
+                </div>
+                {/* Deliberately not gated on liveSendGuard.allowed — that
+                    flag is permanently false this sprint (no authorized
+                    session / enabled adapter / enabled policy exist). The
+                    button's entire purpose is to run the audit and record
+                    *why* it's blocked, not to only appear once it wouldn't be. */}
+                <div className="mt-2.5">
+                  <Btn label={RUN_LIVE_SEND_AUDIT_BUTTON_LABEL} variant="primary" onClick={onAttemptControlledLiveSend} />
+                </div>
+              </>
+            )}
+
+            <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+              {CONTROLLED_LIVE_SEND_WARNING}
+            </p>
+          </>
+        )}
+      </div>
+
       {/* Shadow-mode note */}
       <div className={SEC}>
         <p className="text-[9px] leading-relaxed text-zinc-600">
@@ -2260,6 +2379,10 @@ type Props = {
   dryResponse: HermesProviderApiDryResponse | null;
   apiDryGuard: HermesProviderApiValidationResult;
   onRunProviderApiDryMode: () => void;
+  liveAdapter: HermesLiveProviderAdapter | null;
+  liveSendResult: HermesLiveSendResult | null;
+  liveSendGuard: HermesControlledLiveSendGuardResult;
+  onAttemptControlledLiveSend: () => void;
 };
 
 export default function AutomationCenterContextPanel({
@@ -2296,6 +2419,10 @@ export default function AutomationCenterContextPanel({
   dryResponse,
   apiDryGuard,
   onRunProviderApiDryMode,
+  liveAdapter,
+  liveSendResult,
+  liveSendGuard,
+  onAttemptControlledLiveSend,
 }: Props) {
   if (selectedHermesMission) {
     return (
@@ -2330,6 +2457,10 @@ export default function AutomationCenterContextPanel({
         dryResponse={dryResponse}
         apiDryGuard={apiDryGuard}
         onRunProviderApiDryMode={onRunProviderApiDryMode}
+        liveAdapter={liveAdapter}
+        liveSendResult={liveSendResult}
+        liveSendGuard={liveSendGuard}
+        onAttemptControlledLiveSend={onAttemptControlledLiveSend}
       />
     );
   }
