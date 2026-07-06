@@ -67,6 +67,8 @@ import { PROVIDER_CONNECTORS, canProviderSend, runShadowSend } from "@/app/compo
 import type { HermesProviderReceipt } from "@/app/components/v2/hermes-provider-connectors";
 import { buildProviderSessions, canUseProviderSession } from "@/app/components/v2/hermes-provider-sessions";
 import type { HermesProviderSession } from "@/app/components/v2/hermes-provider-sessions";
+import { buildProviderRuntime } from "@/app/components/v2/hermes-provider-runtime";
+import type { HermesProvider } from "@/app/components/v2/hermes-provider-runtime";
 import {
   canCreateLiveSendGateRecord,
   canOpenLiveSendGate,
@@ -345,6 +347,16 @@ export default function V2Shell({ scoredLeads }: Props) {
   const providerSessionsByProvider = useMemo(
     () => new Map(providerSessions.map((s) => [s.provider, s])),
     [providerSessions],
+  );
+
+  // Provider Connection Runtime (v4.7.0): a deterministic, global registry —
+  // same "computed once" convention as providerSessions above. Models the
+  // connection lifecycle Hermes will eventually plug real providers into;
+  // still no network, no fetch, no provider SDK.
+  const providerRuntimes = useMemo(() => buildProviderRuntime(), []);
+  const providerRuntimesByProvider = useMemo(
+    () => new Map<HermesProvider["provider"], HermesProvider>(providerRuntimes.map((p) => [p.provider, p])),
+    [providerRuntimes],
   );
 
   // Fired once, right when a mission's pipeline reaches "completed" — the
@@ -878,6 +890,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                 hermesProviderReceipts={hermesProviderReceipts}
                 onRunShadowSend={runProviderShadowSend}
                 providerSessions={providerSessions}
+                providerRuntimes={providerRuntimes}
                 hermesLiveSendGates={hermesLiveSendGates}
                 onOpenLiveSendGate={openLiveSendGateForMission}
                 onConfirmLiveSendGate={confirmLiveSendGateForMission}
@@ -952,6 +965,12 @@ export default function V2Shell({ scoredLeads }: Props) {
                     if (!d) return { allowed: false, reason: "" };
                     const r = selectedHermesMission ? hermesProviderReceipts[selectedHermesMission.missionId] : undefined;
                     return canUseProviderSession("shadow_send", d, r, providerSessionsByProvider.get(d.provider));
+                  })()
+                }
+                providerRuntime={
+                  (() => {
+                    const d = selectedHermesMission ? hermesDeliveries[selectedHermesMission.missionId] : undefined;
+                    return d ? (providerRuntimesByProvider.get(d.provider) ?? null) : null;
                   })()
                 }
                 liveSendGate={

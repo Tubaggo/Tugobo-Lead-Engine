@@ -78,6 +78,15 @@ import {
   type HermesLiveSendGate,
   type LiveSendGateGuardResult,
 } from "@/app/components/v2/hermes-live-send-gate";
+import {
+  CONNECTION_STATE_LABELS,
+  PROVIDER_CATEGORY_LABELS,
+  PROVIDER_HEALTH_LABELS,
+  PROVIDER_READINESS_LABELS,
+  PROVIDER_RUNTIME_SECTION_LABEL,
+  buildProviderRuntimeTimelineEntries,
+  type HermesProvider,
+} from "@/app/components/v2/hermes-provider-runtime";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -585,6 +594,7 @@ function MissionDecisionCenter({
   onRunShadowSend,
   providerSession,
   providerSessionGuard,
+  providerRuntime,
   liveSendGate,
   liveSendGateGuard,
   onOpenLiveSendGate,
@@ -610,6 +620,7 @@ function MissionDecisionCenter({
   onRunShadowSend: (missionId: string) => void;
   providerSession: HermesProviderSession | null;
   providerSessionGuard: ProviderSessionGuardResult;
+  providerRuntime: HermesProvider | null;
   liveSendGate: HermesLiveSendGate | null;
   liveSendGateGuard: LiveSendGateGuardResult;
   onOpenLiveSendGate: () => void;
@@ -662,6 +673,7 @@ function MissionDecisionCenter({
     ...buildDraftTimelineEntries(draft ?? undefined),
     ...buildDeliveryTimelineEntries(delivery ?? undefined),
     ...buildConnectorTimelineEntries(receipt ?? undefined),
+    ...buildProviderRuntimeTimelineEntries(providerRuntime ?? undefined),
     ...buildSessionTimelineEntries(providerSession ?? undefined),
     ...buildGateTimelineEntries(liveSendGate ?? undefined),
   ].sort((a, b) => a.at - b.at);
@@ -1193,6 +1205,127 @@ function MissionDecisionCenter({
         ) : (
           <p className="text-[10px] leading-relaxed text-zinc-600">
             Teslimat isteği hazır olduğunda Provider Connector burada görünür.
+          </p>
+        )}
+      </div>
+
+      {/* Provider Runtime (v4.7.0) — the connection lifecycle layer Hermes
+          will eventually plug real providers into. Read-only: no connect
+          button, no edit form, no credential fields. Sits above Provider
+          Session in the chain (Runtime → Connection → Session → Gate). */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>{PROVIDER_RUNTIME_SECTION_LABEL}</p>
+        {providerRuntime ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+                {CONNECTION_STATE_LABELS[providerRuntime.connectionState]}
+              </span>
+              <span
+                className={[
+                  "inline-flex items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset",
+                  providerRuntime.health === "healthy"
+                    ? "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20"
+                    : providerRuntime.health === "warning"
+                      ? "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20"
+                      : providerRuntime.health === "offline"
+                        ? "bg-white/[0.06] text-zinc-400 ring-white/[0.10]"
+                        : "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
+                ].join(" ")}
+              >
+                {PROVIDER_HEALTH_LABELS[providerRuntime.health]}
+              </span>
+            </div>
+
+            <div className="mt-2.5 space-y-2">
+              <div className={ROW}>
+                <span className={LABEL}>Kategori</span>
+                <span className={VALUE}>{PROVIDER_CATEGORY_LABELS[providerRuntime.category]}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Hazırlık</span>
+                <span className={VALUE}>{PROVIDER_READINESS_LABELS[providerRuntime.status]}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Öncelik</span>
+                <span className={VALUE}>{providerRuntime.priority}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Desteklenen Kanallar</span>
+                <span className={VALUE}>
+                  {providerRuntime.supportedChannels.length > 0
+                    ? providerRuntime.supportedChannels.map((c) => DELIVERY_PROVIDER_LABELS[c]).join(", ")
+                    : "—"}
+                </span>
+              </div>
+            </div>
+
+            <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+              Yapılandırma
+            </p>
+            <div className="mt-1.5 space-y-2">
+              <div className={ROW}>
+                <span className={LABEL}>Yapılandırıldı</span>
+                <span className={VALUE}>{providerRuntime.configuration.configured ? "Evet" : "Hayır"}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Yetkilendirme Gerekli</span>
+                <span className={VALUE}>{providerRuntime.configuration.requiresAuthorization ? "Evet" : "Hayır"}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Webhook Gerekli</span>
+                <span className={VALUE}>{providerRuntime.configuration.requiresWebhook ? "Evet" : "Hayır"}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>Doğrulama Gerekli</span>
+                <span className={VALUE}>{providerRuntime.configuration.requiresVerification ? "Evet" : "Hayır"}</span>
+              </div>
+            </div>
+            <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{providerRuntime.configuration.notes}</p>
+
+            <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+              Yetenekler
+            </p>
+            <div className="mt-1.5 space-y-1.5">
+              {providerRuntime.capabilities.map((cap) => (
+                <div key={cap.key} className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className={`text-[10.5px] font-medium ${cap.enabled ? "text-zinc-200" : "text-zinc-500"}`}>
+                      {cap.label}
+                    </p>
+                    <p className="text-[9px] leading-snug text-zinc-600">{cap.reason}</p>
+                  </div>
+                  <span
+                    className={`shrink-0 text-[9px] font-semibold ${cap.enabled ? "text-emerald-400" : "text-zinc-700"}`}
+                  >
+                    {cap.enabled ? "Aktif" : "Kapalı"}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+              Audit Trail
+            </p>
+            <div className="mt-1.5 max-h-[160px] space-y-1.5 overflow-y-auto">
+              {providerRuntime.audit.map((entry, i) => (
+                <div key={`${entry.timestamp}-${i}`} className="flex items-baseline gap-2">
+                  <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                    {new Date(entry.timestamp).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                  <span className="w-[56px] shrink-0 text-[9px] font-semibold text-indigo-300">
+                    {entry.actor}
+                  </span>
+                  <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                    {entry.details}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            Teslimat isteği hazır olduğunda Provider Runtime burada görünür.
           </p>
         )}
       </div>
@@ -1976,6 +2109,7 @@ type Props = {
   onRunShadowSend: (missionId: string) => void;
   providerSession: HermesProviderSession | null;
   providerSessionGuard: ProviderSessionGuardResult;
+  providerRuntime: HermesProvider | null;
   liveSendGate: HermesLiveSendGate | null;
   liveSendGateGuard: LiveSendGateGuardResult;
   onOpenLiveSendGate: () => void;
@@ -2007,6 +2141,7 @@ export default function AutomationCenterContextPanel({
   onRunShadowSend,
   providerSession,
   providerSessionGuard,
+  providerRuntime,
   liveSendGate,
   liveSendGateGuard,
   onOpenLiveSendGate,
@@ -2036,6 +2171,7 @@ export default function AutomationCenterContextPanel({
         onRunShadowSend={onRunShadowSend}
         providerSession={providerSession}
         providerSessionGuard={providerSessionGuard}
+        providerRuntime={providerRuntime}
         liveSendGate={liveSendGate}
         liveSendGateGuard={liveSendGateGuard}
         onOpenLiveSendGate={onOpenLiveSendGate}

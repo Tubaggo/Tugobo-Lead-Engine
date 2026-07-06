@@ -59,11 +59,17 @@ import {
 import {
   LIVE_SEND_CLOSED_LABEL,
   PROVIDER_NOT_LIVE_READY_WARNING,
-  SESSION_STATUS_LABELS,
-  SHADOW_READY_LABEL,
   buildSessionTimelineEntries,
   type HermesProviderSession,
 } from "@/app/components/v2/hermes-provider-sessions";
+import {
+  CONNECTION_STATE_LABELS,
+  PROVIDER_HEALTH_LABELS,
+  PROVIDER_READINESS_LABELS,
+  PROVIDER_RUNTIME_CHAIN_LABEL,
+  buildProviderRuntimeTimelineEntries,
+  type HermesProvider,
+} from "@/app/components/v2/hermes-provider-runtime";
 import {
   CANCEL_GATE_BUTTON_LABEL,
   CONFIRM_GATE_BUTTON_LABEL,
@@ -108,6 +114,7 @@ type Props = {
   hermesProviderReceipts: Record<string, HermesProviderReceipt>;
   onRunShadowSend: (missionId: string) => void;
   providerSessions: HermesProviderSession[];
+  providerRuntimes: HermesProvider[];
   hermesLiveSendGates: Record<string, HermesLiveSendGate>;
   onOpenLiveSendGate: (missionId: string) => void;
   onConfirmLiveSendGate: (missionId: string) => void;
@@ -373,40 +380,44 @@ function WorkforceStrip({
   );
 }
 
-/* ── 2.5. Provider Sessions (v4.5.0) — compact, deterministic, no setup UI ── */
+/* ── 2.5. Provider Runtime (v4.7.0) — compact, deterministic, no setup UI ── */
 
-const REAL_PROVIDERS_FOR_DISPLAY: Array<HermesProviderSession["provider"]> = [
+const REAL_PROVIDERS_FOR_DISPLAY: Array<HermesProvider["provider"]> = [
   "whatsapp",
   "instagram",
   "email",
   "sms",
 ];
 
-const SESSION_HEALTH_DOT: Record<HermesProviderSession["health"], string> = {
+const RUNTIME_HEALTH_DOT: Record<HermesProvider["health"], string> = {
   healthy: "bg-emerald-400",
   warning: "bg-amber-400",
+  offline: "bg-zinc-600",
   blocked: "bg-rose-400",
 };
 
 /** Compact strip only — this supports Hermes operations, it is not a settings page. No connect/setup buttons. */
-function ProviderSessionsStrip({ sessions }: { sessions: HermesProviderSession[] }) {
-  const byProvider = new Map(sessions.map((s) => [s.provider, s]));
+function ProviderRuntimeStrip({ providers }: { providers: HermesProvider[] }) {
+  const byProvider = new Map(providers.map((p) => [p.provider, p]));
   return (
     <div className="border-b border-white/[0.06] px-5 py-2.5">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
         <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
-          Provider Oturumu
+          Provider Runtime
         </span>
         {REAL_PROVIDERS_FOR_DISPLAY.map((provider) => {
-          const session = byProvider.get(provider);
-          if (!session) return null;
+          const runtime = byProvider.get(provider);
+          if (!runtime) return null;
           return (
-            <span key={provider} className="flex items-center gap-1.5" title={session.setupHint}>
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${SESSION_HEALTH_DOT[session.health]}`} />
-              <span className="text-[10px] font-semibold text-zinc-200">{session.label}</span>
+            <span
+              key={provider}
+              className="flex items-center gap-1.5"
+              title={`${CONNECTION_STATE_LABELS[runtime.connectionState]} · ${runtime.configuration.notes}`}
+            >
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${RUNTIME_HEALTH_DOT[runtime.health]}`} />
+              <span className="text-[10px] font-semibold text-zinc-200">{runtime.label}</span>
               <span className="text-[9px] text-zinc-600">
-                {session.canShadowSend ? SHADOW_READY_LABEL : SESSION_STATUS_LABELS[session.status]} ·{" "}
-                {LIVE_SEND_CLOSED_LABEL}
+                {PROVIDER_READINESS_LABELS[runtime.status]} · {LIVE_SEND_CLOSED_LABEL}
               </span>
             </span>
           );
@@ -646,6 +657,7 @@ function MissionCard({
   delivery,
   receipt,
   providerSessions,
+  providerRuntimes,
   gate,
   onSelect,
   onToggleExpand,
@@ -665,6 +677,7 @@ function MissionCard({
   delivery: HermesDeliveryRequest | undefined;
   receipt: HermesProviderReceipt | undefined;
   providerSessions: HermesProviderSession[];
+  providerRuntimes: HermesProvider[];
   gate: HermesLiveSendGate | undefined;
   onSelect: (mission: HermesMission) => void;
   onToggleExpand: (missionId: string) => void;
@@ -689,6 +702,7 @@ function MissionCard({
   const deliveryUiState = simpleDeliveryUiState(draft, delivery);
   const connectorUiState = simpleConnectorUiState(delivery, receipt);
   const providerSession = delivery ? providerSessions.find((s) => s.provider === delivery.provider) : undefined;
+  const providerRuntime = delivery ? providerRuntimes.find((p) => p.provider === delivery.provider) : undefined;
   const sessionCardState = delivery ? computeSessionCardState(providerSession) : null;
   const gateUiState: MissionGateUiState | null = receipt ? (gate ? gate.status : "not-opened") : null;
   const timeline = [
@@ -697,6 +711,7 @@ function MissionCard({
     ...buildDraftTimelineEntries(draft),
     ...buildDeliveryTimelineEntries(delivery),
     ...buildConnectorTimelineEntries(receipt),
+    ...buildProviderRuntimeTimelineEntries(providerRuntime),
     ...buildSessionTimelineEntries(providerSession),
     ...buildGateTimelineEntries(gate),
   ].sort((a, b) => a.at - b.at);
@@ -905,7 +920,16 @@ function MissionCard({
               {sessionCardState && (
                 <div className="mt-2.5 border-t border-white/[0.06] pt-2">
                   <p className="text-[9px] font-semibold uppercase tracking-wide text-zinc-500">
-                    Provider Session: {SESSION_CARD_LABELS[sessionCardState]}
+                    {PROVIDER_RUNTIME_CHAIN_LABEL}
+                  </p>
+                  <p className="mt-1 text-[9px] leading-relaxed text-zinc-500">
+                    {providerRuntime ? PROVIDER_READINESS_LABELS[providerRuntime.status] : "—"}
+                    {" → "}
+                    {providerRuntime ? CONNECTION_STATE_LABELS[providerRuntime.connectionState] : "—"}
+                    {" → "}
+                    {SESSION_CARD_LABELS[sessionCardState]}
+                    {" → "}
+                    {MISSION_GATE_STATE_LABELS[gateUiState ?? "not-opened"]}
                   </p>
                   {delivery?.status === "ready" && providerSession?.status !== "ready" && (
                     <p className="mt-1 text-[9px] leading-relaxed text-amber-400">
@@ -1011,6 +1035,7 @@ function MissionQueue({
   hermesProviderReceipts,
   onRunShadowSend,
   providerSessions,
+  providerRuntimes,
   hermesLiveSendGates,
   onOpenLiveSendGate,
   onConfirmLiveSendGate,
@@ -1030,6 +1055,7 @@ function MissionQueue({
   hermesProviderReceipts: Record<string, HermesProviderReceipt>;
   onRunShadowSend: (missionId: string) => void;
   providerSessions: HermesProviderSession[];
+  providerRuntimes: HermesProvider[];
   hermesLiveSendGates: Record<string, HermesLiveSendGate>;
   onOpenLiveSendGate: (missionId: string) => void;
   onConfirmLiveSendGate: (missionId: string) => void;
@@ -1081,6 +1107,7 @@ function MissionQueue({
                   delivery={hermesDeliveries[mission.missionId]}
                   receipt={hermesProviderReceipts[mission.missionId]}
                   providerSessions={providerSessions}
+                  providerRuntimes={providerRuntimes}
                   gate={hermesLiveSendGates[mission.missionId]}
                   onSelect={onSelectHermesMission}
                   onToggleExpand={onToggleExpand}
@@ -1755,6 +1782,7 @@ export default function AutomationCenterScreen({
   hermesProviderReceipts,
   onRunShadowSend,
   providerSessions,
+  providerRuntimes,
   hermesLiveSendGates,
   onOpenLiveSendGate,
   onConfirmLiveSendGate,
@@ -1784,8 +1812,8 @@ export default function AutomationCenterScreen({
           gates={hermesLiveSendGates}
         />
 
-        {/* 2.5 — Provider Sessions: compact readiness strip, not a settings page */}
-        <ProviderSessionsStrip sessions={providerSessions} />
+        {/* 2.5 — Provider Runtime: compact readiness strip, not a settings page */}
+        <ProviderRuntimeStrip providers={providerRuntimes} />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
@@ -1803,6 +1831,7 @@ export default function AutomationCenterScreen({
           hermesProviderReceipts={hermesProviderReceipts}
           onRunShadowSend={onRunShadowSend}
           providerSessions={providerSessions}
+          providerRuntimes={providerRuntimes}
           hermesLiveSendGates={hermesLiveSendGates}
           onOpenLiveSendGate={onOpenLiveSendGate}
           onConfirmLiveSendGate={onConfirmLiveSendGate}
