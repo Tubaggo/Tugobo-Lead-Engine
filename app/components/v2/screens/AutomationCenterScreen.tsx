@@ -81,6 +81,18 @@ import {
   type MissionGateUiState,
 } from "@/app/components/v2/hermes-live-send-gate";
 import {
+  API_DRY_RUN_BUTTON_LABEL,
+  AUTH_TYPE_LABELS,
+  MISSION_API_DRY_STATE_LABELS,
+  NO_REAL_API_CALL_NOTE,
+  PROVIDER_API_DRY_MODE_SECTION_LABEL,
+  buildProviderApiDryTimelineEntries,
+  getProviderApiAdapter,
+  type HermesProviderApiAdapter,
+  type HermesProviderApiDryResponse,
+  type MissionApiDryUiState,
+} from "@/app/components/v2/hermes-provider-api-runtime";
+import {
   selectCls,
   inputCls,
   kpiStripCls,
@@ -119,6 +131,8 @@ type Props = {
   onOpenLiveSendGate: (missionId: string) => void;
   onConfirmLiveSendGate: (missionId: string) => void;
   onCancelLiveSendGate: (missionId: string) => void;
+  hermesProviderApiDryResponses: Record<string, HermesProviderApiDryResponse>;
+  onRunProviderApiDryMode: (missionId: string) => void;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -249,6 +263,7 @@ function workforceStatus(
   deliveries: Record<string, HermesDeliveryRequest>,
   receipts: Record<string, HermesProviderReceipt>,
   gates: Record<string, HermesLiveSendGate>,
+  dryResponses: Record<string, HermesProviderApiDryResponse>,
 ): WorkforceStatus {
   // Alive first: is this agent the one actively running a pipeline stage
   // right now? If so, that overrides the generic task-count status below —
@@ -279,16 +294,24 @@ function workforceStatus(
   }
   if (agent === "courier") {
     // Courier's status now reflects the furthest-along stage across all
-    // missions (v4.6.0): pending draft → ready for provider → Live Gate
-    // Ready → Awaiting final confirmation → Live blocked by policy. Never
-    // "sent"/"delivered"/"sending" — those imply a message actually left
-    // the system, which nothing here ever does.
+    // missions (v4.8.0): pending draft → ready for provider → Live Gate
+    // Ready → Awaiting final confirmation → Live API Disabled → API Dry
+    // Ready → API Dry Completed. Never "sent"/"delivered"/"sending" — those
+    // imply a message actually left the system, which nothing here ever does.
+    const dryCompletedCount = Object.keys(dryResponses).length;
+    if (dryCompletedCount > 0) {
+      return { label: `${dryCompletedCount} API Dry Completed`, dot: "bg-emerald-400", active: true };
+    }
     const gateList = Object.values(gates);
-    const blockedGateCount = gateList.filter(
-      (g) => g.status === "blocked" || g.status === "confirmed_but_blocked",
+    const dryReadyCount = gateList.filter(
+      (g) => g.status === "confirmed_but_blocked" && !dryResponses[g.missionId],
     ).length;
+    if (dryReadyCount > 0) {
+      return { label: `${dryReadyCount} API Dry Ready`, dot: "bg-amber-400", active: true };
+    }
+    const blockedGateCount = gateList.filter((g) => g.status === "blocked").length;
     if (blockedGateCount > 0) {
-      return { label: `${blockedGateCount} live blocked by policy`, dot: "bg-rose-400", active: true };
+      return { label: `${blockedGateCount} Live API Disabled`, dot: "bg-rose-400", active: true };
     }
     const pendingGateCount = gateList.filter((g) => g.status === "pending_confirmation").length;
     if (pendingGateCount > 0) {
@@ -343,6 +366,7 @@ function WorkforceStrip({
   deliveries,
   receipts,
   gates,
+  dryResponses,
 }: {
   tasks: ShadowTask[];
   decisions: HermesDecisionMap;
@@ -352,6 +376,7 @@ function WorkforceStrip({
   deliveries: Record<string, HermesDeliveryRequest>;
   receipts: Record<string, HermesProviderReceipt>;
   gates: Record<string, HermesLiveSendGate>;
+  dryResponses: Record<string, HermesProviderApiDryResponse>;
 }) {
   const agents = Object.keys(HERMES_AGENT_REGISTRY) as HermesAgentKey[];
   return (
@@ -362,7 +387,7 @@ function WorkforceStrip({
         </span>
         {agents.map((key) => {
           const meta = HERMES_AGENT_REGISTRY[key];
-          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries, receipts, gates);
+          const st = workforceStatus(key, tasks, decisions, missions, pipelines, drafts, deliveries, receipts, gates, dryResponses);
           return (
             <span key={key} className="flex items-center gap-1.5" title={meta.shadowIntent}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.dot} ${st.label.startsWith("Çalışıyor") ? "animate-pulse" : ""}`} />
@@ -659,6 +684,7 @@ function MissionCard({
   providerSessions,
   providerRuntimes,
   gate,
+  dryResponse,
   onSelect,
   onToggleExpand,
   onApprove,
@@ -668,6 +694,7 @@ function MissionCard({
   onOpenLiveSendGate,
   onConfirmLiveSendGate,
   onCancelLiveSendGate,
+  onRunProviderApiDryMode,
 }: {
   mission: HermesMission;
   isSelected: boolean;
@@ -679,6 +706,7 @@ function MissionCard({
   providerSessions: HermesProviderSession[];
   providerRuntimes: HermesProvider[];
   gate: HermesLiveSendGate | undefined;
+  dryResponse: HermesProviderApiDryResponse | undefined;
   onSelect: (mission: HermesMission) => void;
   onToggleExpand: (missionId: string) => void;
   onApprove: (mission: HermesMission) => void;
@@ -688,6 +716,7 @@ function MissionCard({
   onOpenLiveSendGate: (missionId: string) => void;
   onConfirmLiveSendGate: (missionId: string) => void;
   onCancelLiveSendGate: (missionId: string) => void;
+  onRunProviderApiDryMode: (missionId: string) => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0];
   const uiState = computeMissionPipelineUiState(mission, pipeline);
@@ -705,6 +734,18 @@ function MissionCard({
   const providerRuntime = delivery ? providerRuntimes.find((p) => p.provider === delivery.provider) : undefined;
   const sessionCardState = delivery ? computeSessionCardState(providerSession) : null;
   const gateUiState: MissionGateUiState | null = receipt ? (gate ? gate.status : "not-opened") : null;
+  const apiAdapter = delivery ? getProviderApiAdapter(delivery.provider) : undefined;
+  // Simplified projection only — same convention as simpleConnectorUiState:
+  // "blocked" is never produced here (only Decision Center's full
+  // canBuildProviderApiDryRequest guard can determine that); this list only
+  // distinguishes "not shown yet" / "ready to trigger" / "already ran".
+  const apiDryUiState: MissionApiDryUiState | null = gate
+    ? dryResponse
+      ? "dry-completed"
+      : gate.status === "confirmed_but_blocked"
+        ? "dry-ready"
+        : "not-ready"
+    : null;
   const timeline = [
     ...mission.timeline,
     ...buildPipelineTimelineEntries(pipeline),
@@ -714,6 +755,7 @@ function MissionCard({
     ...buildProviderRuntimeTimelineEntries(providerRuntime),
     ...buildSessionTimelineEntries(providerSession),
     ...buildGateTimelineEntries(gate),
+    ...buildProviderApiDryTimelineEntries(dryResponse),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -990,6 +1032,52 @@ function MissionCard({
             </div>
           )}
 
+          {apiDryUiState && (
+            <div>
+              <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                {PROVIDER_API_DRY_MODE_SECTION_LABEL}
+              </p>
+              <span
+                className={[
+                  "inline-flex items-center rounded-md px-2 py-1 text-[10px] font-semibold ring-1 ring-inset",
+                  apiDryUiState === "dry-completed"
+                    ? "bg-sky-500/[0.12] text-sky-400 ring-sky-500/25"
+                    : apiDryUiState === "dry-ready"
+                      ? "bg-emerald-500/[0.12] text-emerald-400 ring-emerald-500/25"
+                      : "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+                ].join(" ")}
+              >
+                {MISSION_API_DRY_STATE_LABELS[apiDryUiState]}
+              </span>
+              {apiAdapter && (
+                <p className="mt-1.5 text-[10px] text-zinc-500">
+                  {apiAdapter.endpointLabel} · {apiAdapter.methodLabel} · {AUTH_TYPE_LABELS[apiAdapter.authType]}
+                </p>
+              )}
+              {dryResponse && (
+                <p className="mt-1.5 text-[10px] text-zinc-500">{dryResponse.resultMessage}</p>
+              )}
+              {apiDryUiState === "dry-ready" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRunProviderApiDryMode(mission.missionId);
+                  }}
+                  className="mt-2 rounded-md bg-indigo-500 px-2.5 py-1 text-[10px] font-semibold text-white transition-colors duration-100 hover:bg-indigo-400"
+                >
+                  {API_DRY_RUN_BUTTON_LABEL}
+                </button>
+              )}
+              {apiDryUiState === "not-ready" && (
+                <p className="mt-1.5 text-[10px] text-zinc-600">
+                  Live Send Gate onaylandığında API Dry Mode kullanılabilir.
+                </p>
+              )}
+              <p className="mt-1.5 text-[9px] text-zinc-600">{NO_REAL_API_CALL_NOTE}</p>
+            </div>
+          )}
+
           <div>
             <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
               Zaman Akışı
@@ -1040,6 +1128,8 @@ function MissionQueue({
   onOpenLiveSendGate,
   onConfirmLiveSendGate,
   onCancelLiveSendGate,
+  hermesProviderApiDryResponses,
+  onRunProviderApiDryMode,
 }: {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
@@ -1060,6 +1150,8 @@ function MissionQueue({
   onOpenLiveSendGate: (missionId: string) => void;
   onConfirmLiveSendGate: (missionId: string) => void;
   onCancelLiveSendGate: (missionId: string) => void;
+  hermesProviderApiDryResponses: Record<string, HermesProviderApiDryResponse>;
+  onRunProviderApiDryMode: (missionId: string) => void;
 }) {
   const order: MissionBucket[] = ["approval", "ready", "in-progress", "completed"];
   const groups = order
@@ -1109,6 +1201,7 @@ function MissionQueue({
                   providerSessions={providerSessions}
                   providerRuntimes={providerRuntimes}
                   gate={hermesLiveSendGates[mission.missionId]}
+                  dryResponse={hermesProviderApiDryResponses[mission.missionId]}
                   onSelect={onSelectHermesMission}
                   onToggleExpand={onToggleExpand}
                   onApprove={onApproveMission}
@@ -1118,6 +1211,7 @@ function MissionQueue({
                   onOpenLiveSendGate={onOpenLiveSendGate}
                   onConfirmLiveSendGate={onConfirmLiveSendGate}
                   onCancelLiveSendGate={onCancelLiveSendGate}
+                  onRunProviderApiDryMode={onRunProviderApiDryMode}
                 />
               ))}
             </div>
@@ -1267,6 +1361,7 @@ function buildTimeline(
   deliveries: Record<string, HermesDeliveryRequest>,
   receipts: Record<string, HermesProviderReceipt>,
   gates: Record<string, HermesLiveSendGate>,
+  dryResponses: Record<string, HermesProviderApiDryResponse>,
 ): TimelineItem[] {
   const hermesItems: TimelineItem[] = [];
 
@@ -1376,6 +1471,21 @@ function buildTimeline(
     }));
   });
 
+  // Dry-mode events — gated per-mission on a response actually existing, the
+  // same "only when relevant" convention gateItems already uses. A founder-
+  // triggered, per-mission action, never a repeated global registry
+  // snapshot, so it does not flood the feed.
+  const dryResponseItems: TimelineItem[] = missions.flatMap((m) => {
+    const r = dryResponses[m.missionId];
+    if (!r) return [];
+    return buildProviderApiDryTimelineEntries(r).map((e) => ({
+      at: e.at,
+      actor: e.actorLabel,
+      actorCls: e.actorCls,
+      text: `${e.text} — ${m.hotelName}`,
+    }));
+  });
+
   return [
     ...capped,
     ...founderItems,
@@ -1384,6 +1494,7 @@ function buildTimeline(
     ...deliveryItems,
     ...connectorItems,
     ...gateItems,
+    ...dryResponseItems,
   ].sort((a, b) => a.at - b.at);
 }
 
@@ -1396,6 +1507,7 @@ function TodayTimeline({
   deliveries,
   receipts,
   gates,
+  dryResponses,
 }: {
   monitor: HermesMonitor;
   decisions: HermesDecisionMap;
@@ -1405,8 +1517,9 @@ function TodayTimeline({
   deliveries: Record<string, HermesDeliveryRequest>;
   receipts: Record<string, HermesProviderReceipt>;
   gates: Record<string, HermesLiveSendGate>;
+  dryResponses: Record<string, HermesProviderApiDryResponse>;
 }) {
-  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries, receipts, gates);
+  const items = buildTimeline(monitor, decisions, missions, pipelines, drafts, deliveries, receipts, gates, dryResponses);
   return (
     <div className="border-b border-white/[0.06] px-5 py-4">
       <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-zinc-600">
@@ -1787,6 +1900,8 @@ export default function AutomationCenterScreen({
   onOpenLiveSendGate,
   onConfirmLiveSendGate,
   onCancelLiveSendGate,
+  hermesProviderApiDryResponses,
+  onRunProviderApiDryMode,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -1810,6 +1925,7 @@ export default function AutomationCenterScreen({
           deliveries={hermesDeliveries}
           receipts={hermesProviderReceipts}
           gates={hermesLiveSendGates}
+          dryResponses={hermesProviderApiDryResponses}
         />
 
         {/* 2.5 — Provider Runtime: compact readiness strip, not a settings page */}
@@ -1836,6 +1952,8 @@ export default function AutomationCenterScreen({
           onOpenLiveSendGate={onOpenLiveSendGate}
           onConfirmLiveSendGate={onConfirmLiveSendGate}
           onCancelLiveSendGate={onCancelLiveSendGate}
+          hermesProviderApiDryResponses={hermesProviderApiDryResponses}
+          onRunProviderApiDryMode={onRunProviderApiDryMode}
         />
 
         {/* 4 — Courier Taslakları: founder approval queue for prepared drafts (v4.1.0-A) */}
@@ -1857,6 +1975,7 @@ export default function AutomationCenterScreen({
           deliveries={hermesDeliveries}
           receipts={hermesProviderReceipts}
           gates={hermesLiveSendGates}
+          dryResponses={hermesProviderApiDryResponses}
         />
 
         {/* 6 — Supporting: the old automation view, demoted and collapsed */}

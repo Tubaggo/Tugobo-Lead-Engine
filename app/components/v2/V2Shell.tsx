@@ -77,6 +77,8 @@ import {
   openLiveSendGate,
 } from "@/app/components/v2/hermes-live-send-gate";
 import type { HermesLiveSendGate } from "@/app/components/v2/hermes-live-send-gate";
+import { canBuildProviderApiDryRequest, getProviderApiAdapter, runProviderApiDryMode } from "@/app/components/v2/hermes-provider-api-runtime";
+import type { HermesProviderApiDryResponse } from "@/app/components/v2/hermes-provider-api-runtime";
 import PlaceholderScreen, {
   PlaceholderContextPanel,
 } from "@/app/components/v2/screens/PlaceholderScreen";
@@ -273,6 +275,15 @@ export default function V2Shell({ scoredLeads }: Props) {
   // final supervised checkpoint before any *future* live send — this sprint
   // never sends; confirming a gate always resolves to "confirmed_but_blocked".
   const [hermesLiveSendGates, setHermesLiveSendGates] = useState<Record<string, HermesLiveSendGate>>({});
+
+  // Hermes Provider API Integration Runtime (v4.8.0, Dry Mode): session-only
+  // dry-response bookkeeping, keyed by missionId — same convention as every
+  // other Hermes Record above. Only ever reaches "dry_ready" — a fully local
+  // preview of a future provider API call. No fetch, no provider SDK, no
+  // real network call, ever, in this module.
+  const [hermesProviderApiDryResponses, setHermesProviderApiDryResponses] = useState<
+    Record<string, HermesProviderApiDryResponse>
+  >({});
 
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.
@@ -512,6 +523,46 @@ export default function V2Shell({ scoredLeads }: Props) {
     });
   }, []);
 
+  // Founder-triggered only (v4.8.0, Dry Mode) — a confirmed-but-blocked Live
+  // Send Gate never auto-runs this. Founder must click "API Dry Run
+  // Oluştur". runProviderApiDryMode is pure/synchronous/local — no fetch, no
+  // provider SDK, no real network call, ever.
+  const runProviderApiDryModeForMission = useCallback(
+    (missionId: string) => {
+      const delivery = hermesDeliveries[missionId];
+      const draft = hermesDrafts[missionId];
+      const receipt = hermesProviderReceipts[missionId];
+      const gate = hermesLiveSendGates[missionId];
+      if (!delivery || !draft || !receipt || !gate) return;
+      const runtime = providerRuntimesByProvider.get(delivery.provider);
+      const session = providerSessionsByProvider.get(delivery.provider);
+      const adapter = getProviderApiAdapter(delivery.provider);
+
+      setHermesProviderApiDryResponses((prev) => {
+        const guard = canBuildProviderApiDryRequest(
+          gate,
+          receipt,
+          delivery,
+          draft,
+          runtime,
+          session,
+          adapter,
+          prev[missionId],
+        );
+        if (!guard.allowed) return prev;
+        return { ...prev, [missionId]: runProviderApiDryMode(gate, receipt, delivery, draft, adapter, guard) };
+      });
+    },
+    [
+      hermesDeliveries,
+      hermesDrafts,
+      hermesProviderReceipts,
+      hermesLiveSendGates,
+      providerRuntimesByProvider,
+      providerSessionsByProvider,
+    ],
+  );
+
   // "Approval becomes execution trigger" (A5): approving a gated mission
   // both records the founder's decision and starts its pipeline in the same
   // click — no separate "Hermes Çalıştır" step remains for those missions.
@@ -702,7 +753,13 @@ export default function V2Shell({ scoredLeads }: Props) {
             ).length +
             // Gates awaiting final confirmation only — cancelled/blocked/
             // confirmed gates are resolved, not pending founder attention.
-            Object.values(hermesLiveSendGates).filter((g) => g.status === "pending_confirmation").length,
+            Object.values(hermesLiveSendGates).filter((g) => g.status === "pending_confirmation").length +
+            // Dry-mode-ready only — confirmed_but_blocked gates that don't yet
+            // have a dry response. A completed dry response is resolved, not
+            // pending, so it must not inflate this count (no overcounting).
+            Object.values(hermesLiveSendGates).filter(
+              (g) => g.status === "confirmed_but_blocked" && !hermesProviderApiDryResponses[g.missionId],
+            ).length,
         }}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
@@ -895,6 +952,8 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onOpenLiveSendGate={openLiveSendGateForMission}
                 onConfirmLiveSendGate={confirmLiveSendGateForMission}
                 onCancelLiveSendGate={cancelLiveSendGateForMission}
+                hermesProviderApiDryResponses={hermesProviderApiDryResponses}
+                onRunProviderApiDryMode={runProviderApiDryModeForMission}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}
@@ -990,6 +1049,42 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onOpenLiveSendGate={() => selectedHermesMission && openLiveSendGateForMission(selectedHermesMission.missionId)}
                 onConfirmLiveSendGate={confirmLiveSendGateForMission}
                 onCancelLiveSendGate={cancelLiveSendGateForMission}
+                apiAdapter={
+                  (() => {
+                    const d = selectedHermesMission ? hermesDeliveries[selectedHermesMission.missionId] : undefined;
+                    return d ? getProviderApiAdapter(d.provider) : null;
+                  })()
+                }
+                dryResponse={
+                  selectedHermesMission
+                    ? (hermesProviderApiDryResponses[selectedHermesMission.missionId] ?? null)
+                    : null
+                }
+                apiDryGuard={
+                  (() => {
+                    if (!selectedHermesMission) return { allowed: false, reason: "", missingFields: [], warnings: [] };
+                    const draft = hermesDrafts[selectedHermesMission.missionId];
+                    const delivery = hermesDeliveries[selectedHermesMission.missionId];
+                    const receipt = hermesProviderReceipts[selectedHermesMission.missionId];
+                    const gate = hermesLiveSendGates[selectedHermesMission.missionId];
+                    const runtime = delivery ? providerRuntimesByProvider.get(delivery.provider) : undefined;
+                    const session = delivery ? providerSessionsByProvider.get(delivery.provider) : undefined;
+                    const adapter = delivery ? getProviderApiAdapter(delivery.provider) : undefined;
+                    return canBuildProviderApiDryRequest(
+                      gate,
+                      receipt,
+                      delivery,
+                      draft,
+                      runtime,
+                      session,
+                      adapter,
+                      hermesProviderApiDryResponses[selectedHermesMission.missionId],
+                    );
+                  })()
+                }
+                onRunProviderApiDryMode={() =>
+                  selectedHermesMission && runProviderApiDryModeForMission(selectedHermesMission.missionId)
+                }
               />
             </>
           ) : (

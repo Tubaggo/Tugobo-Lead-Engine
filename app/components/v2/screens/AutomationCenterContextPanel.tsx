@@ -87,6 +87,19 @@ import {
   buildProviderRuntimeTimelineEntries,
   type HermesProvider,
 } from "@/app/components/v2/hermes-provider-runtime";
+import {
+  API_DRY_RUN_BUTTON_LABEL,
+  AUTH_TYPE_LABELS,
+  DRY_RESPONSE_STATUS_LABELS,
+  MISSING_FIELDS_LABEL,
+  NO_REAL_API_CALL_NOTE,
+  PAYLOAD_PREVIEW_LABEL,
+  PROVIDER_API_DRY_MODE_SECTION_LABEL,
+  buildProviderApiDryTimelineEntries,
+  type HermesProviderApiAdapter,
+  type HermesProviderApiDryResponse,
+  type HermesProviderApiValidationResult,
+} from "@/app/components/v2/hermes-provider-api-runtime";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
@@ -600,6 +613,10 @@ function MissionDecisionCenter({
   onOpenLiveSendGate,
   onConfirmLiveSendGate,
   onCancelLiveSendGate,
+  apiAdapter,
+  dryResponse,
+  apiDryGuard,
+  onRunProviderApiDryMode,
 }: {
   mission: HermesMission;
   momentum: OperationalMomentum | null;
@@ -626,6 +643,10 @@ function MissionDecisionCenter({
   onOpenLiveSendGate: () => void;
   onConfirmLiveSendGate: (missionId: string) => void;
   onCancelLiveSendGate: (missionId: string) => void;
+  apiAdapter: HermesProviderApiAdapter | null;
+  dryResponse: HermesProviderApiDryResponse | null;
+  apiDryGuard: HermesProviderApiValidationResult;
+  onRunProviderApiDryMode: () => void;
 }) {
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
@@ -676,6 +697,7 @@ function MissionDecisionCenter({
     ...buildProviderRuntimeTimelineEntries(providerRuntime ?? undefined),
     ...buildSessionTimelineEntries(providerSession ?? undefined),
     ...buildGateTimelineEntries(liveSendGate ?? undefined),
+    ...buildProviderApiDryTimelineEntries(dryResponse ?? undefined),
   ].sort((a, b) => a.at - b.at);
 
   return (
@@ -1536,6 +1558,125 @@ function MissionDecisionCenter({
         )}
       </div>
 
+      {/* Provider API Dry Mode (v4.8.0) — previews the exact request/response
+          shape a future live integration would use. Gated behind the Live
+          Send Gate reaching "confirmed_but_blocked"; never sends, never
+          calls a real endpoint. No connect button, no credential fields. */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>{PROVIDER_API_DRY_MODE_SECTION_LABEL}</p>
+        {!liveSendGate || liveSendGate.status !== "confirmed_but_blocked" ? (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            Live Send Gate onaylandığında Provider API Dry Mode burada görünür.
+          </p>
+        ) : (
+          <>
+            {apiAdapter && (
+              <div className="space-y-2">
+                <div className={ROW}>
+                  <span className={LABEL}>Adapter</span>
+                  <span className={VALUE}>{apiAdapter.label}</span>
+                </div>
+                <div className={ROW}>
+                  <span className={LABEL}>Mode</span>
+                  <span className={VALUE}>{apiAdapter.mode}</span>
+                </div>
+                <div className={ROW}>
+                  <span className={LABEL}>Endpoint Label</span>
+                  <span className={VALUE}>{apiAdapter.endpointLabel}</span>
+                </div>
+                <div className={ROW}>
+                  <span className={LABEL}>Method</span>
+                  <span className={VALUE}>{apiAdapter.methodLabel}</span>
+                </div>
+                <div className={ROW}>
+                  <span className={LABEL}>Auth Type</span>
+                  <span className={VALUE}>{AUTH_TYPE_LABELS[apiAdapter.authType]}</span>
+                </div>
+                <div>
+                  <span className={LABEL}>Required Fields</span>
+                  <p className="mt-1 text-[10.5px] leading-relaxed text-zinc-400">
+                    {apiAdapter.requiredFields.join(", ") || "—"}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {dryResponse ? (
+              <>
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <span className={LABEL}>Dry Response</span>
+                  <span className="ml-2 inline-flex items-center rounded-full bg-sky-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-sky-400 ring-1 ring-inset ring-sky-500/20">
+                    {DRY_RESPONSE_STATUS_LABELS[dryResponse.status]}
+                  </span>
+                </div>
+
+                <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                  {PAYLOAD_PREVIEW_LABEL}
+                </p>
+                <pre className="mt-1.5 overflow-x-auto rounded-lg border border-white/[0.08] bg-white/[0.02] p-3 text-[10px] leading-relaxed text-zinc-300">
+                  {JSON.stringify(dryResponse.payloadPreview, null, 2)}
+                </pre>
+
+                {dryResponse.validationResult.missingFields.length > 0 && (
+                  <div className="mt-2.5">
+                    <span className={LABEL}>{MISSING_FIELDS_LABEL}</span>
+                    <p className="mt-1 text-[10.5px] leading-relaxed text-amber-400">
+                      {dryResponse.validationResult.missingFields.join(", ")}
+                    </p>
+                  </div>
+                )}
+                {dryResponse.validationResult.warnings.map((w, i) => (
+                  <p key={i} className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+                    {w}
+                  </p>
+                ))}
+
+                <p className="mt-2.5 text-[10px] font-semibold text-sky-400">{dryResponse.resultMessage}</p>
+
+                <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+                  Audit Trail
+                </p>
+                <div className="mt-1.5 max-h-[160px] space-y-1.5 overflow-y-auto">
+                  {dryResponse.audit.map((entry, i) => (
+                    <div key={`${entry.timestamp}-${i}`} className="flex items-baseline gap-2">
+                      <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                        {new Date(entry.timestamp).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <span className="w-[56px] shrink-0 text-[9px] font-semibold text-indigo-300">
+                        {entry.actor}
+                      </span>
+                      <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                        {entry.details}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <span className={LABEL}>Validation Result</span>
+                  <p
+                    className={`mt-1 text-[11px] font-medium ${apiDryGuard.allowed ? "text-emerald-400" : "text-rose-400"}`}
+                  >
+                    {apiDryGuard.reason}
+                  </p>
+                </div>
+                {apiDryGuard.allowed && (
+                  <div className="mt-2.5">
+                    <Btn label={API_DRY_RUN_BUTTON_LABEL} variant="primary" onClick={onRunProviderApiDryMode} />
+                  </div>
+                )}
+              </>
+            )}
+
+            <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+              {NO_REAL_API_CALL_NOTE}
+            </p>
+          </>
+        )}
+      </div>
+
       {/* Shadow-mode note */}
       <div className={SEC}>
         <p className="text-[9px] leading-relaxed text-zinc-600">
@@ -2115,6 +2256,10 @@ type Props = {
   onOpenLiveSendGate: () => void;
   onConfirmLiveSendGate: (missionId: string) => void;
   onCancelLiveSendGate: (missionId: string) => void;
+  apiAdapter: HermesProviderApiAdapter | null;
+  dryResponse: HermesProviderApiDryResponse | null;
+  apiDryGuard: HermesProviderApiValidationResult;
+  onRunProviderApiDryMode: () => void;
 };
 
 export default function AutomationCenterContextPanel({
@@ -2147,6 +2292,10 @@ export default function AutomationCenterContextPanel({
   onOpenLiveSendGate,
   onConfirmLiveSendGate,
   onCancelLiveSendGate,
+  apiAdapter,
+  dryResponse,
+  apiDryGuard,
+  onRunProviderApiDryMode,
 }: Props) {
   if (selectedHermesMission) {
     return (
@@ -2177,6 +2326,10 @@ export default function AutomationCenterContextPanel({
         onOpenLiveSendGate={onOpenLiveSendGate}
         onConfirmLiveSendGate={onConfirmLiveSendGate}
         onCancelLiveSendGate={onCancelLiveSendGate}
+        apiAdapter={apiAdapter}
+        dryResponse={dryResponse}
+        apiDryGuard={apiDryGuard}
+        onRunProviderApiDryMode={onRunProviderApiDryMode}
       />
     );
   }
