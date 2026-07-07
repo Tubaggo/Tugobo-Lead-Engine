@@ -1,0 +1,341 @@
+import { DELIVERY_STATUS_LABELS_TR, type WhatsAppDeliveryStatus } from "../../../lib/whatsapp-delivery-receipt-runtime.ts";
+import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
+import type { WhatsAppReadinessStatus } from "../../../lib/whatsapp-provider-runtime.ts";
+
+/**
+ * Founder Revenue Workspace adapter (v6.1).
+ *
+ * Pure presentation-layer aggregation over Hermes runtime state that
+ * already exists — `HermesMission[]` (mission runtime), the mission's own
+ * `decisionState`/`timeline` (founder approval + audit), and processed
+ * WhatsApp delivery receipts (v6.0.1). It computes nothing Hermes doesn't
+ * already know; it only translates existing fields into founder-facing
+ * operational language (Turkish) and one priority ordering.
+ *
+ * Deliberately does NOT import `hermes-mission-adapter.ts` (or anything
+ * that transitively imports a `@/`-aliased module) — this file needs to
+ * run under plain `node --test`, which has no knowledge of tsconfig path
+ * aliases. Instead of importing `HermesMission`, it declares `MissionLike`
+ * — a structural subset of the same shape. Any real `HermesMission[]`
+ * satisfies it automatically (TypeScript structural typing); nothing is
+ * re-implemented, only read. The three types this module *does* import
+ * (`whatsapp-delivery-receipt-runtime.ts`, `whatsapp-delivery-receipt-processor.ts`,
+ * `whatsapp-provider-runtime.ts`) are themselves import-free/relative-only,
+ * so the whole chain stays test-runnable.
+ *
+ * "Delivery state" here means the *WhatsApp delivery receipt* — never the
+ * internal Delivery Gateway's own status vocabulary (queued/ready/sending/
+ * etc.), which stays a Developer Mode concept per this sprint's design
+ * principle.
+ */
+
+export type MissionLikeTask = { id: string; taskType: string };
+export type MissionLikeTimelineItem = { at: number; text: string };
+
+export type MissionLike = {
+  missionId: string;
+  hotelName: string;
+  stage: string;
+  stageLabel: string;
+  status: string;
+  decisionState: string;
+  primaryTaskId: string;
+  tasks: MissionLikeTask[];
+  timeline: MissionLikeTimelineItem[];
+};
+
+/* ── Action stage (the founder's priority ladder) ──────────────────── */
+
+export type ActionStage =
+  | "failed"
+  | "approval_required"
+  | "read"
+  | "delivered"
+  | "sent"
+  | "ready"
+  | "unknown";
+
+export const ACTION_STAGE_LABELS: Record<ActionStage, string> = {
+  failed: "Başarısız",
+  approval_required: "Onay Bekliyor",
+  read: "Okundu",
+  delivered: "Teslim Edildi",
+  sent: "Gönderildi",
+  ready: "Yürütmeye Hazır",
+  unknown: "Bilinmiyor",
+};
+
+export const SUGGESTED_ACTION_LABELS: Record<ActionStage, string> = {
+  failed: "Teslim edilemedi — tekrar deneyin",
+  approval_required: "Founder onayı bekleniyor",
+  read: "Mesaj okundu — demo planlanabilir",
+  delivered: "Teslim edildi — yanıt bekleniyor",
+  sent: "Gönderildi — teslimat bekleniyor",
+  ready: "Yürütmeye hazır",
+  unknown: "İzleniyor",
+};
+
+/** Lower rank = higher priority in the Action Queue. */
+const ACTION_STAGE_RANK: Record<ActionStage, number> = {
+  failed: 0,
+  approval_required: 1,
+  read: 2,
+  delivered: 3,
+  sent: 4,
+  ready: 5,
+  unknown: 6,
+};
+
+/** `recentReceipts` is assumed newest-first (the processor's own feed convention) — `.find` returns the latest match. */
+function latestReceiptForMission(
+  missionId: string,
+  recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+): ProcessedWhatsAppDeliveryReceipt | undefined {
+  return recentReceipts.find((r) => r.missionId === missionId);
+}
+
+export function actionStageOf(mission: MissionLike, recentReceipts: ProcessedWhatsAppDeliveryReceipt[]): ActionStage {
+  const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
+  if (receipt?.status === "failed") return "failed";
+  if (mission.stage === "approval") return "approval_required";
+  if (receipt?.status === "read") return "read";
+  if (receipt?.status === "delivered") return "delivered";
+  if (receipt?.status === "sent") return "sent";
+  if (mission.stage === "execution-ready") return "ready";
+  return "unknown";
+}
+
+function isDemoPending(mission: MissionLike, recentReceipts: ProcessedWhatsAppDeliveryReceipt[]): boolean {
+  if (actionStageOf(mission, recentReceipts) === "read") return true;
+  const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId);
+  return primaryTask?.taskType === "demo-preparation";
+}
+
+/* ── Section 1 — Revenue Summary ────────────────────────────────── */
+
+export type RevenueSummary = {
+  totalActiveMissions: number;
+  founderApprovalPending: number;
+  sentCount: number;
+  deliveredCount: number;
+  readCount: number;
+  failedCount: number;
+  demoPendingCount: number;
+  needsAttentionCount: number;
+};
+
+export function computeRevenueSummary(
+  missions: MissionLike[],
+  recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+): RevenueSummary {
+  const totalActiveMissions = missions.filter((m) => m.stage !== "completed").length;
+  const founderApprovalPending = missions.filter((m) => m.stage === "approval").length;
+
+  const sentCount = recentReceipts.filter((r) => r.status === "sent").length;
+  const deliveredCount = recentReceipts.filter((r) => r.status === "delivered").length;
+  const readCount = recentReceipts.filter((r) => r.status === "read").length;
+  const failedCount = recentReceipts.filter((r) => r.status === "failed").length;
+
+  const demoPendingCount = missions.filter((m) => isDemoPending(m, recentReceipts)).length;
+
+  const needsAttentionCount = missions.filter((m) => {
+    const stage = actionStageOf(m, recentReceipts);
+    return stage === "failed" || stage === "approval_required";
+  }).length;
+
+  return {
+    totalActiveMissions,
+    founderApprovalPending,
+    sentCount,
+    deliveredCount,
+    readCount,
+    failedCount,
+    demoPendingCount,
+    needsAttentionCount,
+  };
+}
+
+/* ── Section 2 — Action Queue ───────────────────────────────────── */
+
+export type ActionQueueItem = {
+  missionId: string;
+  hotelName: string;
+  stage: ActionStage;
+  stageLabel: string;
+  currentStageLabel: string;
+  lastActivity: string;
+  lastActivityAt: number;
+  suggestedAction: string;
+};
+
+/**
+ * Sorted by business priority: FAILED → APPROVAL_REQUIRED → READ →
+ * DELIVERED → SENT → READY → UNKNOWN, then most-recently-active first
+ * within the same stage. Completed missions never appear — there is
+ * nothing left for the founder to act on.
+ */
+export function computeActionQueue(
+  missions: MissionLike[],
+  recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+): ActionQueueItem[] {
+  return missions
+    .filter((m) => m.stage !== "completed")
+    .map((m) => {
+      const stage = actionStageOf(m, recentReceipts);
+      const lastTimelineEntry = m.timeline[m.timeline.length - 1];
+      return {
+        missionId: m.missionId,
+        hotelName: m.hotelName,
+        stage,
+        stageLabel: ACTION_STAGE_LABELS[stage],
+        currentStageLabel: m.stageLabel,
+        lastActivity: lastTimelineEntry?.text ?? "Henüz aktivite yok",
+        lastActivityAt: lastTimelineEntry?.at ?? 0,
+        suggestedAction: SUGGESTED_ACTION_LABELS[stage],
+      };
+    })
+    .sort((a, b) => {
+      const rankDiff = ACTION_STAGE_RANK[a.stage] - ACTION_STAGE_RANK[b.stage];
+      if (rankDiff !== 0) return rankDiff;
+      return b.lastActivityAt - a.lastActivityAt;
+    });
+}
+
+/* ── Section 3 — Mission Focus ──────────────────────────────────── */
+
+export type MissionFocusSummary = {
+  missionId: string;
+  hotelName: string;
+  currentMissionLabel: string;
+  currentStageLabel: string;
+  whatsappStatusLabel: string;
+  deliveryStateLabel: string;
+  latestReceiptLabel: string | null;
+  suggestedNextAction: string;
+};
+
+export function computeMissionFocus(
+  mission: MissionLike,
+  recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+): MissionFocusSummary {
+  const stage = actionStageOf(mission, recentReceipts);
+  const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
+
+  return {
+    missionId: mission.missionId,
+    hotelName: mission.hotelName,
+    currentMissionLabel: mission.status,
+    currentStageLabel: mission.stageLabel,
+    whatsappStatusLabel: receipt ? "WhatsApp üzerinden iletişimde" : "Henüz WhatsApp gönderimi yok",
+    deliveryStateLabel: receipt ? DELIVERY_STATUS_LABELS_TR[receipt.status] : "Henüz gönderim yok",
+    latestReceiptLabel: receipt
+      ? `${DELIVERY_STATUS_LABELS_TR[receipt.status]} — ${new Date(receipt.occurredAt).toLocaleString("tr-TR")}`
+      : null,
+    suggestedNextAction: SUGGESTED_ACTION_LABELS[stage],
+  };
+}
+
+/* ── Section 4 — Hermes Timeline (founder-meaningful events only) ─ */
+
+export type FounderTimelineEvent = {
+  id: string;
+  at: number;
+  label: string;
+};
+
+const RECEIPT_EVENT_LABEL: Record<WhatsAppDeliveryStatus, string | null> = {
+  sent: "Mesaj gönderildi",
+  delivered: "Teslim edildi",
+  read: "Okundu",
+  failed: "Teslim başarısız",
+  unknown: null,
+};
+
+/**
+ * Merges (a) each mission's own founder-decision moment and its earliest
+ * timeline entry (treated as "mission created" — a founder never needs to
+ * know what internal event actually produced it), and (b) recent delivery
+ * receipts, into one global, newest-first feed. Internal debug/agent-hop
+ * events are never included — only these six meaningful categories.
+ */
+export function computeHermesTimeline(
+  missions: MissionLike[],
+  recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+  limit: number = 20,
+): FounderTimelineEvent[] {
+  const events: FounderTimelineEvent[] = [];
+
+  for (const m of missions) {
+    const first = m.timeline[0];
+    const last = m.timeline[m.timeline.length - 1];
+    if (first) {
+      events.push({ id: `${m.missionId}:created`, at: first.at, label: `Mission oluşturuldu — ${m.hotelName}` });
+    }
+    if (m.decisionState === "approved") {
+      const approvedEntry = m.timeline.find((t) => t.text.startsWith("Onayladı"));
+      events.push({
+        id: `${m.missionId}:approved`,
+        at: approvedEntry?.at ?? last?.at ?? 0,
+        label: `Founder onayı verildi — ${m.hotelName}`,
+      });
+    }
+    if (m.decisionState === "rejected") {
+      const rejectedEntry = m.timeline.find((t) => t.text.startsWith("Reddetti"));
+      events.push({
+        id: `${m.missionId}:rejected`,
+        at: rejectedEntry?.at ?? last?.at ?? 0,
+        label: `Founder reddetti — ${m.hotelName}`,
+      });
+    }
+  }
+
+  for (const r of recentReceipts) {
+    const base = RECEIPT_EVENT_LABEL[r.status];
+    if (!base) continue;
+    events.push({
+      id: `receipt:${r.providerMessageId}:${r.status}`,
+      at: r.occurredAt,
+      label: r.missionId ? `${base} — ${r.missionId}` : base,
+    });
+  }
+
+  return events.sort((a, b) => b.at - a.at).slice(0, limit);
+}
+
+/* ── Section 5 — Hermes Health ──────────────────────────────────── */
+
+export type HermesHealthSummary = {
+  hermesRuntimeLabel: string;
+  whatsappLabel: string;
+  deliveryLabel: string;
+  missionBridgeLabel: string;
+};
+
+const WHATSAPP_HEALTH_LABEL: Record<WhatsAppReadinessStatus, string> = {
+  controlled_live_ready: "Bağlı",
+  dry_run_ready: "Test Modu",
+  blocked: "Politika ile Kısıtlı",
+  partial: "Kısmi Yapılandırma",
+  not_configured: "Yapılandırılmadı",
+};
+
+export type ComputeHermesHealthInput = {
+  hermesRuntimeAvailable: boolean;
+  whatsappReadinessStatus: WhatsAppReadinessStatus | null;
+  deliveryFeedReachable: boolean | null;
+};
+
+/**
+ * "Mission Bridge: Healthy" is structural, not a live probe — no server
+ * endpoint exposes bridge health today, and adding one would mean adding
+ * new runtime instrumentation, which this sprint explicitly avoids. If this
+ * card renders at all, the bridge module it depends on loaded successfully.
+ */
+export function computeHermesHealth(input: ComputeHermesHealthInput): HermesHealthSummary {
+  return {
+    hermesRuntimeLabel: input.hermesRuntimeAvailable ? "Sağlıklı" : "Bilinmiyor",
+    whatsappLabel: input.whatsappReadinessStatus ? WHATSAPP_HEALTH_LABEL[input.whatsappReadinessStatus] : "Bilinmiyor",
+    deliveryLabel: input.deliveryFeedReachable === null ? "Bilinmiyor" : input.deliveryFeedReachable ? "Çalışıyor" : "Erişilemiyor",
+    missionBridgeLabel: "Sağlıklı",
+  };
+}

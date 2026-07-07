@@ -4,6 +4,8 @@ import { useState, useMemo } from "react";
 import WhatsAppProviderReadinessCard from "@/app/components/v2/screens/WhatsAppProviderReadinessCard";
 import ControlledWhatsAppLiveSendCard from "@/app/components/v2/screens/ControlledWhatsAppLiveSendCard";
 import WhatsAppDeliveryReceiptCard from "@/app/components/v2/screens/WhatsAppDeliveryReceiptCard";
+import FounderRevenueWorkspace from "@/app/components/v2/screens/FounderRevenueWorkspace";
+import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import {
   adaptScoredLeadsToAutomationCards,
   computeAutomationSummary,
@@ -2026,9 +2028,39 @@ export default function AutomationCenterScreen({
   const toggleExpand = (missionId: string) =>
     setExpandedMissionId((cur) => (cur === missionId ? null : missionId));
 
+  // v6.1 Founder Revenue Workspace: the default experience. Developer Mode
+  // (off by default, persisted) reveals the existing, unchanged Hermes
+  // runtime below it — collapsed behind a <details> so it never competes
+  // with the founder-facing summary for attention.
+  const [developerMode, toggleDeveloperMode] = useDeveloperMode();
+
   return (
     <div className={`${screenCardCls} flex-1`}>
+      <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-2.5">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+          Hermes — Founder Revenue Workspace
+        </span>
+        <button
+          type="button"
+          onClick={toggleDeveloperMode}
+          className="text-[9px] font-semibold text-zinc-600 transition-colors duration-100 hover:text-zinc-300"
+        >
+          {developerMode ? "Geliştirici Modu: Açık" : "Geliştirici Modu: Kapalı"}
+        </button>
+      </div>
       <div className="flex-1 overflow-y-auto">
+        <FounderRevenueWorkspace
+          missions={missions}
+          selectedHermesMissionId={selectedHermesMissionId}
+          onSelectHermesMission={onSelectHermesMission}
+        />
+
+        {developerMode && (
+        <details className="border-t border-white/[0.06]">
+          <summary className="cursor-pointer select-none px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500 hover:text-zinc-300">
+            Geliştirici Runtime Görünümü (Mission Runtime · Provider Registry · Courier · Delivery · Bridge)
+          </summary>
+
         {/* 1 — Mission brief: Hermes reports, first thing the founder reads */}
         <MissionBrief monitor={monitor} missions={missions} pipelines={hermesPipelines} />
 
@@ -2119,6 +2151,8 @@ export default function AutomationCenterScreen({
 
         {/* 6 — Supporting: the old automation view, demoted and collapsed */}
         <AutomationSection leads={leads} selectedId={selectedId} onSelect={onSelect} />
+        </details>
+        )}
       </div>
     </div>
   );
