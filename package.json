@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test app/lib/whatsapp-provider-runtime.test.ts app/lib/whatsapp-controlled-live-send-runtime.test.ts app/lib/whatsapp-controlled-live-adapter.test.ts app/lib/whatsapp-controlled-live-send-request.test.ts app/lib/hermes-mission-approval-resolver.test.ts app/lib/whatsapp-controlled-live-send-integration.test.ts app/lib/hermes-mission-state-bridge.test.ts app/lib/hermes-mission-state-snapshot-request.test.ts"
+    "test": "node --test app/lib/whatsapp-provider-runtime.test.ts app/lib/whatsapp-controlled-live-send-runtime.test.ts app/lib/whatsapp-controlled-live-adapter.test.ts app/lib/whatsapp-controlled-live-send-request.test.ts app/lib/hermes-mission-approval-resolver.test.ts app/lib/whatsapp-controlled-live-send-integration.test.ts app/lib/hermes-mission-state-bridge.test.ts app/lib/hermes-mission-state-snapshot-request.test.ts app/lib/whatsapp-delivery-receipt-runtime.test.ts app/lib/hermes-provider-message-registry.test.ts app/lib/whatsapp-delivery-receipt-processor.test.ts app/lib/whatsapp-webhook-verification.test.ts"
   },
   "dependencies": {
     "googleapis": "^171.4.0",

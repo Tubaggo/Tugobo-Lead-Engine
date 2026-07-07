@@ -7,6 +7,7 @@ import {
   type WhatsAppControlledSendInput,
   type WhatsAppControlledSendResult,
 } from "./whatsapp-controlled-live-send-runtime.ts";
+import { registerProviderMessageMapping } from "./hermes-provider-message-registry.ts";
 
 /**
  * Controlled WhatsApp Live Adapter (v5.2 — WhatsApp Cloud API Test Runtime).
@@ -263,6 +264,20 @@ export async function executeControlledWhatsAppSend(
   });
 
   if (sendResult.ok) {
+    // v6.0.1: register the mapping so a later delivery-receipt webhook can
+    // attach missionId/leadId to this providerMessageId. Only ever runs
+    // after a sanitized success — never stores the raw recipient, message
+    // body, access token, or raw provider response, only what the evaluator
+    // already computed (recipientMasked).
+    if (sendResult.providerMessageId) {
+      registerProviderMessageMapping({
+        providerMessageId: sendResult.providerMessageId,
+        missionId: input.missionId,
+        leadId: input.leadId,
+        recipientMasked: evaluation.recipientMasked,
+      });
+    }
+
     return {
       ...evaluation,
       status: "controlled_live_sent",

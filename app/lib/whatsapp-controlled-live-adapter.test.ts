@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   ENV_FLAG_OFF_REASON,
@@ -10,6 +10,14 @@ import {
   type ControlledWhatsAppAdapterInput,
 } from "./whatsapp-controlled-live-adapter.ts";
 import { evaluateControlledWhatsAppLiveSend } from "./whatsapp-controlled-live-send-runtime.ts";
+import {
+  __resetProviderMessageRegistryForTests,
+  getProviderMessageMapping,
+} from "./hermes-provider-message-registry.ts";
+
+beforeEach(() => {
+  __resetProviderMessageRegistryForTests();
+});
 
 const BASE_INPUT: ControlledWhatsAppAdapterInput = {
   missionId: "mission-1",
@@ -229,4 +237,36 @@ test("assertWhatsAppCloudApiTestSendAllowed allows when every condition passes",
   const preflight = assertWhatsAppCloudApiTestSendAllowed(input, evaluation);
   assert.equal(preflight.allowed, true);
   assert.deepEqual(preflight.reasons, []);
+});
+
+/* ── v6.0.1: successful send registers a provider message mapping ── */
+
+test("a successful send registers a providerMessageId → mission/lead mapping in the registry", async () => {
+  const result = await withMockedFetch(
+    () => jsonResponse({ messages: [{ id: "wamid.MAPPING1" }] }),
+    async () => executeControlledWhatsAppSend({ ...BASE_INPUT, liveSendEnvFlagOn: true }),
+  );
+  assert.equal(result.status, "controlled_live_sent");
+  const mapping = getProviderMessageMapping("wamid.MAPPING1");
+  assert.ok(mapping);
+  assert.equal(mapping?.missionId, "mission-1");
+  assert.equal(mapping?.leadId, "lead-1");
+  assert.equal(mapping?.recipientMasked, "••• ••• 67");
+});
+
+test("no mapping is registered when the send fails", async () => {
+  await withMockedFetch(
+    () => jsonResponse({ error: { message: "boom", type: "OAuthException", code: 1 } }, 400),
+    async () => executeControlledWhatsAppSend({ ...BASE_INPUT, liveSendEnvFlagOn: true }),
+  );
+  assert.equal(getProviderMessageMapping("wamid.MAPPING1"), undefined);
+});
+
+test("no mapping is registered when the provider response has no message id", async () => {
+  await withMockedFetch(
+    () => jsonResponse({}),
+    async () => executeControlledWhatsAppSend({ ...BASE_INPUT, liveSendEnvFlagOn: true }),
+  );
+  // Nothing to look up without an id — this just documents the guard exists (no throw).
+  assert.equal(getProviderMessageMapping(""), undefined);
 });

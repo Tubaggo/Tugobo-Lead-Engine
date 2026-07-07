@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import WhatsAppProviderReadinessCard from "@/app/components/v2/screens/WhatsAppProviderReadinessCard";
 import ControlledWhatsAppLiveSendCard from "@/app/components/v2/screens/ControlledWhatsAppLiveSendCard";
+import WhatsAppDeliveryReceiptCard from "@/app/components/v2/screens/WhatsAppDeliveryReceiptCard";
 import {
   adaptScoredLeadsToAutomationCards,
   computeAutomationSummary,
@@ -2059,6 +2060,12 @@ export default function AutomationCenterScreen({
             context at this level of the screen, so the result is always
             blocked or dry_run, never a live send. */}
         <ControlledWhatsAppLiveSendCard />
+
+        {/* 2.8 — WhatsApp Delivery Receipt (v6.0.1): self-contained,
+            read-only receipt viewer. Shows only the last processed
+            sent/delivered/read/failed status — no reply content, no
+            follow-up trigger. */}
+        <WhatsAppDeliveryReceiptCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
