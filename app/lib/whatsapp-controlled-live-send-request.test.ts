@@ -27,9 +27,6 @@ test("parseControlledSendRequestFields fills safe defaults for missing/invalid f
     missionId: "",
     leadId: "",
     runtimeMode: "dry_run",
-    founderApproved: false,
-    courierDraftApproved: false,
-    deliveryGatewayAllowed: false,
     recipientPhone: null,
     messageText: "",
   });
@@ -40,9 +37,6 @@ test("parseControlledSendRequestFields never reads or echoes access token / phon
     missionId: "m1",
     leadId: "l1",
     runtimeMode: "controlled_test_live",
-    founderApproved: true,
-    courierDraftApproved: true,
-    deliveryGatewayAllowed: true,
     recipientPhone: "+905551234567",
     messageText: "Merhaba",
     accessToken: "super-secret-token",
@@ -59,4 +53,63 @@ test("parseControlledSendRequestFields only accepts the literal controlled_test_
   assert.equal(parseControlledSendRequestFields({ runtimeMode: "controlled_test_live" })?.runtimeMode, "controlled_test_live");
   assert.equal(parseControlledSendRequestFields({ runtimeMode: "something_else" })?.runtimeMode, "dry_run");
   assert.equal(parseControlledSendRequestFields({ runtimeMode: 123 })?.runtimeMode, "dry_run");
+});
+
+/* ── v5.1.1 hotfix: client-submitted execution-authority booleans are ignored ── */
+
+test("client-submitted approval booleans are completely ignored — the field doesn't exist on the output", () => {
+  const fields = parseControlledSendRequestFields({
+    missionId: "m1",
+    leadId: "l1",
+    founderApproved: true,
+    courierDraftApproved: true,
+    deliveryGatewayAllowed: true,
+  });
+  assert.ok(fields);
+  assert.equal("founderApproved" in fields!, false);
+  assert.equal("courierDraftApproved" in fields!, false);
+  assert.equal("deliveryGatewayAllowed" in fields!, false);
+  assert.deepEqual(Object.keys(fields!).sort(), ["leadId", "messageText", "missionId", "recipientPhone", "runtimeMode"]);
+});
+
+test("client-submitted whatsappReadinessStatus is ignored", () => {
+  const fields = parseControlledSendRequestFields({ whatsappReadinessStatus: "controlled_live_ready" });
+  assert.ok(fields);
+  assert.equal("whatsappReadinessStatus" in fields!, false);
+});
+
+test("client-submitted liveSendGateAllowed is ignored", () => {
+  const fields = parseControlledSendRequestFields({ liveSendGateAllowed: true });
+  assert.ok(fields);
+  assert.equal("liveSendGateAllowed" in fields!, false);
+});
+
+test("client-submitted controlledLivePolicyAllowed is ignored", () => {
+  const fields = parseControlledSendRequestFields({ controlledLivePolicyAllowed: true });
+  assert.ok(fields);
+  assert.equal("controlledLivePolicyAllowed" in fields!, false);
+});
+
+test("only safe fields (missionId/leadId/runtimeMode/recipientPhone/messageText) are ever returned, regardless of extra body fields", () => {
+  const fields = parseControlledSendRequestFields({
+    missionId: "m1",
+    leadId: "l1",
+    runtimeMode: "controlled_test_live",
+    recipientPhone: "+905551234567",
+    messageText: "Merhaba",
+    founderApproved: true,
+    courierDraftApproved: true,
+    deliveryGatewayAllowed: true,
+    liveSendGateAllowed: true,
+    controlledLivePolicyAllowed: true,
+    whatsappReadinessStatus: "controlled_live_ready",
+    accessToken: "secret",
+  });
+  assert.deepEqual(fields, {
+    missionId: "m1",
+    leadId: "l1",
+    runtimeMode: "controlled_test_live",
+    recipientPhone: "+905551234567",
+    messageText: "Merhaba",
+  });
 });

@@ -8,19 +8,20 @@ import {
   PREFLIGHT_BUTTON_LABEL,
   type WhatsAppControlledSendStatus,
 } from "@/app/lib/whatsapp-controlled-live-send-runtime";
+import type { MissionApprovalSource } from "@/app/lib/hermes-mission-approval-resolver";
 
 /**
- * Controlled WhatsApp Live Send Card (v5.1.0).
+ * Controlled WhatsApp Live Send Card (v5.1.1 hotfix).
  *
  * Purely additive to the Hermes Workspace, rendered directly below
  * WhatsAppProviderReadinessCard. Self-contained — no props, no mission
  * wiring. The only action is "Test Alıcısına Kontrollü Preflight", which
- * POSTs a fixed, safe payload to `/api/hermes/providers/whatsapp/controlled-send`
- * with `founderApproved` / `courierDraftApproved` / `deliveryGatewayAllowed`
- * always `false` and `runtimeMode: "dry_run"` — there is no mission context
- * at this level of the screen, so this card can never honestly claim those
- * approvals exist. The result is always "blocked" or "dry_run"; there is no
- * path here that can reach a live send.
+ * POSTs only identifiers (missionId, leadId, runtimeMode, recipientPhone,
+ * messageText) — never an execution-authority boolean. Founder / courier /
+ * delivery approval is derived entirely server-side by
+ * `resolveMissionApprovalState`; this card never sends, fakes, or even
+ * knows those booleans before the response comes back. Hermes must not let
+ * UI invent execution authority.
  */
 
 type ControlledSendPreflightResult = {
@@ -29,6 +30,8 @@ type ControlledSendPreflightResult = {
   forcedDryRun: boolean;
   recipientMasked: string | null;
   blockingReasons: string[];
+  missionApprovalSource: MissionApprovalSource;
+  missionApprovalBlockingReasons: string[];
 };
 
 const STATUS_DOT: Record<WhatsAppControlledSendStatus, string> = {
@@ -47,13 +50,11 @@ const STATUS_BADGE_CLS: Record<WhatsAppControlledSendStatus, string> = {
   failed: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
 };
 
+/** No mission is selected at this level of the screen — an identifier, never a faked approval. */
 const PREFLIGHT_PAYLOAD = {
-  missionId: "provider-preflight",
-  leadId: "provider-preflight",
+  missionId: "workspace-preflight",
+  leadId: "workspace-preflight",
   runtimeMode: "dry_run" as const,
-  founderApproved: false,
-  courierDraftApproved: false,
-  deliveryGatewayAllowed: false,
   recipientPhone: null,
   messageText: "Bu bir kontrollü preflight testidir — gerçek mesaj gönderilmez.",
 };
@@ -100,6 +101,10 @@ export default function ControlledWhatsAppLiveSendCard() {
         </button>
       </div>
 
+      <p className="mt-1.5 text-[9px] leading-relaxed text-zinc-600">
+        Preflight server tarafında mission approval state çözümlemesi yapar. UI approval bilgisi göndermez.
+      </p>
+
       {error && <p className="mt-2 text-[10px] text-rose-400">{error}</p>}
 
       {result && (
@@ -130,6 +135,13 @@ export default function ControlledWhatsAppLiveSendCard() {
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] text-zinc-500">Alıcı</span>
               <span className="text-[10px] font-medium text-zinc-400">{result.recipientMasked}</span>
+            </div>
+          )}
+
+          {result.missionApprovalSource === "unresolved" && (
+            <div className="rounded-lg bg-rose-500/[0.06] px-3 py-2 ring-1 ring-inset ring-rose-500/20">
+              <p className="text-[10px] font-semibold text-rose-400">Mission approval state çözümlenemedi</p>
+              <p className="mt-0.5 text-[9px] leading-relaxed text-rose-400/80">Canlı gönderim engellendi.</p>
             </div>
           )}
 

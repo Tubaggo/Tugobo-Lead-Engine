@@ -4,22 +4,32 @@ import { DEFAULT_LIVE_SEND_POLICY } from "@/app/components/v2/hermes-live-send-g
 import { DEFAULT_CONTROLLED_LIVE_SEND_POLICY } from "@/app/components/v2/hermes-live-provider-adapters";
 import { executeControlledWhatsAppSend } from "@/app/lib/whatsapp-controlled-live-adapter";
 import { parseControlledSendRequestFields, parseJsonBodySafely } from "@/app/lib/whatsapp-controlled-live-send-request";
+import { resolveMissionApprovalState } from "@/app/lib/hermes-mission-approval-resolver";
 
 /**
- * Controlled WhatsApp Live Send — preflight/execution shell (v5.1.0).
+ * Controlled WhatsApp Live Send — preflight/execution shell (v5.1.1 hotfix).
  *
- * POST-only. Accepts only safe runtime fields from the client — missionId,
- * leadId, runtimeMode, founderApproved, courierDraftApproved,
- * deliveryGatewayAllowed, recipientPhone, messageText. It never reads an
- * access token or phone_number_id from the request body, even if present;
- * those fields are simply never destructured from `body`.
+ * POST-only. The client may only trigger a preflight by identifier —
+ * missionId, leadId, runtimeMode, recipientPhone, messageText. It never
+ * reads an access token, phone_number_id, or any execution-authority
+ * boolean (founderApproved / courierDraftApproved / deliveryGatewayAllowed /
+ * liveSendGateAllowed / controlledLivePolicyAllowed / whatsappReadinessStatus)
+ * from the request body, even if present — `parseControlledSendRequestFields`
+ * simply never destructures them, so a malicious or buggy client can never
+ * force any of them to `true` server-side.
  *
- * Everything else — the configured test recipient, WhatsApp readiness,
- * live-send-gate policy, controlled-live policy, and the
- * WHATSAPP_CONTROLLED_LIVE_SEND_ENABLED env flag — is derived server-side
- * from existing v5.0 runtime + the already-hardcoded-false policy singletons.
- * The route never sends anything by itself; it only calls the pure evaluator
- * + adapter and returns their safe result object.
+ * Every one of those values is derived here, server-side only:
+ *  - WhatsApp readiness ← v5.0 `buildWhatsAppProviderConfig` (reads env
+ *    presence booleans, never raw secrets).
+ *  - Live Send Gate / Controlled Live Policy ← the existing, already-
+ *    hardcoded-false policy singletons.
+ *  - founder/courier/delivery approval ← `resolveMissionApprovalState`
+ *    (v5.1.1), which is conservative today (no server-accessible mission
+ *    store exists yet) and always returns `false` + `"unresolved"`.
+ *
+ * The route never sends anything by itself; it only calls the pure resolver
+ * + evaluator/adapter chain and returns their safe result object, plus
+ * non-secret mission-approval metadata for the UI to explain *why*.
  */
 
 function hasEnv(name: string): boolean {
@@ -43,8 +53,9 @@ export async function POST(request: Request) {
     return safeErrorResponse("Geçersiz istek gövdesi.");
   }
 
-  const { missionId, leadId, runtimeMode, founderApproved, courierDraftApproved, deliveryGatewayAllowed, recipientPhone, messageText } =
-    fields;
+  const { missionId, leadId, runtimeMode, recipientPhone, messageText } = fields;
+
+  const approval = resolveMissionApprovalState({ missionId, leadId });
 
   const providerConfig = buildWhatsAppProviderConfig({
     accessTokenPresent: hasEnv("WHATSAPP_ACCESS_TOKEN"),
@@ -60,9 +71,9 @@ export async function POST(request: Request) {
     leadId,
     provider: "whatsapp",
     runtimeMode,
-    founderApproved,
-    courierDraftApproved,
-    deliveryGatewayAllowed,
+    founderApproved: approval.founderApproved,
+    courierDraftApproved: approval.courierDraftApproved,
+    deliveryGatewayAllowed: approval.deliveryGatewayAllowed,
     whatsappReadinessStatus: providerConfig.readinessStatus,
     liveSendGateAllowed: DEFAULT_LIVE_SEND_POLICY.liveSendEnabled,
     controlledLivePolicyAllowed: DEFAULT_CONTROLLED_LIVE_SEND_POLICY.liveSendEnabled,
@@ -72,5 +83,10 @@ export async function POST(request: Request) {
     liveSendEnvFlagOn: process.env.WHATSAPP_CONTROLLED_LIVE_SEND_ENABLED === "true",
   });
 
-  return NextResponse.json(result);
+  return NextResponse.json({
+    ...result,
+    missionApprovalSource: approval.source,
+    missionApprovalResolvedAt: approval.resolvedAt,
+    missionApprovalBlockingReasons: approval.blockingReasons,
+  });
 }
