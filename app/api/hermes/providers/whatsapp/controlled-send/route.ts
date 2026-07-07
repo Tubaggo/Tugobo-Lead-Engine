@@ -7,7 +7,8 @@ import { parseControlledSendRequestFields, parseJsonBodySafely } from "@/app/lib
 import { resolveMissionApprovalState } from "@/app/lib/hermes-mission-approval-resolver";
 
 /**
- * Controlled WhatsApp Live Send — preflight/execution shell (v5.1.1 hotfix).
+ * Controlled WhatsApp Live Send — preflight/execution shell (v5.2 — WhatsApp
+ * Cloud API Test Runtime).
  *
  * POST-only. The client may only trigger a preflight by identifier —
  * missionId, leadId, runtimeMode, recipientPhone, messageText. It never
@@ -24,12 +25,15 @@ import { resolveMissionApprovalState } from "@/app/lib/hermes-mission-approval-r
  *  - Live Send Gate / Controlled Live Policy ← the existing, already-
  *    hardcoded-false policy singletons.
  *  - founder/courier/delivery approval ← `resolveMissionApprovalState`
- *    (v5.1.1), which is conservative today (no server-accessible mission
- *    store exists yet) and always returns `false` + `"unresolved"`.
+ *    (v5.1.2), which reads the server-side Mission State Bridge.
  *
- * The route never sends anything by itself; it only calls the pure resolver
- * + evaluator/adapter chain and returns their safe result object, plus
- * non-secret mission-approval metadata for the UI to explain *why*.
+ * v5.2: this route is also the only place `WHATSAPP_ACCESS_TOKEN` and
+ * `WHATSAPP_PHONE_NUMBER_ID` are read as raw values (never from the client
+ * body) and handed to the adapter — a real Cloud API call can now happen,
+ * but only after `executeControlledWhatsAppSend`'s full gate chain +
+ * `assertWhatsAppCloudApiTestSendAllowed` both pass. The route itself never
+ * sends anything; it only calls the resolver + evaluator/adapter chain and
+ * returns their safe, sanitized result object.
  */
 
 function hasEnv(name: string): boolean {
@@ -66,7 +70,7 @@ export async function POST(request: Request) {
     liveSendGateOk: DEFAULT_LIVE_SEND_POLICY.liveSendEnabled,
   });
 
-  const result = executeControlledWhatsAppSend({
+  const result = await executeControlledWhatsAppSend({
     missionId,
     leadId,
     provider: "whatsapp",
@@ -81,6 +85,9 @@ export async function POST(request: Request) {
     configuredTestRecipient: process.env.WHATSAPP_TEST_RECIPIENT,
     messageText,
     liveSendEnvFlagOn: process.env.WHATSAPP_CONTROLLED_LIVE_SEND_ENABLED === "true",
+    accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
+    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
+    graphApiVersion: process.env.WHATSAPP_GRAPH_API_VERSION,
   });
 
   return NextResponse.json({

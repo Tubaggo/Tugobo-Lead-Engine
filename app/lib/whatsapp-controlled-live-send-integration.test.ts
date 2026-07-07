@@ -4,6 +4,7 @@ import { parseControlledSendRequestFields, parseJsonBodySafely } from "./whatsap
 import { resolveMissionApprovalState } from "./hermes-mission-approval-resolver.ts";
 import { evaluateControlledWhatsAppLiveSend } from "./whatsapp-controlled-live-send-runtime.ts";
 import { __resetMissionStateBridgeForTests, publishHermesMissionStateSnapshot } from "./hermes-mission-state-bridge.ts";
+import { executeControlledWhatsAppSend } from "./whatsapp-controlled-live-adapter.ts";
 
 /**
  * v5.1.1/v5.1.2 regression test — reproduces the exact chain the route runs
@@ -195,4 +196,143 @@ test("send stays blocked when the Controlled Live Policy gate is false, even wit
 
   assert.equal(result.status, "blocked");
   assert.equal(result.canAttemptLiveSend, false);
+});
+
+/* ── v5.2: full route-equivalent chain, including the real (mocked) Cloud API adapter ── */
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+async function runFullChain(
+  rawBody: string,
+  serverSignals: typeof FAVORABLE_SERVER_SIGNALS & { liveSendEnvFlagOn: boolean; accessToken: string | null; phoneNumberId: string | null },
+) {
+  const parsedBody = parseJsonBodySafely(rawBody);
+  assert.notEqual(parsedBody, undefined, "expected valid JSON in this helper");
+  const fields = parseControlledSendRequestFields(parsedBody);
+  assert.ok(fields, "expected a parseable object body in this helper");
+
+  const approval = resolveMissionApprovalState({ missionId: fields.missionId, leadId: fields.leadId });
+
+  return executeControlledWhatsAppSend({
+    missionId: fields.missionId,
+    leadId: fields.leadId,
+    provider: "whatsapp",
+    runtimeMode: fields.runtimeMode,
+    founderApproved: approval.founderApproved,
+    courierDraftApproved: approval.courierDraftApproved,
+    deliveryGatewayAllowed: approval.deliveryGatewayAllowed,
+    whatsappReadinessStatus: serverSignals.whatsappReadinessStatus,
+    liveSendGateAllowed: serverSignals.liveSendGateAllowed,
+    controlledLivePolicyAllowed: serverSignals.controlledLivePolicyAllowed,
+    recipientPhone: fields.recipientPhone,
+    configuredTestRecipient: serverSignals.configuredTestRecipient,
+    messageText: fields.messageText,
+    liveSendEnvFlagOn: serverSignals.liveSendEnvFlagOn,
+    accessToken: serverSignals.accessToken,
+    phoneNumberId: serverSignals.phoneNumberId,
+  });
+}
+
+test("controlled_live_sent is reachable only through the full chain: approved snapshot + test recipient + env flag + credentials", async () => {
+  publishHermesMissionStateSnapshot({
+    missionId: "m1",
+    leadId: "l1",
+    founderApprovalStatus: "approved",
+    courierDraftStatus: "approved",
+    deliveryGatewayStatus: "allowed",
+  });
+
+  const honestBody = JSON.stringify({
+    missionId: "m1",
+    leadId: "l1",
+    runtimeMode: "controlled_test_live",
+    recipientPhone: "+905551234567",
+    messageText: "Merhaba, otel işletmeniz için görüşme talebimiz var.",
+  });
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => jsonResponse({ messages: [{ id: "wamid.TEST123" }] })) as typeof fetch;
+  try {
+    const result = await runFullChain(honestBody, {
+      ...FAVORABLE_SERVER_SIGNALS,
+      liveSendEnvFlagOn: true,
+      accessToken: "server-side-token",
+      phoneNumberId: "1234567890",
+    });
+    assert.equal(result.status, "controlled_live_sent");
+    assert.equal(result.providerMessageId, "wamid.TEST123");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a malicious client still cannot reach controlled_live_sent by faking approval booleans in the request body", async () => {
+  const maliciousBody = JSON.stringify({
+    missionId: "m1",
+    leadId: "l1",
+    runtimeMode: "controlled_test_live",
+    recipientPhone: "+905551234567",
+    messageText: "Merhaba, otel işletmeniz için görüşme talebimiz var.",
+    founderApproved: true,
+    courierDraftApproved: true,
+    deliveryGatewayAllowed: true,
+  });
+
+  const original = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    return jsonResponse({ messages: [{ id: "wamid.TEST123" }] });
+  }) as typeof fetch;
+  try {
+    const result = await runFullChain(maliciousBody, {
+      ...FAVORABLE_SERVER_SIGNALS,
+      liveSendEnvFlagOn: true,
+      accessToken: "server-side-token",
+      phoneNumberId: "1234567890",
+    });
+    assert.equal(result.status, "blocked");
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("even with an approved snapshot and test recipient, no fetch happens if WHATSAPP_CONTROLLED_LIVE_SEND_ENABLED is off", async () => {
+  publishHermesMissionStateSnapshot({
+    missionId: "m1",
+    leadId: "l1",
+    founderApprovalStatus: "approved",
+    courierDraftStatus: "approved",
+    deliveryGatewayStatus: "allowed",
+  });
+
+  const honestBody = JSON.stringify({
+    missionId: "m1",
+    leadId: "l1",
+    runtimeMode: "controlled_test_live",
+    recipientPhone: "+905551234567",
+    messageText: "Merhaba, otel işletmeniz için görüşme talebimiz var.",
+  });
+
+  const original = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    return jsonResponse({});
+  }) as typeof fetch;
+  try {
+    const result = await runFullChain(honestBody, {
+      ...FAVORABLE_SERVER_SIGNALS,
+      liveSendEnvFlagOn: false,
+      accessToken: "server-side-token",
+      phoneNumberId: "1234567890",
+    });
+    assert.equal(result.status, "dry_run");
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
 });

@@ -104,11 +104,13 @@ export function maskWhatsAppRecipient(value: string | null | undefined): string 
   return `••• ••• ${visible}`;
 }
 
-function normalizePhoneForComparison(value: string | null | undefined): string {
+/** Exported so the adapter (v5.2) can build the exact recipient value sent to the Cloud API — same normalization, one source of truth. */
+export function normalizePhoneForComparison(value: string | null | undefined): string {
   return (value ?? "").replace(/[\s\-()]/g, "").trim();
 }
 
-function recipientMatchesConfiguredTestRecipient(
+/** Exported so the adapter's final preflight guard (v5.2) can re-check this without re-implementing it. */
+export function recipientMatchesConfiguredTestRecipient(
   recipientPhone: string | null | undefined,
   configuredTestRecipient: string | null | undefined,
 ): boolean {

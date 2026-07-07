@@ -11,19 +11,25 @@ import {
 import type { MissionApprovalSource } from "@/app/lib/hermes-mission-approval-resolver";
 
 /**
- * Controlled WhatsApp Live Send Card (v5.1.2 — Mission State Bridge).
+ * Controlled WhatsApp Live Send Card (v5.2 — WhatsApp Cloud API Test Runtime).
  *
  * Purely additive to the Hermes Workspace, rendered directly below
  * WhatsAppProviderReadinessCard. Self-contained — no props, no mission
  * wiring. The only action is "Test Alıcısına Kontrollü Preflight", which
  * POSTs only identifiers (missionId, leadId, runtimeMode, recipientPhone,
  * messageText) — never an execution-authority boolean. Founder / courier /
- * delivery approval is derived entirely server-side by
- * `resolveMissionApprovalState`, which now reads the Mission State Bridge
- * (a real, server-published snapshot) instead of always reporting
- * "unresolved" — but this card never sends, fakes, or even knows the
- * underlying booleans before the response comes back. Hermes must not let
- * UI invent execution authority.
+ * delivery approval is derived entirely server-side; this card never sends,
+ * fakes, or even knows the underlying booleans before the response comes
+ * back. Hermes must not let UI invent execution authority.
+ *
+ * This card's fixed payload deliberately keeps `runtimeMode: "dry_run"` and
+ * a placeholder `missionId`/`leadId` ("workspace-preflight") — there is no
+ * real mission selected at this level of the screen, so this specific
+ * button can never reach a real Cloud API send regardless of server gate
+ * state. The button label stays "Preflight" because that is exactly what it
+ * does here. A real `controlled_test_live` attempt only becomes reachable
+ * from a screen with a real, approved mission context — this card still has
+ * none, on purpose.
  */
 
 type ControlledSendPreflightResult = {
@@ -34,6 +40,10 @@ type ControlledSendPreflightResult = {
   blockingReasons: string[];
   missionApprovalSource: MissionApprovalSource;
   missionApprovalBlockingReasons: string[];
+  providerMessageId?: string;
+  httpStatus?: number;
+  acceptedAt?: number;
+  providerErrorMessageSafe?: string;
 };
 
 const STATUS_DOT: Record<WhatsAppControlledSendStatus, string> = {
@@ -140,6 +150,42 @@ export default function ControlledWhatsAppLiveSendCard() {
             </div>
           )}
 
+          {result.status === "controlled_live_sent" && (
+            <div className="space-y-1 rounded-lg bg-emerald-500/[0.06] px-3 py-2 ring-1 ring-inset ring-emerald-500/20">
+              {result.providerMessageId && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[9px] text-zinc-500">Provider Message ID</span>
+                  <span className="text-[10px] font-medium text-emerald-400">{result.providerMessageId}</span>
+                </div>
+              )}
+              {typeof result.httpStatus === "number" && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[9px] text-zinc-500">HTTP Status</span>
+                  <span className="text-[10px] font-medium text-zinc-300">{result.httpStatus}</span>
+                </div>
+              )}
+              {result.acceptedAt && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[9px] text-zinc-500">Kabul Zamanı</span>
+                  <span className="text-[10px] font-medium text-zinc-300">
+                    {new Date(result.acceptedAt).toLocaleTimeString("tr-TR")}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {result.status === "failed" && (
+            <div className="space-y-1 rounded-lg bg-rose-500/[0.06] px-3 py-2 ring-1 ring-inset ring-rose-500/20">
+              <p className="text-[10px] font-semibold text-rose-400">
+                {result.providerErrorMessageSafe ?? "WhatsApp Cloud API test gönderimi başarısız oldu."}
+              </p>
+              {typeof result.httpStatus === "number" && (
+                <p className="text-[9px] text-rose-400/80">HTTP {result.httpStatus}</p>
+              )}
+            </div>
+          )}
+
           {result.missionApprovalSource === "mission_state_bridge" ? (
             <div className="rounded-lg bg-emerald-500/[0.06] px-3 py-2 ring-1 ring-inset ring-emerald-500/20">
               <p className="text-[10px] font-semibold text-emerald-400">
@@ -168,7 +214,12 @@ export default function ControlledWhatsAppLiveSendCard() {
           )}
 
           <p className="border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
-            {CONTROLLED_SEND_REAL_SEND_OFF_LABEL}.
+            {result.status === "controlled_live_sent"
+              ? "Bu deneme gerçek bir WhatsApp Cloud API gönderimiydi."
+              : `${CONTROLLED_SEND_REAL_SEND_OFF_LABEL}.`}
+          </p>
+          <p className="text-[9px] leading-relaxed text-amber-400/80">
+            Gerçek gönderim yalnızca WHATSAPP_TEST_RECIPIENT için mümkündür.
           </p>
         </div>
       )}
