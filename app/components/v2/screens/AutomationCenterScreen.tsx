@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import WhatsAppProviderReadinessCard from "@/app/components/v2/screens/WhatsAppProviderReadinessCard";
+import ControlledWhatsAppLiveSendCard from "@/app/components/v2/screens/ControlledWhatsAppLiveSendCard";
 import {
   adaptScoredLeadsToAutomationCards,
   computeAutomationSummary,
@@ -2051,6 +2052,13 @@ export default function AutomationCenterScreen({
             fetches its own status, no props from this screen. First real
             provider Hermes will eventually integrate with live. */}
         <WhatsAppProviderReadinessCard />
+
+        {/* 2.7 — Controlled WhatsApp Live Send (v5.1.0): self-contained,
+            preflight-only. founderApproved/courierDraftApproved/
+            deliveryGatewayAllowed are hardcoded false — there is no mission
+            context at this level of the screen, so the result is always
+            blocked or dry_run, never a live send. */}
+        <ControlledWhatsAppLiveSendCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
