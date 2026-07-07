@@ -1,9 +1,17 @@
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   MISSION_APPROVAL_UNRESOLVED_REASON,
   resolveMissionApprovalState,
 } from "./hermes-mission-approval-resolver.ts";
+import {
+  __resetMissionStateBridgeForTests,
+  publishHermesMissionStateSnapshot,
+} from "./hermes-mission-state-bridge.ts";
+
+beforeEach(() => {
+  __resetMissionStateBridgeForTests();
+});
 
 test("unresolved state returns every approval as false", () => {
   const result = resolveMissionApprovalState({ missionId: "m1", leadId: "l1", now: 1000 });
@@ -46,4 +54,67 @@ test("resolver defaults resolvedAt to now() when not provided", () => {
   const result = resolveMissionApprovalState({ missionId: "m1", leadId: "l1" });
   const after = Date.now();
   assert.ok(result.resolvedAt >= before && result.resolvedAt <= after);
+});
+
+/* ── v5.1.2: resolves from the mission state bridge when a snapshot exists ── */
+
+test("resolves from the bridge when a fully-approved snapshot exists", () => {
+  publishHermesMissionStateSnapshot({
+    missionId: "m1",
+    leadId: "l1",
+    founderApprovalStatus: "approved",
+    courierDraftStatus: "approved",
+    deliveryGatewayStatus: "allowed",
+    now: 1000,
+  });
+  const result = resolveMissionApprovalState({ missionId: "m1", leadId: "l1", now: 1000 });
+  assert.equal(result.source, "mission_state_bridge");
+  assert.equal(result.founderApproved, true);
+  assert.equal(result.courierDraftApproved, true);
+  assert.equal(result.deliveryGatewayAllowed, true);
+  assert.deepEqual(result.blockingReasons, []);
+});
+
+test("resolves from the bridge but stays blocked when the snapshot is only partially approved", () => {
+  publishHermesMissionStateSnapshot({
+    missionId: "m1",
+    leadId: "l1",
+    founderApprovalStatus: "pending",
+    courierDraftStatus: "approved",
+    deliveryGatewayStatus: "allowed",
+    now: 1000,
+  });
+  const result = resolveMissionApprovalState({ missionId: "m1", leadId: "l1", now: 1000 });
+  assert.equal(result.source, "mission_state_bridge");
+  assert.equal(result.founderApproved, false);
+  assert.ok(result.blockingReasons.length > 0);
+});
+
+test("stays unresolved when no snapshot was ever published for this missionId", () => {
+  publishHermesMissionStateSnapshot({
+    missionId: "some-other-mission",
+    leadId: "l1",
+    founderApprovalStatus: "approved",
+    courierDraftStatus: "approved",
+    deliveryGatewayStatus: "allowed",
+    now: 1000,
+  });
+  const result = resolveMissionApprovalState({ missionId: "m1", leadId: "l1", now: 1000 });
+  assert.equal(result.source, "unresolved");
+  assert.equal(result.founderApproved, false);
+});
+
+test("falls back to unresolved once the published snapshot has expired", () => {
+  publishHermesMissionStateSnapshot({
+    missionId: "m1",
+    leadId: "l1",
+    founderApprovalStatus: "approved",
+    courierDraftStatus: "approved",
+    deliveryGatewayStatus: "allowed",
+    now: 1000,
+  });
+  const result = resolveMissionApprovalState({ missionId: "m1", leadId: "l1", now: 1000 + 11 * 60 * 1000 });
+  assert.equal(result.source, "unresolved");
+  assert.equal(result.founderApproved, false);
+  assert.deepEqual(result.blockingReasons, [MISSION_APPROVAL_UNRESOLVED_REASON]);
 });

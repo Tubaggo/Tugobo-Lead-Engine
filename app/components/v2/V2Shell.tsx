@@ -43,6 +43,7 @@ import {
 } from "@/app/components/v2/adapters/automation-center-adapter";
 import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
 import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
+import { useHermesMissionStateBridgePublisher } from "@/app/components/v2/hooks/useHermesMissionStateBridgePublisher";
 import {
   buildExecutionContexts,
   projectExecutionQueue,
@@ -348,6 +349,49 @@ export default function V2Shell({ scoredLeads }: Props) {
     () => buildHermesMissions(hermesMonitor, hermesDecisions),
     [hermesMonitor, hermesDecisions],
   );
+
+  // Mission State Bridge (v5.1.2): maps the *selected* mission's existing
+  // founder-decision / courier-draft / delivery-request state into the
+  // bridge's three safe status enums, then publishes only those (plus
+  // missionId/leadId) to the server — never an approval boolean, never
+  // message text, never a recipient phone. This is the one place the mapping
+  // happens; nothing else about the workspace changes.
+  const selectedMissionBridgeStatuses = useMemo(() => {
+    if (!selectedHermesMission) {
+      return {
+        founderApprovalStatus: "missing" as const,
+        courierDraftStatus: "missing" as const,
+        deliveryGatewayStatus: "missing" as const,
+      };
+    }
+
+    const decisionStatus = hermesDecisions[selectedHermesMission.missionId]?.status;
+    const founderApprovalStatus: "approved" | "rejected" | "missing" = decisionStatus ?? "missing";
+
+    const draftStatus = hermesDrafts[selectedHermesMission.missionId]?.status;
+    const courierDraftStatus: "approved" | "draft" | "missing" =
+      draftStatus === "approved"
+        ? "approved"
+        : draftStatus === "draft_ready" || draftStatus === "edited"
+          ? "draft"
+          : "missing";
+
+    const deliveryStatus = hermesDeliveries[selectedHermesMission.missionId]?.status;
+    const deliveryGatewayStatus: "allowed" | "blocked" | "missing" =
+      deliveryStatus === "ready" || deliveryStatus === "sent" || deliveryStatus === "delivered"
+        ? "allowed"
+        : deliveryStatus
+          ? "blocked"
+          : "missing";
+
+    return { founderApprovalStatus, courierDraftStatus, deliveryGatewayStatus };
+  }, [selectedHermesMission, hermesDecisions, hermesDrafts, hermesDeliveries]);
+
+  useHermesMissionStateBridgePublisher({
+    missionId: selectedHermesMission?.missionId ?? null,
+    leadId: selectedHermesMission?.leadId ?? null,
+    ...selectedMissionBridgeStatuses,
+  });
 
   // Hermes Pipeline (A5): the mission's leadId is the join key back to the
   // same AutomationCard (website/phone/instagram/scoredLead/doNotContact)

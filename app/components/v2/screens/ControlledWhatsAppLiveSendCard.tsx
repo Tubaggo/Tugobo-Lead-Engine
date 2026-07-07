@@ -11,7 +11,7 @@ import {
 import type { MissionApprovalSource } from "@/app/lib/hermes-mission-approval-resolver";
 
 /**
- * Controlled WhatsApp Live Send Card (v5.1.1 hotfix).
+ * Controlled WhatsApp Live Send Card (v5.1.2 — Mission State Bridge).
  *
  * Purely additive to the Hermes Workspace, rendered directly below
  * WhatsAppProviderReadinessCard. Self-contained — no props, no mission
@@ -19,8 +19,10 @@ import type { MissionApprovalSource } from "@/app/lib/hermes-mission-approval-re
  * POSTs only identifiers (missionId, leadId, runtimeMode, recipientPhone,
  * messageText) — never an execution-authority boolean. Founder / courier /
  * delivery approval is derived entirely server-side by
- * `resolveMissionApprovalState`; this card never sends, fakes, or even
- * knows those booleans before the response comes back. Hermes must not let
+ * `resolveMissionApprovalState`, which now reads the Mission State Bridge
+ * (a real, server-published snapshot) instead of always reporting
+ * "unresolved" — but this card never sends, fakes, or even knows the
+ * underlying booleans before the response comes back. Hermes must not let
  * UI invent execution authority.
  */
 
@@ -138,7 +140,13 @@ export default function ControlledWhatsAppLiveSendCard() {
             </div>
           )}
 
-          {result.missionApprovalSource === "unresolved" && (
+          {result.missionApprovalSource === "mission_state_bridge" ? (
+            <div className="rounded-lg bg-emerald-500/[0.06] px-3 py-2 ring-1 ring-inset ring-emerald-500/20">
+              <p className="text-[10px] font-semibold text-emerald-400">
+                Mission state server bridge üzerinden çözümlendi
+              </p>
+            </div>
+          ) : (
             <div className="rounded-lg bg-rose-500/[0.06] px-3 py-2 ring-1 ring-inset ring-rose-500/20">
               <p className="text-[10px] font-semibold text-rose-400">Mission approval state çözümlenemedi</p>
               <p className="mt-0.5 text-[9px] leading-relaxed text-rose-400/80">Canlı gönderim engellendi.</p>
