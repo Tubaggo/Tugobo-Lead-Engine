@@ -1,8 +1,10 @@
 import type { WhatsAppInboundMessageType, WhatsAppInboundReply } from "./whatsapp-reply-listener-runtime.ts";
 import { getProviderMessageMapping } from "./hermes-provider-message-registry.ts";
+import { classifyReplyIntent, buildReplyIntelligenceEvent } from "./reply-intelligence-runtime.ts";
+import { recordReplyIntelligence } from "./reply-intelligence-registry.ts";
 
 /**
- * WhatsApp Reply Registry (v6.2).
+ * WhatsApp Reply Registry (v6.2, classifies via Reply Intelligence in v6.3).
  *
  * Server-only, in-memory feed of recent sanitized inbound replies for the
  * Founder Revenue Workspace. Same convention as
@@ -19,6 +21,15 @@ import { getProviderMessageMapping } from "./hermes-provider-message-registry.ts
  * heuristic (e.g. guessing from a masked sender suffix): an unreliable
  * guess would be worse than an honest `mapped: false`, so every reply that
  * doesn't resolve this way is recorded as unmapped and still surfaced.
+ *
+ * Every recorded reply is also classified by `reply-intelligence-runtime.ts`
+ * and recorded into `reply-intelligence-registry.ts` — this is the single
+ * choke point every parsed reply passes through (from
+ * `whatsapp-webhook-event-processor.ts`), so it is the natural place to
+ * attach intelligence without touching the pure parser. Classification is
+ * wrapped so a failure there can never break reply recording itself —
+ * `recordWhatsAppReply`'s own return value and behavior are unchanged from
+ * v6.2.
  */
 
 export type StoredWhatsAppReply = {
@@ -94,6 +105,39 @@ export function recordWhatsAppReply(reply: WhatsAppInboundReply, now: number = D
   };
 
   replies = [entry, ...replies].slice(0, RECENT_REPLIES_LIMIT);
+
+  try {
+    const classification = classifyReplyIntent({
+      provider: reply.provider,
+      providerMessageId: reply.providerMessageId,
+      messageType: reply.messageType,
+      textPreview: reply.textPreview,
+      mapped: context.mapped,
+      missionId: context.missionId,
+      leadId: context.leadId,
+      occurredAt: reply.occurredAt,
+      contactProfileNameSafe: reply.contactProfileNameSafe,
+    });
+    const intelligenceEvent = buildReplyIntelligenceEvent(
+      {
+        provider: reply.provider,
+        providerMessageId: reply.providerMessageId,
+        messageType: reply.messageType,
+        textPreview: reply.textPreview,
+        mapped: context.mapped,
+        missionId: context.missionId,
+        leadId: context.leadId,
+        occurredAt: reply.occurredAt,
+      },
+      classification,
+      now,
+    );
+    recordReplyIntelligence(intelligenceEvent, now);
+  } catch {
+    // Classification must never break reply recording — a lost intelligence
+    // item just means the reply surfaces without an intent badge.
+  }
+
   return stripInternal(entry);
 }
 

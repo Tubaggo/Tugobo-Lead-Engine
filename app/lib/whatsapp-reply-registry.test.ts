@@ -8,11 +8,13 @@ import {
   recordWhatsAppReply,
 } from "./whatsapp-reply-registry.ts";
 import { __resetProviderMessageRegistryForTests, registerProviderMessageMapping } from "./hermes-provider-message-registry.ts";
+import { __resetReplyIntelligenceRegistryForTests, getRecentReplyIntelligence } from "./reply-intelligence-registry.ts";
 import type { WhatsAppInboundReply } from "./whatsapp-reply-listener-runtime.ts";
 
 beforeEach(() => {
   __resetProviderMessageRegistryForTests();
   __resetWhatsAppReplyRegistryForTests();
+  __resetReplyIntelligenceRegistryForTests();
 });
 
 function buildReply(overrides: Partial<WhatsAppInboundReply> = {}): WhatsAppInboundReply {
@@ -107,4 +109,28 @@ test("stored reply shape never includes a raw phone, full body, or provider payl
   assert.equal("rawPayload" in stored, false);
   assert.equal("accessToken" in stored, false);
   assert.equal("text" in stored, false);
+});
+
+/* ── v6.3 Reply Intelligence integration ─────────────────────────── */
+
+test("recording a reply also records a classification into the Reply Intelligence registry", () => {
+  registerProviderMessageMapping({ providerMessageId: "wamid.ORIGINAL3", missionId: "mission-3", leadId: "lead-3", recipientMasked: null, now: 1000 });
+  const reply = buildReply({ providerMessageId: "wamid.CLASSIFY1", conversationIdSafe: "wamid.ORIGINAL3", textPreview: "Demo görebilir miyiz?" });
+  recordWhatsAppReply(reply, 1000);
+
+  const intelligence = getRecentReplyIntelligence(10, 1000);
+  assert.equal(intelligence.length, 1);
+  assert.equal(intelligence[0].providerMessageId, "wamid.CLASSIFY1");
+  assert.equal(intelligence[0].missionId, "mission-3");
+  assert.equal(intelligence[0].intent, "demo_requested");
+});
+
+test("an unmapped reply is still classified — mapping and classification are independent", () => {
+  const reply = buildReply({ providerMessageId: "wamid.CLASSIFY2", conversationIdSafe: "wamid.NEVER", textPreview: "Fiyat nedir?" });
+  recordWhatsAppReply(reply, 1000);
+
+  const intelligence = getRecentReplyIntelligence(10, 1000);
+  assert.equal(intelligence[0].intent, "pricing_question");
+  assert.equal(intelligence[0].missionId, null);
+  assert.ok(intelligence[0].founderActionHint.includes("mission eşleşmedi"));
 });

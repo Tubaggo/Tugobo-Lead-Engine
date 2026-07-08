@@ -4,11 +4,13 @@ import { processWhatsAppWebhookEvent } from "./whatsapp-webhook-event-processor.
 import { __resetRecentReceiptsForTests } from "./whatsapp-delivery-receipt-processor.ts";
 import { __resetProviderMessageRegistryForTests, registerProviderMessageMapping } from "./hermes-provider-message-registry.ts";
 import { __resetWhatsAppReplyRegistryForTests } from "./whatsapp-reply-registry.ts";
+import { __resetReplyIntelligenceRegistryForTests } from "./reply-intelligence-registry.ts";
 
 beforeEach(() => {
   __resetProviderMessageRegistryForTests();
   __resetRecentReceiptsForTests();
   __resetWhatsAppReplyRegistryForTests();
+  __resetReplyIntelligenceRegistryForTests();
 });
 
 function buildCombinedPayload(statuses: unknown[], messages: unknown[]): unknown {

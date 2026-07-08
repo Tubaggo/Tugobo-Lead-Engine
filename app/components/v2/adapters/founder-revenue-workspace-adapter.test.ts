@@ -12,6 +12,7 @@ import {
 } from "./founder-revenue-workspace-adapter.ts";
 import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
 import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.ts";
+import type { ReplyIntelligenceItem } from "../../../lib/reply-intelligence-runtime.ts";
 
 function buildMission(overrides: Partial<MissionLike> = {}): MissionLike {
   return {
@@ -67,6 +68,24 @@ function buildReply(overrides: Partial<StoredWhatsAppReply> = {}): StoredWhatsAp
   };
 }
 
+function buildIntelligence(overrides: Partial<ReplyIntelligenceItem> = {}): ReplyIntelligenceItem {
+  return {
+    provider: "whatsapp",
+    providerMessageId: "wamid.REPLY1",
+    missionId: "mission:lead-1",
+    leadId: "lead-1",
+    intent: "demo_requested",
+    confidence: "high",
+    urgency: "high",
+    founderActionHint: "Demo talebi var — hemen randevu planlayın.",
+    reason: "Mesajda demo/tanıtım talebi belirten bir ifade bulundu.",
+    textPreview: "Demo görebilir miyiz?",
+    analyzedAt: 4000,
+    auditType: "reply_intelligence_demo_requested",
+    ...overrides,
+  };
+}
+
 /* ── actionStageOf ──────────────────────────────────────────────── */
 
 test("actionStageOf: a failed receipt outranks everything else", () => {
@@ -97,6 +116,42 @@ test("actionStageOf: a reply mapped to a different missionId is ignored", () => 
   const mission = buildMission({ missionId: "mission:lead-A", stage: "prepare" });
   const reply = buildReply({ missionId: "mission:lead-B" });
   assert.equal(actionStageOf(mission, [], [reply]), "unknown");
+});
+
+test("actionStageOf: a hot classification (demo_requested) outranks a plain reply_received", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "demo_requested", urgency: "high" });
+  assert.equal(actionStageOf(mission, [], [reply], [intelligence]), "hot_reply");
+});
+
+test("actionStageOf: interested is hot even though its urgency is medium", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "interested", urgency: "medium" });
+  assert.equal(actionStageOf(mission, [], [reply], [intelligence]), "hot_reply");
+});
+
+test("actionStageOf: human_review_required classification maps to reply_needs_review", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "human_review_required", urgency: "medium" });
+  assert.equal(actionStageOf(mission, [], [reply], [intelligence]), "reply_needs_review");
+});
+
+test("actionStageOf: a non-hot classification (e.g. later) still falls back to reply_received", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "later", urgency: "medium" });
+  assert.equal(actionStageOf(mission, [], [reply], [intelligence]), "reply_received");
+});
+
+test("actionStageOf: a failed receipt still outranks a hot_reply classification", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const receipt = buildReceipt({ missionId: "mission:lead-1", status: "failed" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "demo_requested", urgency: "high" });
+  assert.equal(actionStageOf(mission, [receipt], [reply], [intelligence]), "failed");
 });
 
 test("actionStageOf: read/delivered/sent map from the mapped receipt when not blocked by approval/failure", () => {
@@ -136,7 +191,19 @@ test("computeRevenueSummary: counts across an empty state are all zero", () => {
     demoPendingCount: 0,
     needsAttentionCount: 0,
     replyReceivedCount: 0,
+    hotReplyCount: 0,
   });
+});
+
+test("computeRevenueSummary: hotReplyCount counts high-urgency and interested classifications", () => {
+  const intelligence = [
+    buildIntelligence({ providerMessageId: "wamid.I1", intent: "demo_requested", urgency: "high" }),
+    buildIntelligence({ providerMessageId: "wamid.I2", intent: "interested", urgency: "medium" }),
+    buildIntelligence({ providerMessageId: "wamid.I3", intent: "later", urgency: "medium" }),
+    buildIntelligence({ providerMessageId: "wamid.I4", intent: "not_interested", urgency: "low" }),
+  ];
+  const summary = computeRevenueSummary([], [], [], intelligence);
+  assert.equal(summary.hotReplyCount, 2);
 });
 
 test("computeRevenueSummary: replyReceivedCount counts all recent replies, mapped and unmapped", () => {
@@ -214,12 +281,13 @@ test("computeActionQueue: completed missions never appear", () => {
   assert.equal(computeActionQueue(missions, []).length, 0);
 });
 
-test("computeActionQueue: sorts strictly by priority — FAILED > REPLY_RECEIVED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > UNKNOWN", () => {
+test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > REPLY_RECEIVED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > UNKNOWN", () => {
   const missions = [
     buildMission({ missionId: "m-unknown", stage: "verify" }),
     buildMission({ missionId: "m-ready", stage: "execution-ready" }),
     buildMission({ missionId: "m-approval", stage: "approval" }),
     buildMission({ missionId: "m-failed", stage: "prepare" }),
+    buildMission({ missionId: "m-hot", stage: "prepare" }),
     buildMission({ missionId: "m-reply", stage: "prepare" }),
     buildMission({ missionId: "m-read", stage: "prepare" }),
     buildMission({ missionId: "m-delivered", stage: "prepare" }),
@@ -231,17 +299,19 @@ test("computeActionQueue: sorts strictly by priority — FAILED > REPLY_RECEIVED
     buildReceipt({ missionId: "m-delivered", status: "delivered" }),
     buildReceipt({ missionId: "m-sent", status: "sent" }),
   ];
-  const replies = [buildReply({ missionId: "m-reply" })];
+  const replies = [buildReply({ providerMessageId: "wamid.HOT", missionId: "m-hot" }), buildReply({ missionId: "m-reply" })];
+  const intelligence = [buildIntelligence({ providerMessageId: "wamid.HOT", missionId: "m-hot", intent: "demo_requested", urgency: "high" })];
 
-  const queue = computeActionQueue(missions, receipts, replies);
+  const queue = computeActionQueue(missions, receipts, replies, intelligence);
   assert.deepEqual(
     queue.map((q) => q.missionId),
-    ["m-failed", "m-reply", "m-approval", "m-read", "m-delivered", "m-sent", "m-ready", "m-unknown"],
+    ["m-failed", "m-hot", "m-reply", "m-approval", "m-read", "m-delivered", "m-sent", "m-ready", "m-unknown"],
   );
   assert.deepEqual(
     queue.map((q) => q.stageLabel),
     [
       ACTION_STAGE_LABELS.failed,
+      ACTION_STAGE_LABELS.hot_reply,
       ACTION_STAGE_LABELS.reply_received,
       ACTION_STAGE_LABELS.approval_required,
       ACTION_STAGE_LABELS.read,

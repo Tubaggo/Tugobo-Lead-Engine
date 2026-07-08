@@ -5,6 +5,7 @@ import WhatsAppProviderReadinessCard from "@/app/components/v2/screens/WhatsAppP
 import ControlledWhatsAppLiveSendCard from "@/app/components/v2/screens/ControlledWhatsAppLiveSendCard";
 import WhatsAppDeliveryReceiptCard from "@/app/components/v2/screens/WhatsAppDeliveryReceiptCard";
 import WhatsAppReplyListenerCard from "@/app/components/v2/screens/WhatsAppReplyListenerCard";
+import ReplyIntelligenceCard from "@/app/components/v2/screens/ReplyIntelligenceCard";
 import FounderRevenueWorkspace from "@/app/components/v2/screens/FounderRevenueWorkspace";
 import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import {
@@ -2102,9 +2103,14 @@ export default function AutomationCenterScreen({
 
         {/* 2.9 — WhatsApp Reply Listener (v6.2): self-contained,
             read-only reply viewer. Shows only the last inbound reply's
-            type/mapping/textPreview — no conversation UI, no reply
-            intelligence, no auto-reply. */}
+            type/mapping/textPreview — no conversation UI, no auto-reply. */}
         <WhatsAppReplyListenerCard />
+
+        {/* 2.10 — Reply Intelligence (v6.3): self-contained, read-only
+            classification viewer. Shows only the last deterministic
+            intent/urgency/confidence/action-hint — no AI provider call,
+            no auto-reply, no auto-follow-up. */}
+        <ReplyIntelligenceCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
