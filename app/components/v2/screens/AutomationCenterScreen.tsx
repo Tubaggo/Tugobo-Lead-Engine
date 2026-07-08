@@ -7,6 +7,7 @@ import WhatsAppDeliveryReceiptCard from "@/app/components/v2/screens/WhatsAppDel
 import WhatsAppReplyListenerCard from "@/app/components/v2/screens/WhatsAppReplyListenerCard";
 import ReplyIntelligenceCard from "@/app/components/v2/screens/ReplyIntelligenceCard";
 import DemoSchedulingCard from "@/app/components/v2/screens/DemoSchedulingCard";
+import FollowUpRuntimeCard from "@/app/components/v2/screens/FollowUpRuntimeCard";
 import FounderRevenueWorkspace from "@/app/components/v2/screens/FounderRevenueWorkspace";
 import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import {
@@ -2118,6 +2119,12 @@ export default function AutomationCenterScreen({
             this card exposes — no WhatsApp send, no calendar integration,
             no auto-scheduling. */}
         <DemoSchedulingCard />
+
+        {/* 2.12 — Follow-up Runtime (v6.5): self-contained, manual-first
+            review board. The four status buttons are the only mutation
+            this card exposes — no send, no auto-follow-up, no bulk
+            messaging. All follow-up actions require founder approval. */}
+        <FollowUpRuntimeCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue

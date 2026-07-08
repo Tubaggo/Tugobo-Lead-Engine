@@ -4,10 +4,11 @@ import type { WhatsAppReadinessStatus } from "../../../lib/whatsapp-provider-run
 import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.ts";
 import { isHotReplyIntelligence, type ReplyIntelligenceItem } from "../../../lib/reply-intelligence-runtime.ts";
 import { DEMO_STATUS_LABELS_TR, type DemoScheduleItem } from "../../../lib/demo-scheduling-runtime.ts";
+import { FOLLOW_UP_REASON_LABELS_TR, FOLLOW_UP_STATUS_LABELS_TR, type FollowUpCandidate } from "../../../lib/follow-up-runtime.ts";
 
 /**
  * Founder Revenue Workspace adapter (v6.1, hot-reply intelligence added in
- * v6.3, demo scheduling added in v6.4).
+ * v6.3, demo scheduling added in v6.4, follow-up candidates added in v6.5).
  *
  * Pure presentation-layer aggregation over Hermes runtime state that
  * already exists — `HermesMission[]` (mission runtime), the mission's own
@@ -54,6 +55,7 @@ export type ActionStage =
   | "failed"
   | "hot_reply"
   | "demo_pending"
+  | "follow_up_required"
   | "reply_needs_review"
   | "reply_received"
   | "approval_required"
@@ -67,6 +69,7 @@ export const ACTION_STAGE_LABELS: Record<ActionStage, string> = {
   failed: "Başarısız",
   hot_reply: "Sıcak Cevap",
   demo_pending: "Demo Bekliyor",
+  follow_up_required: "Takip Gerekli",
   reply_needs_review: "İnceleme Gerekiyor",
   reply_received: "Cevap Geldi",
   approval_required: "Onay Bekliyor",
@@ -81,6 +84,7 @@ export const SUGGESTED_ACTION_LABELS: Record<ActionStage, string> = {
   failed: "Teslim edilemedi — tekrar deneyin",
   hot_reply: "Sıcak cevap — hemen aksiyon alın",
   demo_pending: "Demo zamanı planla",
+  follow_up_required: "Takip mesajı öner",
   reply_needs_review: "Cevap net değil — manuel inceleyin",
   reply_received: "Cevap geldi, incele",
   approval_required: "Founder onayı bekleniyor",
@@ -93,25 +97,26 @@ export const SUGGESTED_ACTION_LABELS: Record<ActionStage, string> = {
 
 /**
  * Lower rank = higher priority in the Action Queue: FAILED → HOT_REPLY →
- * DEMO_PENDING → REPLY_NEEDS_REVIEW → REPLY_RECEIVED → APPROVAL_REQUIRED →
- * READ → DELIVERED → SENT → READY → UNKNOWN. `reply_needs_review` ranks
- * just below `demo_pending` (not explicitly ordered by the v6.3 spec)
- * because an unclassifiable reply might *be* a hot one — the founder just
- * can't know that without opening it, so it deserves attention almost as
- * urgently.
+ * DEMO_PENDING → FOLLOW_UP_REQUIRED → REPLY_NEEDS_REVIEW → REPLY_RECEIVED →
+ * APPROVAL_REQUIRED → READ → DELIVERED → SENT → READY → UNKNOWN.
+ * `reply_needs_review` ranks just below `follow_up_required` (not
+ * explicitly ordered by the v6.3 spec) because an unclassifiable reply
+ * might *be* a hot one — the founder just can't know that without opening
+ * it, so it deserves attention almost as urgently.
  */
 const ACTION_STAGE_RANK: Record<ActionStage, number> = {
   failed: 0,
   hot_reply: 1,
   demo_pending: 2,
-  reply_needs_review: 3,
-  reply_received: 4,
-  approval_required: 5,
-  read: 6,
-  delivered: 7,
-  sent: 8,
-  ready: 9,
-  unknown: 10,
+  follow_up_required: 3,
+  reply_needs_review: 4,
+  reply_received: 5,
+  approval_required: 6,
+  read: 7,
+  delivered: 8,
+  sent: 9,
+  ready: 10,
+  unknown: 11,
 };
 
 /** `recentReceipts` is assumed newest-first (the processor's own feed convention) — `.find` returns the latest match. */
@@ -143,12 +148,18 @@ function hasPendingDemoForMission(missionId: string, recentDemoItems: DemoSchedu
   return recentDemoItems.some((d) => d.missionId === missionId && (d.status === "demo_requested" || d.status === "scheduling_needed"));
 }
 
+/** "Active" = still needs a founder decision — matches `RevenueSummary`'s own "Takip Gerekli" definition (`candidate` + `approval_required`). */
+function hasActiveFollowUpForMission(missionId: string, recentFollowUps: FollowUpCandidate[]): boolean {
+  return recentFollowUps.some((f) => f.missionId === missionId && (f.status === "candidate" || f.status === "approval_required"));
+}
+
 /**
- * `demo_pending` is checked independently of whether a "latest mapped
- * reply" is still in `recentReplies` (a capped, aging feed) — a demo item
- * lives in its own 14-day registry and can outlive the specific reply that
- * created it (e.g. the customer sends a later, less-hot follow-up message).
- * An unresolved demo opportunity should keep surfacing regardless.
+ * `demo_pending`/`follow_up_required` are checked independently of whether
+ * a "latest mapped reply" is still in `recentReplies` (a capped, aging
+ * feed) — a demo item or follow-up candidate lives in its own 14-day
+ * registry and can outlive the specific reply that created it (e.g. the
+ * customer sends a later, less-hot follow-up message). An unresolved
+ * opportunity should keep surfacing regardless.
  */
 export function actionStageOf(
   mission: MissionLike,
@@ -156,6 +167,7 @@ export function actionStageOf(
   recentReplies: StoredWhatsAppReply[] = [],
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
+  recentFollowUps: FollowUpCandidate[] = [],
 ): ActionStage {
   const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
   if (receipt?.status === "failed") return "failed";
@@ -165,6 +177,7 @@ export function actionStageOf(
 
   if (intelligence && isHotReplyIntelligence(intelligence)) return "hot_reply";
   if (hasPendingDemoForMission(mission.missionId, recentDemoItems)) return "demo_pending";
+  if (hasActiveFollowUpForMission(mission.missionId, recentFollowUps)) return "follow_up_required";
   if (reply) {
     if (intelligence?.intent === "human_review_required") return "reply_needs_review";
     return "reply_received";
@@ -191,6 +204,7 @@ export type RevenueSummary = {
   needsAttentionCount: number;
   replyReceivedCount: number;
   hotReplyCount: number;
+  followUpRequiredCount: number;
 };
 
 export function computeRevenueSummary(
@@ -199,6 +213,7 @@ export function computeRevenueSummary(
   recentReplies: StoredWhatsAppReply[] = [],
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
+  recentFollowUps: FollowUpCandidate[] = [],
 ): RevenueSummary {
   const totalActiveMissions = missions.filter((m) => m.stage !== "completed").length;
   const founderApprovalPending = missions.filter((m) => m.stage === "approval").length;
@@ -211,9 +226,11 @@ export function computeRevenueSummary(
   const demoPendingCount = recentDemoItems.filter((d) => d.status === "demo_requested" || d.status === "scheduling_needed").length;
 
   const needsAttentionCount = missions.filter((m) => {
-    const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems);
+    const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
     return stage === "failed" || stage === "approval_required";
   }).length;
+
+  const followUpRequiredCount = recentFollowUps.filter((f) => f.status === "candidate" || f.status === "approval_required").length;
 
   return {
     totalActiveMissions,
@@ -226,6 +243,7 @@ export function computeRevenueSummary(
     needsAttentionCount,
     replyReceivedCount: recentReplies.length,
     hotReplyCount: recentIntelligence.filter(isHotReplyIntelligence).length,
+    followUpRequiredCount,
   };
 }
 
@@ -254,11 +272,12 @@ export function computeActionQueue(
   recentReplies: StoredWhatsAppReply[] = [],
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
+  recentFollowUps: FollowUpCandidate[] = [],
 ): ActionQueueItem[] {
   return missions
     .filter((m) => m.stage !== "completed")
     .map((m) => {
-      const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems);
+      const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
       const lastTimelineEntry = m.timeline[m.timeline.length - 1];
       return {
         missionId: m.missionId,
@@ -292,6 +311,10 @@ export type MissionFocusSummary = {
   demoStatusLabel: string | null;
   demoSuggestedAction: string | null;
   demoScheduledAtLabel: string | null;
+  followUpStatusLabel: string | null;
+  followUpReasonLabel: string | null;
+  followUpSuggestedAction: string | null;
+  followUpSuggestedTiming: string | null;
 };
 
 export function computeMissionFocus(
@@ -300,10 +323,12 @@ export function computeMissionFocus(
   recentReplies: StoredWhatsAppReply[] = [],
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
+  recentFollowUps: FollowUpCandidate[] = [],
 ): MissionFocusSummary {
-  const stage = actionStageOf(mission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems);
+  const stage = actionStageOf(mission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
   const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
   const demoItem = recentDemoItems.find((d) => d.missionId === mission.missionId) ?? null;
+  const followUp = recentFollowUps.find((f) => f.missionId === mission.missionId) ?? null;
 
   return {
     missionId: mission.missionId,
@@ -319,6 +344,10 @@ export function computeMissionFocus(
     demoStatusLabel: demoItem ? DEMO_STATUS_LABELS_TR[demoItem.status] : null,
     demoSuggestedAction: demoItem ? demoItem.suggestedAction : null,
     demoScheduledAtLabel: demoItem?.scheduledAt ? new Date(demoItem.scheduledAt).toLocaleString("tr-TR") : null,
+    followUpStatusLabel: followUp ? FOLLOW_UP_STATUS_LABELS_TR[followUp.status] : null,
+    followUpReasonLabel: followUp ? FOLLOW_UP_REASON_LABELS_TR[followUp.reason] : null,
+    followUpSuggestedAction: followUp ? followUp.suggestedAction : null,
+    followUpSuggestedTiming: followUp ? followUp.suggestedTiming : null,
   };
 }
 

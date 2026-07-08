@@ -7,9 +7,10 @@ import {
   type DemoStatusUpdateMetadata,
   type DemoStatusUpdateTarget,
 } from "./demo-scheduling-runtime.ts";
+import { upsertFollowUpCandidate } from "./follow-up-registry.ts";
 
 /**
- * Demo Scheduling Registry (v6.4).
+ * Demo Scheduling Registry (v6.4, feeds Follow-up candidates in v6.5).
  *
  * Server-only, in-memory store of demo scheduling opportunities. Unlike the
  * capped-array feeds in `whatsapp-reply-registry.ts` /
@@ -20,6 +21,11 @@ import {
  * silently hide a still-open demo. Bounded instead by a 14-day TTL, pruned
  * on read/write. Lost on server restart — same tradeoff as every other
  * Hermes registry.
+ *
+ * v6.5: a freshly-created item still in `demo_requested`/
+ * `scheduling_needed` seeds a `demo_not_scheduled` follow-up candidate;
+ * transitioning an item to `no_show` seeds `demo_no_show`. Both wrapped so
+ * a follow-up failure can never break demo scheduling itself.
  */
 
 type RegistryEntry = DemoScheduleItem & { expiresAt: number };
@@ -55,6 +61,26 @@ export function upsertDemoScheduleItem(input: DemoScheduleCandidateInput, now: n
 
   const entry: RegistryEntry = { ...candidate, expiresAt: now + DEMO_TTL_MS };
   items.set(candidate.id, entry);
+
+  if (candidate.status === "demo_requested" || candidate.status === "scheduling_needed") {
+    try {
+      upsertFollowUpCandidate(
+        {
+          source: "demo_scheduling",
+          reason: "demo_not_scheduled",
+          provider: "whatsapp",
+          sourceId: candidate.id,
+          providerMessageId: null,
+          missionId: candidate.missionId,
+          leadId: candidate.leadId,
+        },
+        now,
+      );
+    } catch {
+      // Follow-up seeding must never break demo scheduling.
+    }
+  }
+
   return stripInternal(entry);
 }
 
@@ -89,6 +115,26 @@ export function updateDemoScheduleStatus(
   const updated = applyDemoStatusUpdate(existing, status, metadata, now);
   const entry: RegistryEntry = { ...updated, expiresAt: now + DEMO_TTL_MS };
   items.set(id, entry);
+
+  if (status === "no_show") {
+    try {
+      upsertFollowUpCandidate(
+        {
+          source: "demo_scheduling",
+          reason: "demo_no_show",
+          provider: "whatsapp",
+          sourceId: id,
+          providerMessageId: null,
+          missionId: updated.missionId,
+          leadId: updated.leadId,
+        },
+        now,
+      );
+    } catch {
+      // Follow-up seeding must never break demo scheduling.
+    }
+  }
+
   return stripInternal(entry);
 }
 

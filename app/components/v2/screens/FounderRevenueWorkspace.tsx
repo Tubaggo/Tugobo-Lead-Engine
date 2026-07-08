@@ -15,27 +15,31 @@ import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtim
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
 import type { ReplyIntelligenceItem } from "@/app/lib/reply-intelligence-runtime";
 import type { DemoScheduleItem } from "@/app/lib/demo-scheduling-runtime";
+import type { FollowUpCandidate } from "@/app/lib/follow-up-runtime";
 import { kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } from "@/app/components/v2/design-system";
 
 /**
  * Founder Revenue Workspace (v6.1, replies added in v6.2, reply
- * intelligence added in v6.3, demo scheduling added in v6.4).
+ * intelligence added in v6.3, demo scheduling added in v6.4, follow-up
+ * candidates added in v6.5).
  *
  * The default view of the Hermes screen — a pure, read-only aggregation of
  * runtime state that already exists (missions, founder decisions, WhatsApp
  * delivery receipts, inbound WhatsApp replies, deterministic reply
- * classifications, demo scheduling opportunities). It never mutates
- * anything itself — selecting a mission reuses the screen's existing
- * `onSelectHermesMission`, the same callback the Developer Mode mission
- * queue already uses. Demo status changes happen only through
- * `DemoSchedulingCard`'s buttons (Developer Mode), never from this view.
- * Five self-contained fetches (`/api/hermes/providers/whatsapp/status`,
+ * classifications, demo scheduling opportunities, follow-up candidates). It
+ * never mutates anything itself — selecting a mission reuses the screen's
+ * existing `onSelectHermesMission`, the same callback the Developer Mode
+ * mission queue already uses. Demo/follow-up status changes happen only
+ * through `DemoSchedulingCard`/`FollowUpRuntimeCard`'s buttons (Developer
+ * Mode), never from this view. Six self-contained fetches
+ * (`/api/hermes/providers/whatsapp/status`,
  * `/api/hermes/providers/whatsapp/delivery-receipts`,
  * `/api/hermes/providers/whatsapp/replies`,
- * `/api/hermes/reply-intelligence`, `/api/hermes/demo-scheduling`) reuse
- * existing GET routes — no new mutation logic here. Classification only
- * ever surfaces as an intent badge and a Turkish action hint — no reply
- * body, no auto-response, no send, no calendar integration.
+ * `/api/hermes/reply-intelligence`, `/api/hermes/demo-scheduling`,
+ * `/api/hermes/follow-ups`) reuse existing GET routes — no new mutation
+ * logic here. A follow-up candidate only ever surfaces as a reason/
+ * suggested-action/timing hint — no auto-send, no draft that gets sent
+ * automatically, no calendar integration.
  *
  * `demoPendingCount` (the "Demo Bekleyen" tile) was redefined in v6.4: it
  * used to be a heuristic over mission stage/task-type (v6.1); now it counts
@@ -57,6 +61,7 @@ const ACTION_STAGE_BADGE_CLS: Record<ActionStage, string> = {
   failed: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
   hot_reply: "bg-orange-500/[0.10] text-orange-400 ring-orange-500/20",
   demo_pending: "bg-teal-500/[0.10] text-teal-400 ring-teal-500/20",
+  follow_up_required: "bg-cyan-500/[0.10] text-cyan-400 ring-cyan-500/20",
   reply_needs_review: "bg-zinc-500/[0.10] text-zinc-300 ring-zinc-500/20",
   reply_received: "bg-fuchsia-500/[0.10] text-fuchsia-400 ring-fuchsia-500/20",
   approval_required: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
@@ -78,6 +83,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
   const [recentReplies, setRecentReplies] = useState<StoredWhatsAppReply[]>([]);
   const [recentIntelligence, setRecentIntelligence] = useState<ReplyIntelligenceItem[]>([]);
   const [recentDemoItems, setRecentDemoItems] = useState<DemoScheduleItem[]>([]);
+  const [recentFollowUps, setRecentFollowUps] = useState<FollowUpCandidate[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,6 +160,23 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     let cancelled = false;
     void (async () => {
       try {
+        const res = await fetch("/api/hermes/follow-ups");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { items?: FollowUpCandidate[] };
+        if (!cancelled) setRecentFollowUps(data.items ?? []);
+      } catch {
+        // leave empty — "Takip Gerekli" summary reports 0 rather than guessing
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
         const res = await fetch("/api/hermes/providers/whatsapp/status");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { readinessStatus?: WhatsAppReadinessStatus };
@@ -167,8 +190,8 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     };
   }, []);
 
-  const summary = computeRevenueSummary(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems);
-  const queue = computeActionQueue(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems);
+  const summary = computeRevenueSummary(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
+  const queue = computeActionQueue(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
@@ -178,7 +201,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
   const focus = selectedMission
-    ? computeMissionFocus(selectedMission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems)
+    ? computeMissionFocus(selectedMission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps)
     : null;
 
   return (
@@ -196,6 +219,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
           <SummaryTile label="Okundu" value={summary.readCount} />
           <SummaryTile label="Başarısız" value={summary.failedCount} accent="text-rose-400" />
           <SummaryTile label="Demo Bekleyen" value={summary.demoPendingCount} />
+          <SummaryTile label="Takip Gerekli" value={summary.followUpRequiredCount} accent="text-cyan-400" />
           <SummaryTile label="Needs Attention" value={summary.needsAttentionCount} accent="text-amber-400" />
         </div>
       </div>
@@ -286,6 +310,27 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
             )}
             {focus.demoSuggestedAction && (
               <p className="text-[10px] font-medium text-teal-300">{focus.demoSuggestedAction}</p>
+            )}
+            {focus.followUpStatusLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Takip Durumu</span>
+                <span className="text-[10px] text-cyan-300">{focus.followUpStatusLabel}</span>
+              </div>
+            )}
+            {focus.followUpReasonLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Takip Nedeni</span>
+                <span className="text-[10px] text-zinc-300">{focus.followUpReasonLabel}</span>
+              </div>
+            )}
+            {focus.followUpSuggestedTiming && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Önerilen Zaman</span>
+                <span className="text-[10px] text-zinc-300">{focus.followUpSuggestedTiming}</span>
+              </div>
+            )}
+            {focus.followUpSuggestedAction && (
+              <p className="text-[10px] font-medium text-cyan-300">{focus.followUpSuggestedAction}</p>
             )}
             <p className="border-t border-white/[0.06] pt-2 text-[10px] font-medium text-indigo-300">
               {focus.suggestedNextAction}

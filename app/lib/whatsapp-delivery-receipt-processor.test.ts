@@ -7,11 +7,37 @@ import {
   processWhatsAppDeliveryWebhookPayload,
 } from "./whatsapp-delivery-receipt-processor.ts";
 import { __resetProviderMessageRegistryForTests, registerProviderMessageMapping } from "./hermes-provider-message-registry.ts";
+import { __resetWhatsAppReplyRegistryForTests, recordWhatsAppReply } from "./whatsapp-reply-registry.ts";
+import { __resetReplyIntelligenceRegistryForTests } from "./reply-intelligence-registry.ts";
+import { __resetDemoSchedulingRegistryForTests } from "./demo-scheduling-registry.ts";
+import { __resetFollowUpRegistryForTests, getRecentFollowUpCandidates } from "./follow-up-registry.ts";
+import type { WhatsAppInboundReply } from "./whatsapp-reply-listener-runtime.ts";
 
 beforeEach(() => {
   __resetProviderMessageRegistryForTests();
   __resetRecentReceiptsForTests();
+  __resetWhatsAppReplyRegistryForTests();
+  __resetReplyIntelligenceRegistryForTests();
+  __resetDemoSchedulingRegistryForTests();
+  __resetFollowUpRegistryForTests();
 });
+
+function buildReply(overrides: Partial<WhatsAppInboundReply> = {}): WhatsAppInboundReply {
+  return {
+    provider: "whatsapp",
+    providerMessageId: "wamid.REPLY1",
+    fromMasked: "••• ••• 67",
+    fromWaIdMasked: "••• ••• 67",
+    messageType: "text",
+    textPreview: "Merhaba",
+    rawType: "text",
+    occurredAt: 1000,
+    conversationIdSafe: null,
+    contactProfileNameSafe: null,
+    auditType: "whatsapp_reply_received",
+    ...overrides,
+  };
+}
 
 function buildPayload(statuses: unknown[]): unknown {
   return { entry: [{ changes: [{ value: { statuses } }] }] };
@@ -90,4 +116,51 @@ test("recent receipts feed records processed batches, newest first, capped at th
   const recent = getRecentProcessedReceipts();
   assert.equal(recent[0].providerMessageId, "wamid.SECOND");
   assert.equal(recent[1].providerMessageId, "wamid.FIRST");
+});
+
+/* ── v6.5 Follow-up integration ──────────────────────────────────── */
+
+test("a read receipt seeds a read_no_reply follow-up candidate", () => {
+  registerProviderMessageMapping({ providerMessageId: "wamid.READ1", missionId: "m1", leadId: "l1", recipientMasked: null, now: 1000 });
+  processWhatsAppDeliveryWebhookPayload(buildPayload([{ id: "wamid.READ1", status: "read" }]), 1000);
+  const followUps = getRecentFollowUpCandidates(10, 1000);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].reason, "read_no_reply");
+  assert.equal(followUps[0].missionId, "m1");
+});
+
+test("a delivered receipt seeds a delivered_no_reply follow-up candidate", () => {
+  registerProviderMessageMapping({ providerMessageId: "wamid.DELIV1", missionId: "m1", leadId: "l1", recipientMasked: null, now: 1000 });
+  processWhatsAppDeliveryWebhookPayload(buildPayload([{ id: "wamid.DELIV1", status: "delivered" }]), 1000);
+  const followUps = getRecentFollowUpCandidates(10, 1000);
+  assert.equal(followUps[0].reason, "delivered_no_reply");
+});
+
+test("a failed receipt always seeds a failed_delivery_recovery follow-up candidate", () => {
+  registerProviderMessageMapping({ providerMessageId: "wamid.FAIL1", missionId: "m1", leadId: "l1", recipientMasked: null, now: 1000 });
+  processWhatsAppDeliveryWebhookPayload(buildPayload([{ id: "wamid.FAIL1", status: "failed" }]), 1000);
+  const followUps = getRecentFollowUpCandidates(10, 1000);
+  assert.equal(followUps[0].reason, "failed_delivery_recovery");
+});
+
+test("read/delivered receipts do not seed a follow-up when a reply already exists for the mission", () => {
+  registerProviderMessageMapping({ providerMessageId: "wamid.READ2", missionId: "m2", leadId: "l2", recipientMasked: null, now: 1000 });
+  registerProviderMessageMapping({ providerMessageId: "wamid.ORIGINAL_M2", missionId: "m2", leadId: "l2", recipientMasked: null, now: 1000 });
+  // A reply is attributed to mission "m2" via conversationIdSafe (the quoted wamid), not a direct missionId field.
+  recordWhatsAppReply(buildReply({ providerMessageId: "wamid.EXISTING", conversationIdSafe: "wamid.ORIGINAL_M2" }), 1000);
+  processWhatsAppDeliveryWebhookPayload(buildPayload([{ id: "wamid.READ2", status: "read" }]), 1000);
+  assert.equal(getRecentFollowUpCandidates(10, 1000).length, 0);
+});
+
+test("an unmapped receipt (no reliable correlation) still seeds a conservative follow-up candidate", () => {
+  processWhatsAppDeliveryWebhookPayload(buildPayload([{ id: "wamid.UNMAPPED2", status: "read" }]), 1000);
+  const followUps = getRecentFollowUpCandidates(10, 1000);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].missionId, null);
+});
+
+test("a sent receipt does not seed any follow-up candidate", () => {
+  registerProviderMessageMapping({ providerMessageId: "wamid.SENT1", missionId: "m1", leadId: "l1", recipientMasked: null, now: 1000 });
+  processWhatsAppDeliveryWebhookPayload(buildPayload([{ id: "wamid.SENT1", status: "sent" }]), 1000);
+  assert.equal(getRecentFollowUpCandidates(10, 1000).length, 0);
 });

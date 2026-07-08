@@ -9,9 +9,11 @@ import {
   upsertDemoScheduleItem,
 } from "./demo-scheduling-registry.ts";
 import type { DemoScheduleCandidateInput } from "./demo-scheduling-runtime.ts";
+import { __resetFollowUpRegistryForTests, getRecentFollowUpCandidates } from "./follow-up-registry.ts";
 
 beforeEach(() => {
   __resetDemoSchedulingRegistryForTests();
+  __resetFollowUpRegistryForTests();
 });
 
 function buildInput(overrides: Partial<DemoScheduleCandidateInput> = {}): DemoScheduleCandidateInput {
@@ -101,4 +103,33 @@ test("getRecentDemoScheduleItems returns pending items sorted before completed/c
 
   const recent = getRecentDemoScheduleItems(10, 1000);
   assert.equal(recent[0].sourceProviderMessageId, "wamid.PENDING");
+});
+
+/* ── v6.5 Follow-up integration ──────────────────────────────────── */
+
+test("a freshly created demo_requested item seeds a demo_not_scheduled follow-up candidate", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.DNS1", intent: "demo_requested" }), 1000);
+  const followUps = getRecentFollowUpCandidates(10, 1000);
+  const demoNotScheduled = followUps.find((f) => f.reason === "demo_not_scheduled");
+  assert.ok(demoNotScheduled);
+  assert.equal(demoNotScheduled?.missionId, "mission-1");
+});
+
+test("a freshly created scheduling_needed item also seeds a demo_not_scheduled follow-up candidate", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.DNS2", intent: "interested" }), 1000);
+  const followUps = getRecentFollowUpCandidates(10, 1000);
+  assert.ok(followUps.some((f) => f.reason === "demo_not_scheduled"));
+});
+
+test("an item that resolves to not_requested (not_interested/wrong_number) never seeds a demo_not_scheduled follow-up", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.NR1", intent: "not_interested" }), 1000);
+  assert.equal(getRecentFollowUpCandidates(10, 1000).length, 0);
+});
+
+test("transitioning a demo item to no_show seeds a demo_no_show follow-up candidate", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.NOSHOW1", intent: "demo_requested" }), 1000);
+  updateDemoScheduleStatus("demo:wamid.NOSHOW1", "no_show", undefined, 2000);
+  const followUps = getRecentFollowUpCandidates(10, 2000);
+  const noShow = followUps.find((f) => f.reason === "demo_no_show");
+  assert.ok(noShow);
 });
