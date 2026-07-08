@@ -14,25 +14,33 @@ import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delive
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
 import type { ReplyIntelligenceItem } from "@/app/lib/reply-intelligence-runtime";
+import type { DemoScheduleItem } from "@/app/lib/demo-scheduling-runtime";
 import { kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } from "@/app/components/v2/design-system";
 
 /**
  * Founder Revenue Workspace (v6.1, replies added in v6.2, reply
- * intelligence added in v6.3).
+ * intelligence added in v6.3, demo scheduling added in v6.4).
  *
  * The default view of the Hermes screen — a pure, read-only aggregation of
  * runtime state that already exists (missions, founder decisions, WhatsApp
  * delivery receipts, inbound WhatsApp replies, deterministic reply
- * classifications). It never mutates anything, never calls a send/approve
- * action itself (selecting a mission reuses the screen's existing
+ * classifications, demo scheduling opportunities). It never mutates
+ * anything itself — selecting a mission reuses the screen's existing
  * `onSelectHermesMission`, the same callback the Developer Mode mission
- * queue already uses — no second selection mechanism). Four self-contained
- * fetches (`/api/hermes/providers/whatsapp/status`,
+ * queue already uses. Demo status changes happen only through
+ * `DemoSchedulingCard`'s buttons (Developer Mode), never from this view.
+ * Five self-contained fetches (`/api/hermes/providers/whatsapp/status`,
  * `/api/hermes/providers/whatsapp/delivery-receipts`,
  * `/api/hermes/providers/whatsapp/replies`,
- * `/api/hermes/reply-intelligence`) reuse existing GET routes — no new
- * mutation logic. Classification only ever surfaces as an intent badge and
- * a Turkish action hint — no reply body, no auto-response, no send.
+ * `/api/hermes/reply-intelligence`, `/api/hermes/demo-scheduling`) reuse
+ * existing GET routes — no new mutation logic here. Classification only
+ * ever surfaces as an intent badge and a Turkish action hint — no reply
+ * body, no auto-response, no send, no calendar integration.
+ *
+ * `demoPendingCount` (the "Demo Bekleyen" tile) was redefined in v6.4: it
+ * used to be a heuristic over mission stage/task-type (v6.1); now it counts
+ * real `demo_requested`/`scheduling_needed` items from the Demo Scheduling
+ * Registry — the same tile, a more accurate source.
  *
  * Deliberately does not render Mission Runtime cards, the Provider
  * Registry, Policy Runtime, Courier Runtime, or Delivery Gateway objects —
@@ -48,6 +56,7 @@ type Props = {
 const ACTION_STAGE_BADGE_CLS: Record<ActionStage, string> = {
   failed: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
   hot_reply: "bg-orange-500/[0.10] text-orange-400 ring-orange-500/20",
+  demo_pending: "bg-teal-500/[0.10] text-teal-400 ring-teal-500/20",
   reply_needs_review: "bg-zinc-500/[0.10] text-zinc-300 ring-zinc-500/20",
   reply_received: "bg-fuchsia-500/[0.10] text-fuchsia-400 ring-fuchsia-500/20",
   approval_required: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
@@ -68,6 +77,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
   const [whatsappReadinessStatus, setWhatsappReadinessStatus] = useState<WhatsAppReadinessStatus | null>(null);
   const [recentReplies, setRecentReplies] = useState<StoredWhatsAppReply[]>([]);
   const [recentIntelligence, setRecentIntelligence] = useState<ReplyIntelligenceItem[]>([]);
+  const [recentDemoItems, setRecentDemoItems] = useState<DemoScheduleItem[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,6 +137,23 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     let cancelled = false;
     void (async () => {
       try {
+        const res = await fetch("/api/hermes/demo-scheduling");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { items?: DemoScheduleItem[] };
+        if (!cancelled) setRecentDemoItems(data.items ?? []);
+      } catch {
+        // leave empty — "Demo Bekleyen" summary reports 0 rather than guessing
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
         const res = await fetch("/api/hermes/providers/whatsapp/status");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { readinessStatus?: WhatsAppReadinessStatus };
@@ -140,8 +167,8 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     };
   }, []);
 
-  const summary = computeRevenueSummary(missions, recentReceipts, recentReplies, recentIntelligence);
-  const queue = computeActionQueue(missions, recentReceipts, recentReplies, recentIntelligence);
+  const summary = computeRevenueSummary(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems);
+  const queue = computeActionQueue(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems);
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
@@ -150,7 +177,9 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
   });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
-  const focus = selectedMission ? computeMissionFocus(selectedMission, recentReceipts, recentReplies, recentIntelligence) : null;
+  const focus = selectedMission
+    ? computeMissionFocus(selectedMission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems)
+    : null;
 
   return (
     <div>
@@ -242,6 +271,21 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
                 <span className="text-[10px] text-zinc-500">Son Makbuz</span>
                 <span className="text-[10px] text-zinc-300">{focus.latestReceiptLabel}</span>
               </div>
+            )}
+            {focus.demoStatusLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Demo Durumu</span>
+                <span className="text-[10px] text-teal-300">{focus.demoStatusLabel}</span>
+              </div>
+            )}
+            {focus.demoScheduledAtLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Planlanan Zaman</span>
+                <span className="text-[10px] text-zinc-300">{focus.demoScheduledAtLabel}</span>
+              </div>
+            )}
+            {focus.demoSuggestedAction && (
+              <p className="text-[10px] font-medium text-teal-300">{focus.demoSuggestedAction}</p>
             )}
             <p className="border-t border-white/[0.06] pt-2 text-[10px] font-medium text-indigo-300">
               {focus.suggestedNextAction}

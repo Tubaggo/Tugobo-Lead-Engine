@@ -6,10 +6,12 @@ import {
   getRecentReplyIntelligence,
   recordReplyIntelligence,
 } from "./reply-intelligence-registry.ts";
+import { __resetDemoSchedulingRegistryForTests, getRecentDemoScheduleItems } from "./demo-scheduling-registry.ts";
 import type { ReplyIntelligenceItem } from "./reply-intelligence-runtime.ts";
 
 beforeEach(() => {
   __resetReplyIntelligenceRegistryForTests();
+  __resetDemoSchedulingRegistryForTests();
 });
 
 function buildItem(overrides: Partial<ReplyIntelligenceItem> = {}): ReplyIntelligenceItem {
@@ -58,4 +60,20 @@ test("stored item shape never includes an internal expiresAt or raw payload fiel
   const stored = recordReplyIntelligence(buildItem(), 1000);
   assert.equal("expiresAt" in stored, false);
   assert.equal("rawPayload" in stored, false);
+});
+
+/* ── v6.4 Demo Scheduling integration ────────────────────────────── */
+
+test("recording a demo-relevant classification also seeds a Demo Scheduling candidate", () => {
+  recordReplyIntelligence(buildItem({ providerMessageId: "wamid.DEMO1", intent: "demo_requested", missionId: "mission-9" }), 1000);
+  const demoItems = getRecentDemoScheduleItems(10, 1000);
+  assert.equal(demoItems.length, 1);
+  assert.equal(demoItems[0].sourceProviderMessageId, "wamid.DEMO1");
+  assert.equal(demoItems[0].missionId, "mission-9");
+  assert.equal(demoItems[0].status, "demo_requested");
+});
+
+test("recording a non-demo-relevant classification (not_interested) does not seed a demo candidate", () => {
+  recordReplyIntelligence(buildItem({ providerMessageId: "wamid.NI1", intent: "not_interested" }), 1000);
+  assert.equal(getRecentDemoScheduleItems(10, 1000).length, 0);
 });

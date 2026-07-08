@@ -1,7 +1,8 @@
-import type { ReplyIntelligenceItem } from "./reply-intelligence-runtime.ts";
+import type { ReplyIntelligenceItem, ReplyIntent } from "./reply-intelligence-runtime.ts";
+import { upsertDemoScheduleItem } from "./demo-scheduling-registry.ts";
 
 /**
- * Reply Intelligence Registry (v6.3).
+ * Reply Intelligence Registry (v6.3, feeds Demo Scheduling in v6.4).
  *
  * Server-only, in-memory feed of recent sanitized reply classifications for
  * the Founder Revenue Workspace. Same shape/TTL convention as
@@ -9,6 +10,15 @@ import type { ReplyIntelligenceItem } from "./reply-intelligence-runtime.ts";
  * lost on server restart. Stores only what `reply-intelligence-runtime.ts`
  * already produces — never a raw phone, never a full message body, never
  * the raw webhook payload, never a token.
+ *
+ * Every recorded classification whose intent is one of the four
+ * demo-relevant intents (`demo_requested`/`call_requested`/`interested`/
+ * `pricing_question`) is also handed to
+ * `demo-scheduling-registry.ts#upsertDemoScheduleItem` — this is the single
+ * choke point every classified reply passes through, so it is the natural
+ * place to seed a demo opportunity without touching the pure classifier.
+ * Wrapped so a demo-scheduling failure can never break intelligence
+ * recording itself.
  */
 
 type RegistryEntry = ReplyIntelligenceItem & { expiresAt: number };
@@ -17,6 +27,8 @@ type RegistryEntry = ReplyIntelligenceItem & { expiresAt: number };
 const INTELLIGENCE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const RECENT_INTELLIGENCE_LIMIT = 50;
+
+const DEMO_RELEVANT_INTENTS: ReadonlySet<ReplyIntent> = new Set(["demo_requested", "call_requested", "interested", "pricing_question"]);
 
 let items: RegistryEntry[] = [];
 
@@ -36,6 +48,24 @@ export function recordReplyIntelligence(item: ReplyIntelligenceItem, now: number
   pruneExpired(now);
   const entry: RegistryEntry = { ...item, expiresAt: now + INTELLIGENCE_TTL_MS };
   items = [entry, ...items].slice(0, RECENT_INTELLIGENCE_LIMIT);
+
+  if (DEMO_RELEVANT_INTENTS.has(item.intent)) {
+    try {
+      upsertDemoScheduleItem(
+        {
+          provider: item.provider,
+          providerMessageId: item.providerMessageId,
+          missionId: item.missionId,
+          leadId: item.leadId,
+          intent: item.intent,
+        },
+        now,
+      );
+    } catch {
+      // Demo scheduling must never break reply intelligence recording.
+    }
+  }
+
   return stripInternal(entry);
 }
 

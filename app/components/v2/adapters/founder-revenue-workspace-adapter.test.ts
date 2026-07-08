@@ -13,6 +13,7 @@ import {
 import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
 import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.ts";
 import type { ReplyIntelligenceItem } from "../../../lib/reply-intelligence-runtime.ts";
+import type { DemoScheduleItem } from "../../../lib/demo-scheduling-runtime.ts";
 
 function buildMission(overrides: Partial<MissionLike> = {}): MissionLike {
   return {
@@ -86,6 +87,28 @@ function buildIntelligence(overrides: Partial<ReplyIntelligenceItem> = {}): Repl
   };
 }
 
+function buildDemoItem(overrides: Partial<DemoScheduleItem> = {}): DemoScheduleItem {
+  return {
+    id: "demo:wamid.REPLY1",
+    missionId: "mission:lead-1",
+    leadId: "lead-1",
+    provider: "whatsapp",
+    sourceProviderMessageId: "wamid.REPLY1",
+    sourceIntent: "demo_requested",
+    status: "demo_requested",
+    priority: "high",
+    leadName: null,
+    suggestedAction: "Demo zamanı planla",
+    reason: "Müşteri doğrudan demo talep etti.",
+    scheduledAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    createdAt: 4000,
+    updatedAt: 4000,
+    ...overrides,
+  };
+}
+
 /* ── actionStageOf ──────────────────────────────────────────────── */
 
 test("actionStageOf: a failed receipt outranks everything else", () => {
@@ -152,6 +175,42 @@ test("actionStageOf: a failed receipt still outranks a hot_reply classification"
   const reply = buildReply({ missionId: "mission:lead-1" });
   const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "demo_requested", urgency: "high" });
   assert.equal(actionStageOf(mission, [receipt], [reply], [intelligence]), "failed");
+});
+
+test("actionStageOf: a pending demo item outranks reply_needs_review and reply_received", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "human_review_required", urgency: "medium" });
+  const demoItem = buildDemoItem({ missionId: "mission:lead-1", status: "scheduling_needed" });
+  assert.equal(actionStageOf(mission, [], [reply], [intelligence], [demoItem]), "demo_pending");
+});
+
+test("actionStageOf: hot_reply still outranks demo_pending", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "demo_requested", urgency: "high" });
+  const demoItem = buildDemoItem({ missionId: "mission:lead-1", status: "demo_requested" });
+  assert.equal(actionStageOf(mission, [], [reply], [intelligence], [demoItem]), "hot_reply");
+});
+
+test("actionStageOf: demo_pending surfaces even without a matching entry in the (capped) reply feed", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const demoItem = buildDemoItem({ missionId: "mission:lead-1", status: "demo_requested" });
+  assert.equal(actionStageOf(mission, [], [], [], [demoItem]), "demo_pending");
+});
+
+test("actionStageOf: a scheduled/completed demo item is no longer pending — falls through to reply_received", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const demoItem = buildDemoItem({ missionId: "mission:lead-1", status: "scheduled" });
+  assert.equal(actionStageOf(mission, [], [reply], [], [demoItem]), "reply_received");
+});
+
+test("actionStageOf: a failed receipt still outranks demo_pending", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const receipt = buildReceipt({ missionId: "mission:lead-1", status: "failed" });
+  const demoItem = buildDemoItem({ missionId: "mission:lead-1", status: "demo_requested" });
+  assert.equal(actionStageOf(mission, [receipt], [], [], [demoItem]), "failed");
 });
 
 test("actionStageOf: read/delivered/sent map from the mapped receipt when not blocked by approval/failure", () => {
@@ -255,19 +314,15 @@ test("computeRevenueSummary: needsAttentionCount is failed + approval_required m
   assert.equal(computeRevenueSummary(missions, receipts).needsAttentionCount, 2);
 });
 
-test("computeRevenueSummary: demoPendingCount includes read-stage missions and demo-preparation tasks", () => {
-  const missions = [
-    buildMission({ missionId: "m1", stage: "prepare" }), // read via receipt
-    buildMission({
-      missionId: "m2",
-      stage: "prepare",
-      primaryTaskId: "t2",
-      tasks: [{ id: "t2", taskType: "demo-preparation" }],
-    }),
-    buildMission({ missionId: "m3", stage: "prepare" }),
+test("computeRevenueSummary: demoPendingCount counts demo_requested/scheduling_needed items only (v6.4)", () => {
+  const demoItems = [
+    buildDemoItem({ id: "d1", sourceProviderMessageId: "wamid.1", status: "demo_requested" }),
+    buildDemoItem({ id: "d2", sourceProviderMessageId: "wamid.2", status: "scheduling_needed" }),
+    buildDemoItem({ id: "d3", sourceProviderMessageId: "wamid.3", status: "scheduled" }),
+    buildDemoItem({ id: "d4", sourceProviderMessageId: "wamid.4", status: "completed" }),
   ];
-  const receipts = [buildReceipt({ missionId: "m1", status: "read" })];
-  assert.equal(computeRevenueSummary(missions, receipts).demoPendingCount, 2);
+  const summary = computeRevenueSummary([], [], [], [], demoItems);
+  assert.equal(summary.demoPendingCount, 2);
 });
 
 /* ── computeActionQueue ─────────────────────────────────────────── */
@@ -281,13 +336,14 @@ test("computeActionQueue: completed missions never appear", () => {
   assert.equal(computeActionQueue(missions, []).length, 0);
 });
 
-test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > REPLY_RECEIVED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > UNKNOWN", () => {
+test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > DEMO_PENDING > REPLY_RECEIVED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > UNKNOWN", () => {
   const missions = [
     buildMission({ missionId: "m-unknown", stage: "verify" }),
     buildMission({ missionId: "m-ready", stage: "execution-ready" }),
     buildMission({ missionId: "m-approval", stage: "approval" }),
     buildMission({ missionId: "m-failed", stage: "prepare" }),
     buildMission({ missionId: "m-hot", stage: "prepare" }),
+    buildMission({ missionId: "m-demo", stage: "prepare" }),
     buildMission({ missionId: "m-reply", stage: "prepare" }),
     buildMission({ missionId: "m-read", stage: "prepare" }),
     buildMission({ missionId: "m-delivered", stage: "prepare" }),
@@ -299,19 +355,25 @@ test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > RE
     buildReceipt({ missionId: "m-delivered", status: "delivered" }),
     buildReceipt({ missionId: "m-sent", status: "sent" }),
   ];
-  const replies = [buildReply({ providerMessageId: "wamid.HOT", missionId: "m-hot" }), buildReply({ missionId: "m-reply" })];
+  const replies = [
+    buildReply({ providerMessageId: "wamid.HOT", missionId: "m-hot" }),
+    buildReply({ providerMessageId: "wamid.DEMO", missionId: "m-demo" }),
+    buildReply({ missionId: "m-reply" }),
+  ];
   const intelligence = [buildIntelligence({ providerMessageId: "wamid.HOT", missionId: "m-hot", intent: "demo_requested", urgency: "high" })];
+  const demoItems = [buildDemoItem({ id: "demo:wamid.DEMO", sourceProviderMessageId: "wamid.DEMO", missionId: "m-demo", status: "demo_requested" })];
 
-  const queue = computeActionQueue(missions, receipts, replies, intelligence);
+  const queue = computeActionQueue(missions, receipts, replies, intelligence, demoItems);
   assert.deepEqual(
     queue.map((q) => q.missionId),
-    ["m-failed", "m-hot", "m-reply", "m-approval", "m-read", "m-delivered", "m-sent", "m-ready", "m-unknown"],
+    ["m-failed", "m-hot", "m-demo", "m-reply", "m-approval", "m-read", "m-delivered", "m-sent", "m-ready", "m-unknown"],
   );
   assert.deepEqual(
     queue.map((q) => q.stageLabel),
     [
       ACTION_STAGE_LABELS.failed,
       ACTION_STAGE_LABELS.hot_reply,
+      ACTION_STAGE_LABELS.demo_pending,
       ACTION_STAGE_LABELS.reply_received,
       ACTION_STAGE_LABELS.approval_required,
       ACTION_STAGE_LABELS.read,
@@ -364,6 +426,23 @@ test("computeMissionFocus: with a mapped receipt surfaces the delivery state and
   assert.equal(focus.deliveryStateLabel, "Teslim Edildi");
   assert.ok(focus.latestReceiptLabel?.startsWith("Teslim Edildi"));
   assert.equal(focus.suggestedNextAction, "Teslim edildi — yanıt bekleniyor");
+});
+
+test("computeMissionFocus: with no demo item, demo fields are all null", () => {
+  const mission = buildMission({ stage: "prepare" });
+  const focus = computeMissionFocus(mission, []);
+  assert.equal(focus.demoStatusLabel, null);
+  assert.equal(focus.demoSuggestedAction, null);
+  assert.equal(focus.demoScheduledAtLabel, null);
+});
+
+test("computeMissionFocus: with a demo item, surfaces demo status/suggested action/scheduledAt", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const demoItem = buildDemoItem({ missionId: "mission:lead-1", status: "scheduled", scheduledAt: 9000 });
+  const focus = computeMissionFocus(mission, [], [], [], [demoItem]);
+  assert.equal(focus.demoStatusLabel, "Planlandı");
+  assert.equal(focus.demoSuggestedAction, demoItem.suggestedAction);
+  assert.ok(focus.demoScheduledAtLabel !== null);
 });
 
 /* ── computeHermesTimeline ──────────────────────────────────────── */

@@ -6,6 +6,7 @@ import ControlledWhatsAppLiveSendCard from "@/app/components/v2/screens/Controll
 import WhatsAppDeliveryReceiptCard from "@/app/components/v2/screens/WhatsAppDeliveryReceiptCard";
 import WhatsAppReplyListenerCard from "@/app/components/v2/screens/WhatsAppReplyListenerCard";
 import ReplyIntelligenceCard from "@/app/components/v2/screens/ReplyIntelligenceCard";
+import DemoSchedulingCard from "@/app/components/v2/screens/DemoSchedulingCard";
 import FounderRevenueWorkspace from "@/app/components/v2/screens/FounderRevenueWorkspace";
 import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import {
@@ -2111,6 +2112,12 @@ export default function AutomationCenterScreen({
             intent/urgency/confidence/action-hint — no AI provider call,
             no auto-reply, no auto-follow-up. */}
         <ReplyIntelligenceCard />
+
+        {/* 2.11 — Demo Scheduling (v6.4): self-contained, manual-first
+            status board. The four status buttons are the only mutation
+            this card exposes — no WhatsApp send, no calendar integration,
+            no auto-scheduling. */}
+        <DemoSchedulingCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
