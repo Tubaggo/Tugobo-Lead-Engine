@@ -11,6 +11,7 @@ import {
   type MissionLike,
 } from "./founder-revenue-workspace-adapter.ts";
 import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
+import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.ts";
 
 function buildMission(overrides: Partial<MissionLike> = {}): MissionLike {
   return {
@@ -48,6 +49,24 @@ function buildReceipt(overrides: Partial<ProcessedWhatsAppDeliveryReceipt> = {})
   };
 }
 
+function buildReply(overrides: Partial<StoredWhatsAppReply> = {}): StoredWhatsAppReply {
+  return {
+    provider: "whatsapp",
+    providerMessageId: "wamid.REPLY1",
+    fromMasked: "••• ••• 67",
+    messageType: "text",
+    textPreview: "Merhaba, fiyat bilgisi alabilir miyim?",
+    occurredAt: 4000,
+    conversationIdSafe: "wamid.TEST1",
+    contactProfileNameSafe: "Ahmet",
+    mapped: true,
+    missionId: "mission:lead-1",
+    leadId: "lead-1",
+    source: "provider_message_registry",
+    ...overrides,
+  };
+}
+
 /* ── actionStageOf ──────────────────────────────────────────────── */
 
 test("actionStageOf: a failed receipt outranks everything else", () => {
@@ -59,6 +78,25 @@ test("actionStageOf: a failed receipt outranks everything else", () => {
 test("actionStageOf: mission stage approval maps to approval_required", () => {
   const mission = buildMission({ stage: "approval" });
   assert.equal(actionStageOf(mission, []), "approval_required");
+});
+
+test("actionStageOf: a mapped reply outranks approval_required/read/delivered/sent", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "approval" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  assert.equal(actionStageOf(mission, [], [reply]), "reply_received");
+});
+
+test("actionStageOf: a failed receipt still outranks a mapped reply", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const receipt = buildReceipt({ missionId: "mission:lead-1", status: "failed" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  assert.equal(actionStageOf(mission, [receipt], [reply]), "failed");
+});
+
+test("actionStageOf: a reply mapped to a different missionId is ignored", () => {
+  const mission = buildMission({ missionId: "mission:lead-A", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-B" });
+  assert.equal(actionStageOf(mission, [], [reply]), "unknown");
 });
 
 test("actionStageOf: read/delivered/sent map from the mapped receipt when not blocked by approval/failure", () => {
@@ -97,7 +135,17 @@ test("computeRevenueSummary: counts across an empty state are all zero", () => {
     failedCount: 0,
     demoPendingCount: 0,
     needsAttentionCount: 0,
+    replyReceivedCount: 0,
   });
+});
+
+test("computeRevenueSummary: replyReceivedCount counts all recent replies, mapped and unmapped", () => {
+  const replies = [
+    buildReply({ providerMessageId: "wamid.R1", missionId: "m1" }),
+    buildReply({ providerMessageId: "wamid.R2", mapped: false, missionId: null, leadId: null, source: "unmapped" }),
+  ];
+  const summary = computeRevenueSummary([], [], replies);
+  assert.equal(summary.replyReceivedCount, 2);
 });
 
 test("computeRevenueSummary: completed missions are excluded from totalActiveMissions", () => {
@@ -166,12 +214,13 @@ test("computeActionQueue: completed missions never appear", () => {
   assert.equal(computeActionQueue(missions, []).length, 0);
 });
 
-test("computeActionQueue: sorts strictly by priority — FAILED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > UNKNOWN", () => {
+test("computeActionQueue: sorts strictly by priority — FAILED > REPLY_RECEIVED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > UNKNOWN", () => {
   const missions = [
     buildMission({ missionId: "m-unknown", stage: "verify" }),
     buildMission({ missionId: "m-ready", stage: "execution-ready" }),
     buildMission({ missionId: "m-approval", stage: "approval" }),
     buildMission({ missionId: "m-failed", stage: "prepare" }),
+    buildMission({ missionId: "m-reply", stage: "prepare" }),
     buildMission({ missionId: "m-read", stage: "prepare" }),
     buildMission({ missionId: "m-delivered", stage: "prepare" }),
     buildMission({ missionId: "m-sent", stage: "prepare" }),
@@ -182,16 +231,18 @@ test("computeActionQueue: sorts strictly by priority — FAILED > APPROVAL_REQUI
     buildReceipt({ missionId: "m-delivered", status: "delivered" }),
     buildReceipt({ missionId: "m-sent", status: "sent" }),
   ];
+  const replies = [buildReply({ missionId: "m-reply" })];
 
-  const queue = computeActionQueue(missions, receipts);
+  const queue = computeActionQueue(missions, receipts, replies);
   assert.deepEqual(
     queue.map((q) => q.missionId),
-    ["m-failed", "m-approval", "m-read", "m-delivered", "m-sent", "m-ready", "m-unknown"],
+    ["m-failed", "m-reply", "m-approval", "m-read", "m-delivered", "m-sent", "m-ready", "m-unknown"],
   );
   assert.deepEqual(
     queue.map((q) => q.stageLabel),
     [
       ACTION_STAGE_LABELS.failed,
+      ACTION_STAGE_LABELS.reply_received,
       ACTION_STAGE_LABELS.approval_required,
       ACTION_STAGE_LABELS.read,
       ACTION_STAGE_LABELS.delivered,

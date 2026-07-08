@@ -1,6 +1,7 @@
 import { DELIVERY_STATUS_LABELS_TR, type WhatsAppDeliveryStatus } from "../../../lib/whatsapp-delivery-receipt-runtime.ts";
 import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
 import type { WhatsAppReadinessStatus } from "../../../lib/whatsapp-provider-runtime.ts";
+import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.ts";
 
 /**
  * Founder Revenue Workspace adapter (v6.1).
@@ -48,6 +49,7 @@ export type MissionLike = {
 
 export type ActionStage =
   | "failed"
+  | "reply_received"
   | "approval_required"
   | "read"
   | "delivered"
@@ -57,6 +59,7 @@ export type ActionStage =
 
 export const ACTION_STAGE_LABELS: Record<ActionStage, string> = {
   failed: "Başarısız",
+  reply_received: "Cevap Geldi",
   approval_required: "Onay Bekliyor",
   read: "Okundu",
   delivered: "Teslim Edildi",
@@ -67,6 +70,7 @@ export const ACTION_STAGE_LABELS: Record<ActionStage, string> = {
 
 export const SUGGESTED_ACTION_LABELS: Record<ActionStage, string> = {
   failed: "Teslim edilemedi — tekrar deneyin",
+  reply_received: "Cevap geldi, incele",
   approval_required: "Founder onayı bekleniyor",
   read: "Mesaj okundu — demo planlanabilir",
   delivered: "Teslim edildi — yanıt bekleniyor",
@@ -78,12 +82,13 @@ export const SUGGESTED_ACTION_LABELS: Record<ActionStage, string> = {
 /** Lower rank = higher priority in the Action Queue. */
 const ACTION_STAGE_RANK: Record<ActionStage, number> = {
   failed: 0,
-  approval_required: 1,
-  read: 2,
-  delivered: 3,
-  sent: 4,
-  ready: 5,
-  unknown: 6,
+  reply_received: 1,
+  approval_required: 2,
+  read: 3,
+  delivered: 4,
+  sent: 5,
+  ready: 6,
+  unknown: 7,
 };
 
 /** `recentReceipts` is assumed newest-first (the processor's own feed convention) — `.find` returns the latest match. */
@@ -94,9 +99,25 @@ function latestReceiptForMission(
   return recentReceipts.find((r) => r.missionId === missionId);
 }
 
-export function actionStageOf(mission: MissionLike, recentReceipts: ProcessedWhatsAppDeliveryReceipt[]): ActionStage {
+/**
+ * Only replies the registry already resolved to this mission
+ * (`mapped: true`, via `mapReplyToMissionContext`) count here — an
+ * unmapped reply has no `missionId` to match against, so it can never
+ * attach itself to a specific mission's Action Queue entry. It still
+ * shows up in the workspace-wide "Cevap Geldi" summary counter instead.
+ */
+function latestReplyForMission(missionId: string, recentReplies: StoredWhatsAppReply[]): StoredWhatsAppReply | undefined {
+  return recentReplies.find((r) => r.missionId === missionId);
+}
+
+export function actionStageOf(
+  mission: MissionLike,
+  recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+  recentReplies: StoredWhatsAppReply[] = [],
+): ActionStage {
   const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
   if (receipt?.status === "failed") return "failed";
+  if (latestReplyForMission(mission.missionId, recentReplies)) return "reply_received";
   if (mission.stage === "approval") return "approval_required";
   if (receipt?.status === "read") return "read";
   if (receipt?.status === "delivered") return "delivered";
@@ -105,8 +126,12 @@ export function actionStageOf(mission: MissionLike, recentReceipts: ProcessedWha
   return "unknown";
 }
 
-function isDemoPending(mission: MissionLike, recentReceipts: ProcessedWhatsAppDeliveryReceipt[]): boolean {
-  if (actionStageOf(mission, recentReceipts) === "read") return true;
+function isDemoPending(
+  mission: MissionLike,
+  recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+  recentReplies: StoredWhatsAppReply[],
+): boolean {
+  if (actionStageOf(mission, recentReceipts, recentReplies) === "read") return true;
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId);
   return primaryTask?.taskType === "demo-preparation";
 }
@@ -122,11 +147,13 @@ export type RevenueSummary = {
   failedCount: number;
   demoPendingCount: number;
   needsAttentionCount: number;
+  replyReceivedCount: number;
 };
 
 export function computeRevenueSummary(
   missions: MissionLike[],
   recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+  recentReplies: StoredWhatsAppReply[] = [],
 ): RevenueSummary {
   const totalActiveMissions = missions.filter((m) => m.stage !== "completed").length;
   const founderApprovalPending = missions.filter((m) => m.stage === "approval").length;
@@ -136,10 +163,10 @@ export function computeRevenueSummary(
   const readCount = recentReceipts.filter((r) => r.status === "read").length;
   const failedCount = recentReceipts.filter((r) => r.status === "failed").length;
 
-  const demoPendingCount = missions.filter((m) => isDemoPending(m, recentReceipts)).length;
+  const demoPendingCount = missions.filter((m) => isDemoPending(m, recentReceipts, recentReplies)).length;
 
   const needsAttentionCount = missions.filter((m) => {
-    const stage = actionStageOf(m, recentReceipts);
+    const stage = actionStageOf(m, recentReceipts, recentReplies);
     return stage === "failed" || stage === "approval_required";
   }).length;
 
@@ -152,6 +179,7 @@ export function computeRevenueSummary(
     failedCount,
     demoPendingCount,
     needsAttentionCount,
+    replyReceivedCount: recentReplies.length,
   };
 }
 
@@ -177,11 +205,12 @@ export type ActionQueueItem = {
 export function computeActionQueue(
   missions: MissionLike[],
   recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+  recentReplies: StoredWhatsAppReply[] = [],
 ): ActionQueueItem[] {
   return missions
     .filter((m) => m.stage !== "completed")
     .map((m) => {
-      const stage = actionStageOf(m, recentReceipts);
+      const stage = actionStageOf(m, recentReceipts, recentReplies);
       const lastTimelineEntry = m.timeline[m.timeline.length - 1];
       return {
         missionId: m.missionId,
@@ -217,8 +246,9 @@ export type MissionFocusSummary = {
 export function computeMissionFocus(
   mission: MissionLike,
   recentReceipts: ProcessedWhatsAppDeliveryReceipt[],
+  recentReplies: StoredWhatsAppReply[] = [],
 ): MissionFocusSummary {
-  const stage = actionStageOf(mission, recentReceipts);
+  const stage = actionStageOf(mission, recentReceipts, recentReplies);
   const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
 
   return {

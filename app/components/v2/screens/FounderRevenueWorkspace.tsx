@@ -12,21 +12,24 @@ import {
 } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
+import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
 import { kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } from "@/app/components/v2/design-system";
 
 /**
- * Founder Revenue Workspace (v6.1).
+ * Founder Revenue Workspace (v6.1, replies added in v6.2).
  *
  * The default view of the Hermes screen — a pure, read-only aggregation of
  * runtime state that already exists (missions, founder decisions, WhatsApp
- * delivery receipts). It never mutates anything, never calls a send/approve
- * action itself (selecting a mission reuses the screen's existing
- * `onSelectHermesMission`, the same callback the Developer Mode mission
- * queue already uses — no second selection mechanism). Two self-contained
- * fetches (`/api/hermes/providers/whatsapp/status`,
- * `/api/hermes/providers/whatsapp/delivery-receipts`) reuse the exact GET
- * routes `WhatsAppProviderReadinessCard` / `WhatsAppDeliveryReceiptCard`
- * already use — no new backend logic.
+ * delivery receipts, inbound WhatsApp replies). It never mutates anything,
+ * never calls a send/approve action itself (selecting a mission reuses the
+ * screen's existing `onSelectHermesMission`, the same callback the
+ * Developer Mode mission queue already uses — no second selection
+ * mechanism). Three self-contained fetches
+ * (`/api/hermes/providers/whatsapp/status`,
+ * `/api/hermes/providers/whatsapp/delivery-receipts`,
+ * `/api/hermes/providers/whatsapp/replies`) reuse existing GET routes — no
+ * new mutation logic. Replies only ever surface as "Cevap Geldi" — no
+ * reply body, no intent classification, no auto-response.
  *
  * Deliberately does not render Mission Runtime cards, the Provider
  * Registry, Policy Runtime, Courier Runtime, or Delivery Gateway objects —
@@ -41,6 +44,7 @@ type Props = {
 
 const ACTION_STAGE_BADGE_CLS: Record<ActionStage, string> = {
   failed: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
+  reply_received: "bg-fuchsia-500/[0.10] text-fuchsia-400 ring-fuchsia-500/20",
   approval_required: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
   read: "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20",
   delivered: "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20",
@@ -57,6 +61,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
   const [whatsappReadinessStatus, setWhatsappReadinessStatus] = useState<WhatsAppReadinessStatus | null>(null);
+  const [recentReplies, setRecentReplies] = useState<StoredWhatsAppReply[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +87,23 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     let cancelled = false;
     void (async () => {
       try {
+        const res = await fetch("/api/hermes/providers/whatsapp/replies");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { replies?: StoredWhatsAppReply[] };
+        if (!cancelled) setRecentReplies(data.replies ?? []);
+      } catch {
+        // leave empty — "Cevap Geldi" summary reports 0 rather than guessing
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
         const res = await fetch("/api/hermes/providers/whatsapp/status");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { readinessStatus?: WhatsAppReadinessStatus };
@@ -95,8 +117,8 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     };
   }, []);
 
-  const summary = computeRevenueSummary(missions, recentReceipts);
-  const queue = computeActionQueue(missions, recentReceipts);
+  const summary = computeRevenueSummary(missions, recentReceipts, recentReplies);
+  const queue = computeActionQueue(missions, recentReceipts, recentReplies);
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
@@ -105,7 +127,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
   });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
-  const focus = selectedMission ? computeMissionFocus(selectedMission, recentReceipts) : null;
+  const focus = selectedMission ? computeMissionFocus(selectedMission, recentReceipts, recentReplies) : null;
 
   return (
     <div>
@@ -115,6 +137,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
         <div className={kpiStripCls}>
           <SummaryTile label="Toplam Aktif Mission" value={summary.totalActiveMissions} />
           <SummaryTile label="Founder Onayı Bekleyen" value={summary.founderApprovalPending} />
+          <SummaryTile label="Cevap Geldi" value={summary.replyReceivedCount} accent="text-fuchsia-400" />
           <SummaryTile label="Gönderildi" value={summary.sentCount} />
           <SummaryTile label="Teslim Edildi" value={summary.deliveredCount} />
           <SummaryTile label="Okundu" value={summary.readCount} />

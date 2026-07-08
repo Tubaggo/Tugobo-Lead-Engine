@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { verifyWhatsAppWebhookChallenge } from "@/app/lib/whatsapp-webhook-verification";
-import { parseJsonBodySafely, processWhatsAppDeliveryWebhookPayload } from "@/app/lib/whatsapp-delivery-receipt-processor";
+import { parseJsonBodySafely } from "@/app/lib/whatsapp-delivery-receipt-processor";
+import { processWhatsAppWebhookEvent } from "@/app/lib/whatsapp-webhook-event-processor";
 
 /**
- * WhatsApp Webhook — verification (GET) + delivery receipts (POST) (v6.0.1).
+ * WhatsApp Webhook — verification (GET) + delivery receipts & inbound
+ * replies (POST) (v6.2).
  *
  * GET is Meta's one-time subscription handshake: `hub.mode`,
  * `hub.verify_token`, `hub.challenge`. `WHATSAPP_WEBHOOK_VERIFY_TOKEN` is
@@ -11,14 +13,16 @@ import { parseJsonBodySafely, processWhatsAppDeliveryWebhookPayload } from "@/ap
  * and never logged or returned in the response body — a mismatch always
  * gets the same generic 403, so no enumeration signal leaks either way.
  *
- * POST receives delivery-status webhooks
- * (`entry[].changes[].value.statuses[]`) — sent/delivered/read/failed only.
- * This route is NOT a reply listener: it does not parse inbound message
- * content, does not detect replies, and never triggers a send. It always
- * responds 200 (even for a malformed body) because Meta's platform expects
- * a fast 2xx acknowledgment and will retry/eventually disable a webhook
- * that doesn't provide one — the malformed case is reported via `ok: false`
- * in the body instead of an HTTP error status.
+ * POST receives both delivery-status webhooks
+ * (`entry[].changes[].value.statuses[]`) and inbound message webhooks
+ * (`entry[].changes[].value.messages[]`) in the same payload, processed
+ * together by `processWhatsAppWebhookEvent`. This route only *listens* —
+ * it does not classify reply intent, does not decide anything, and never
+ * triggers a send. It always responds 200 (even for a malformed body)
+ * because Meta's platform expects a fast 2xx acknowledgment and will
+ * retry/eventually disable a webhook that doesn't provide one — the
+ * malformed case is reported via `ok: false` in the body instead of an
+ * HTTP error status.
  */
 
 export async function GET(request: Request) {
@@ -44,6 +48,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "Geçersiz webhook gövdesi." }, { status: 200 });
   }
 
-  const result = processWhatsAppDeliveryWebhookPayload(parsedBody);
+  const result = processWhatsAppWebhookEvent(parsedBody);
   return NextResponse.json(result);
 }

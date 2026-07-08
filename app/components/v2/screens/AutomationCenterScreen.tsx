@@ -4,6 +4,7 @@ import { useState, useMemo } from "react";
 import WhatsAppProviderReadinessCard from "@/app/components/v2/screens/WhatsAppProviderReadinessCard";
 import ControlledWhatsAppLiveSendCard from "@/app/components/v2/screens/ControlledWhatsAppLiveSendCard";
 import WhatsAppDeliveryReceiptCard from "@/app/components/v2/screens/WhatsAppDeliveryReceiptCard";
+import WhatsAppReplyListenerCard from "@/app/components/v2/screens/WhatsAppReplyListenerCard";
 import FounderRevenueWorkspace from "@/app/components/v2/screens/FounderRevenueWorkspace";
 import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import {
@@ -2098,6 +2099,12 @@ export default function AutomationCenterScreen({
             sent/delivered/read/failed status — no reply content, no
             follow-up trigger. */}
         <WhatsAppDeliveryReceiptCard />
+
+        {/* 2.9 — WhatsApp Reply Listener (v6.2): self-contained,
+            read-only reply viewer. Shows only the last inbound reply's
+            type/mapping/textPreview — no conversation UI, no reply
+            intelligence, no auto-reply. */}
+        <WhatsAppReplyListenerCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue
