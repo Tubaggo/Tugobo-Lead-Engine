@@ -8,9 +8,11 @@ import {
   type DemoStatusUpdateTarget,
 } from "./demo-scheduling-runtime.ts";
 import { upsertFollowUpCandidate } from "./follow-up-registry.ts";
+import { upsertSalesOutcomeItem } from "./sales-outcome-registry.ts";
 
 /**
- * Demo Scheduling Registry (v6.4, feeds Follow-up candidates in v6.5).
+ * Demo Scheduling Registry (v6.4, feeds Follow-up candidates in v6.5, feeds
+ * Sales Outcome in v6.6).
  *
  * Server-only, in-memory store of demo scheduling opportunities. Unlike the
  * capped-array feeds in `whatsapp-reply-registry.ts` /
@@ -26,6 +28,14 @@ import { upsertFollowUpCandidate } from "./follow-up-registry.ts";
  * `scheduling_needed` seeds a `demo_not_scheduled` follow-up candidate;
  * transitioning an item to `no_show` seeds `demo_no_show`. Both wrapped so
  * a follow-up failure can never break demo scheduling itself.
+ *
+ * v6.6: transitioning to `completed` seeds an `open` sales outcome item
+ * (a decision is needed, never auto-won); `cancelled` seeds a `paused`
+ * outcome (the opportunity isn't dead, just not moving — never auto-lost);
+ * `no_show` seeds an `open` outcome with a no-show-specific action hint.
+ * `upsertSalesOutcomeItem` is itself idempotent per mission, so none of
+ * this ever overwrites an outcome the founder already set. Wrapped so a
+ * sales-outcome failure can never break demo scheduling itself.
  */
 
 type RegistryEntry = DemoScheduleItem & { expiresAt: number };
@@ -132,6 +142,49 @@ export function updateDemoScheduleStatus(
       );
     } catch {
       // Follow-up seeding must never break demo scheduling.
+    }
+    try {
+      upsertSalesOutcomeItem(
+        {
+          missionId: updated.missionId,
+          leadId: updated.leadId,
+          source: "demo_scheduling",
+          sourceProviderMessageId: updated.sourceProviderMessageId ?? id,
+          suggestedActionOverride: "No-show sonrası sonucu belirle",
+        },
+        now,
+      );
+    } catch {
+      // Sales outcome seeding must never break demo scheduling.
+    }
+  } else if (status === "completed") {
+    try {
+      upsertSalesOutcomeItem(
+        {
+          missionId: updated.missionId,
+          leadId: updated.leadId,
+          source: "demo_scheduling",
+          sourceProviderMessageId: updated.sourceProviderMessageId ?? id,
+        },
+        now,
+      );
+    } catch {
+      // Sales outcome seeding must never break demo scheduling.
+    }
+  } else if (status === "cancelled") {
+    try {
+      upsertSalesOutcomeItem(
+        {
+          missionId: updated.missionId,
+          leadId: updated.leadId,
+          source: "demo_scheduling",
+          sourceProviderMessageId: updated.sourceProviderMessageId ?? id,
+          status: "paused",
+        },
+        now,
+      );
+    } catch {
+      // Sales outcome seeding must never break demo scheduling.
     }
   }
 

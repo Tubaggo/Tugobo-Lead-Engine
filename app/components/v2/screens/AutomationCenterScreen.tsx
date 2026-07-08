@@ -8,6 +8,7 @@ import WhatsAppReplyListenerCard from "@/app/components/v2/screens/WhatsAppReply
 import ReplyIntelligenceCard from "@/app/components/v2/screens/ReplyIntelligenceCard";
 import DemoSchedulingCard from "@/app/components/v2/screens/DemoSchedulingCard";
 import FollowUpRuntimeCard from "@/app/components/v2/screens/FollowUpRuntimeCard";
+import SalesOutcomeCard from "@/app/components/v2/screens/SalesOutcomeCard";
 import FounderRevenueWorkspace from "@/app/components/v2/screens/FounderRevenueWorkspace";
 import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import {
@@ -2125,6 +2126,13 @@ export default function AutomationCenterScreen({
             this card exposes — no send, no auto-follow-up, no bulk
             messaging. All follow-up actions require founder approval. */}
         <FollowUpRuntimeCard />
+
+        {/* 2.13 — Sales Outcome (v6.6): self-contained, manual-first
+            decision board — completes the revenue loop. The four status
+            buttons are the only mutation this card exposes — no payment,
+            no invoice, no CRM sync, no WhatsApp send, no automatic
+            won/lost decision. */}
+        <SalesOutcomeCard />
 
         {/* 3 — Mission queue: the hero — where supervision happens */}
         <MissionQueue

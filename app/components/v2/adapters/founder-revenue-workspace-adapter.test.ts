@@ -15,6 +15,7 @@ import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.t
 import type { ReplyIntelligenceItem } from "../../../lib/reply-intelligence-runtime.ts";
 import type { DemoScheduleItem } from "../../../lib/demo-scheduling-runtime.ts";
 import type { FollowUpCandidate } from "../../../lib/follow-up-runtime.ts";
+import type { SalesOutcomeItem } from "../../../lib/sales-outcome-runtime.ts";
 
 function buildMission(overrides: Partial<MissionLike> = {}): MissionLike {
   return {
@@ -127,6 +128,29 @@ function buildFollowUp(overrides: Partial<FollowUpCandidate> = {}): FollowUpCand
     createdAt: 4000,
     updatedAt: 4000,
     expiresAt: null,
+    ...overrides,
+  };
+}
+
+function buildOutcome(overrides: Partial<SalesOutcomeItem> = {}): SalesOutcomeItem {
+  return {
+    id: "outcome:mission:lead-1",
+    missionId: "mission:lead-1",
+    leadId: "lead-1",
+    leadName: null,
+    status: "open",
+    package: "unknown",
+    estimatedMrr: null,
+    estimatedArr: null,
+    lostReason: null,
+    outcomeNotePreview: null,
+    source: "demo_scheduling",
+    priority: "high",
+    suggestedAction: "Demo/follow-up sonrası satış sonucunu belirle",
+    reason: "Demo veya takip tamamlandı, satış sonucu belirlenmedi.",
+    createdAt: 4000,
+    updatedAt: 4000,
+    closedAt: null,
     ...overrides,
   };
 }
@@ -276,6 +300,59 @@ test("actionStageOf: a failed receipt still outranks follow_up_required", () => 
   assert.equal(actionStageOf(mission, [receipt], [], [], [], [followUp]), "failed");
 });
 
+test("actionStageOf: an open sales outcome outranks reply_needs_review and reply_received", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const reply = buildReply({ missionId: "mission:lead-1" });
+  const intelligence = buildIntelligence({ missionId: "mission:lead-1", intent: "human_review_required", urgency: "medium" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "open" });
+  assert.equal(actionStageOf(mission, [], [reply], [intelligence], [], [], [outcome]), "outcome_required");
+});
+
+test("actionStageOf: follow_up_required still outranks outcome_required", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const followUp = buildFollowUp({ missionId: "mission:lead-1", status: "candidate" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "open" });
+  assert.equal(actionStageOf(mission, [], [], [], [], [followUp], [outcome]), "follow_up_required");
+});
+
+test("actionStageOf: outcome_required surfaces even without a matching entry in the (capped) reply feed", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "open" });
+  assert.equal(actionStageOf(mission, [], [], [], [], [], [outcome]), "outcome_required");
+});
+
+test("actionStageOf: a won outcome surfaces as its own stage once every more urgent signal is ruled out", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "verify" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "won" });
+  assert.equal(actionStageOf(mission, [], [], [], [], [], [outcome]), "won");
+});
+
+test("actionStageOf: a lost outcome surfaces as its own stage once every more urgent signal is ruled out", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "verify" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "lost" });
+  assert.equal(actionStageOf(mission, [], [], [], [], [], [outcome]), "lost");
+});
+
+test("actionStageOf: an active follow-up still outranks an already-won outcome", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "verify" });
+  const followUp = buildFollowUp({ missionId: "mission:lead-1", status: "candidate" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "won" });
+  assert.equal(actionStageOf(mission, [], [], [], [], [followUp], [outcome]), "follow_up_required");
+});
+
+test("actionStageOf: a paused/no_decision outcome does not map to won/lost/outcome_required — falls through normally", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "verify" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "paused" });
+  assert.equal(actionStageOf(mission, [], [], [], [], [], [outcome]), "unknown");
+});
+
+test("actionStageOf: a failed receipt still outranks outcome_required", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "prepare" });
+  const receipt = buildReceipt({ missionId: "mission:lead-1", status: "failed" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "open" });
+  assert.equal(actionStageOf(mission, [receipt], [], [], [], [], [outcome]), "failed");
+});
+
 test("actionStageOf: read/delivered/sent map from the mapped receipt when not blocked by approval/failure", () => {
   const mission = buildMission({ stage: "prepare" });
   assert.equal(actionStageOf(mission, [buildReceipt({ status: "read" })]), "read");
@@ -315,7 +392,25 @@ test("computeRevenueSummary: counts across an empty state are all zero", () => {
     replyReceivedCount: 0,
     hotReplyCount: 0,
     followUpRequiredCount: 0,
+    wonCount: 0,
+    lostCount: 0,
+    outcomeRequiredCount: 0,
+    estimatedMrrTotal: 0,
   });
+});
+
+test("computeRevenueSummary: wonCount/lostCount/outcomeRequiredCount/estimatedMrrTotal reflect sales outcomes", () => {
+  const outcomes = [
+    buildOutcome({ id: "o1", status: "open" }),
+    buildOutcome({ id: "o2", status: "won", package: "growth", estimatedMrr: 10000, estimatedArr: 120000 }),
+    buildOutcome({ id: "o3", status: "lost", lostReason: "budget" }),
+    buildOutcome({ id: "o4", status: "paused" }),
+  ];
+  const summary = computeRevenueSummary([], [], [], [], [], [], outcomes);
+  assert.equal(summary.wonCount, 1);
+  assert.equal(summary.lostCount, 1);
+  assert.equal(summary.outcomeRequiredCount, 1);
+  assert.equal(summary.estimatedMrrTotal, 10000);
 });
 
 test("computeRevenueSummary: followUpRequiredCount counts only candidate/approval_required follow-ups", () => {
@@ -411,7 +506,7 @@ test("computeActionQueue: completed missions never appear", () => {
   assert.equal(computeActionQueue(missions, []).length, 0);
 });
 
-test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > DEMO_PENDING > FOLLOW_UP_REQUIRED > REPLY_RECEIVED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > UNKNOWN", () => {
+test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > DEMO_PENDING > FOLLOW_UP_REQUIRED > OUTCOME_REQUIRED > REPLY_RECEIVED > APPROVAL_REQUIRED > READ > DELIVERED > SENT > READY > WON > LOST > UNKNOWN", () => {
   const missions = [
     buildMission({ missionId: "m-unknown", stage: "verify" }),
     buildMission({ missionId: "m-ready", stage: "execution-ready" }),
@@ -420,10 +515,13 @@ test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > DE
     buildMission({ missionId: "m-hot", stage: "prepare" }),
     buildMission({ missionId: "m-demo", stage: "prepare" }),
     buildMission({ missionId: "m-followup", stage: "prepare" }),
+    buildMission({ missionId: "m-outcome", stage: "prepare" }),
     buildMission({ missionId: "m-reply", stage: "prepare" }),
     buildMission({ missionId: "m-read", stage: "prepare" }),
     buildMission({ missionId: "m-delivered", stage: "prepare" }),
     buildMission({ missionId: "m-sent", stage: "prepare" }),
+    buildMission({ missionId: "m-won", stage: "verify" }),
+    buildMission({ missionId: "m-lost", stage: "verify" }),
   ];
   const receipts = [
     buildReceipt({ missionId: "m-failed", status: "failed" }),
@@ -439,11 +537,31 @@ test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > DE
   const intelligence = [buildIntelligence({ providerMessageId: "wamid.HOT", missionId: "m-hot", intent: "demo_requested", urgency: "high" })];
   const demoItems = [buildDemoItem({ id: "demo:wamid.DEMO", sourceProviderMessageId: "wamid.DEMO", missionId: "m-demo", status: "demo_requested" })];
   const followUps = [buildFollowUp({ id: "followup:read_no_reply:wamid.FU", missionId: "m-followup", status: "candidate" })];
+  const outcomes = [
+    buildOutcome({ id: "o-required", missionId: "m-outcome", status: "open" }),
+    buildOutcome({ id: "o-won", missionId: "m-won", status: "won" }),
+    buildOutcome({ id: "o-lost", missionId: "m-lost", status: "lost" }),
+  ];
 
-  const queue = computeActionQueue(missions, receipts, replies, intelligence, demoItems, followUps);
+  const queue = computeActionQueue(missions, receipts, replies, intelligence, demoItems, followUps, outcomes);
   assert.deepEqual(
     queue.map((q) => q.missionId),
-    ["m-failed", "m-hot", "m-demo", "m-followup", "m-reply", "m-approval", "m-read", "m-delivered", "m-sent", "m-ready", "m-unknown"],
+    [
+      "m-failed",
+      "m-hot",
+      "m-demo",
+      "m-followup",
+      "m-outcome",
+      "m-reply",
+      "m-approval",
+      "m-read",
+      "m-delivered",
+      "m-sent",
+      "m-ready",
+      "m-won",
+      "m-lost",
+      "m-unknown",
+    ],
   );
   assert.deepEqual(
     queue.map((q) => q.stageLabel),
@@ -452,12 +570,15 @@ test("computeActionQueue: sorts strictly by priority — FAILED > HOT_REPLY > DE
       ACTION_STAGE_LABELS.hot_reply,
       ACTION_STAGE_LABELS.demo_pending,
       ACTION_STAGE_LABELS.follow_up_required,
+      ACTION_STAGE_LABELS.outcome_required,
       ACTION_STAGE_LABELS.reply_received,
       ACTION_STAGE_LABELS.approval_required,
       ACTION_STAGE_LABELS.read,
       ACTION_STAGE_LABELS.delivered,
       ACTION_STAGE_LABELS.sent,
       ACTION_STAGE_LABELS.ready,
+      ACTION_STAGE_LABELS.won,
+      ACTION_STAGE_LABELS.lost,
       ACTION_STAGE_LABELS.unknown,
     ],
   );
@@ -540,6 +661,42 @@ test("computeMissionFocus: with a follow-up candidate, surfaces status/reason/su
   assert.equal(focus.followUpReasonLabel, "Demo Planlanmadı");
   assert.equal(focus.followUpSuggestedAction, followUp.suggestedAction);
   assert.equal(focus.followUpSuggestedTiming, followUp.suggestedTiming);
+});
+
+test("computeMissionFocus: with no sales outcome, outcome fields are all null", () => {
+  const mission = buildMission({ stage: "prepare" });
+  const focus = computeMissionFocus(mission, []);
+  assert.equal(focus.outcomeStatusLabel, null);
+  assert.equal(focus.outcomePackageLabel, null);
+  assert.equal(focus.outcomeEstimatedMrrLabel, null);
+  assert.equal(focus.outcomeEstimatedArrLabel, null);
+  assert.equal(focus.outcomeLostReasonLabel, null);
+  assert.equal(focus.outcomeSuggestedAction, null);
+});
+
+test("computeMissionFocus: with a won outcome, surfaces status/package/MRR/ARR", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "verify" });
+  const outcome = buildOutcome({
+    missionId: "mission:lead-1",
+    status: "won",
+    package: "growth",
+    estimatedMrr: 10000,
+    estimatedArr: 120000,
+  });
+  const focus = computeMissionFocus(mission, [], [], [], [], [], [outcome]);
+  assert.equal(focus.outcomeStatusLabel, "Kazanıldı");
+  assert.equal(focus.outcomePackageLabel, "Growth");
+  assert.ok(focus.outcomeEstimatedMrrLabel?.includes("10.000") || focus.outcomeEstimatedMrrLabel?.includes("10000"));
+  assert.equal(focus.outcomeLostReasonLabel, null);
+});
+
+test("computeMissionFocus: with a lost outcome, surfaces the lost reason", () => {
+  const mission = buildMission({ missionId: "mission:lead-1", stage: "verify" });
+  const outcome = buildOutcome({ missionId: "mission:lead-1", status: "lost", lostReason: "budget" });
+  const focus = computeMissionFocus(mission, [], [], [], [], [], [outcome]);
+  assert.equal(focus.outcomeStatusLabel, "Kaybedildi");
+  assert.equal(focus.outcomeLostReasonLabel, "Bütçe");
+  assert.equal(focus.outcomePackageLabel, null);
 });
 
 /* ── computeHermesTimeline ──────────────────────────────────────── */

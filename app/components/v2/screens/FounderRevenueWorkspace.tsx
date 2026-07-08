@@ -16,30 +16,31 @@ import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
 import type { ReplyIntelligenceItem } from "@/app/lib/reply-intelligence-runtime";
 import type { DemoScheduleItem } from "@/app/lib/demo-scheduling-runtime";
 import type { FollowUpCandidate } from "@/app/lib/follow-up-runtime";
+import type { SalesOutcomeItem } from "@/app/lib/sales-outcome-runtime";
 import { kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } from "@/app/components/v2/design-system";
 
 /**
  * Founder Revenue Workspace (v6.1, replies added in v6.2, reply
  * intelligence added in v6.3, demo scheduling added in v6.4, follow-up
- * candidates added in v6.5).
+ * candidates added in v6.5, sales outcome added in v6.6).
  *
  * The default view of the Hermes screen — a pure, read-only aggregation of
  * runtime state that already exists (missions, founder decisions, WhatsApp
  * delivery receipts, inbound WhatsApp replies, deterministic reply
- * classifications, demo scheduling opportunities, follow-up candidates). It
- * never mutates anything itself — selecting a mission reuses the screen's
- * existing `onSelectHermesMission`, the same callback the Developer Mode
- * mission queue already uses. Demo/follow-up status changes happen only
- * through `DemoSchedulingCard`/`FollowUpRuntimeCard`'s buttons (Developer
- * Mode), never from this view. Six self-contained fetches
+ * classifications, demo scheduling opportunities, follow-up candidates,
+ * sales outcomes). It never mutates anything itself — selecting a mission
+ * reuses the screen's existing `onSelectHermesMission`, the same callback
+ * the Developer Mode mission queue already uses. Demo/follow-up/outcome
+ * status changes happen only through `DemoSchedulingCard`/
+ * `FollowUpRuntimeCard`/`SalesOutcomeCard`'s buttons (Developer Mode),
+ * never from this view. Seven self-contained fetches
  * (`/api/hermes/providers/whatsapp/status`,
  * `/api/hermes/providers/whatsapp/delivery-receipts`,
  * `/api/hermes/providers/whatsapp/replies`,
  * `/api/hermes/reply-intelligence`, `/api/hermes/demo-scheduling`,
- * `/api/hermes/follow-ups`) reuse existing GET routes — no new mutation
- * logic here. A follow-up candidate only ever surfaces as a reason/
- * suggested-action/timing hint — no auto-send, no draft that gets sent
- * automatically, no calendar integration.
+ * `/api/hermes/follow-ups`, `/api/hermes/sales-outcomes`) reuse existing
+ * GET routes — no new mutation logic here. Hermes never marks a mission
+ * won/lost itself — it only ever surfaces "a decision is needed" (`open`).
  *
  * `demoPendingCount` (the "Demo Bekleyen" tile) was redefined in v6.4: it
  * used to be a heuristic over mission stage/task-type (v6.1); now it counts
@@ -62,6 +63,7 @@ const ACTION_STAGE_BADGE_CLS: Record<ActionStage, string> = {
   hot_reply: "bg-orange-500/[0.10] text-orange-400 ring-orange-500/20",
   demo_pending: "bg-teal-500/[0.10] text-teal-400 ring-teal-500/20",
   follow_up_required: "bg-cyan-500/[0.10] text-cyan-400 ring-cyan-500/20",
+  outcome_required: "bg-purple-500/[0.10] text-purple-400 ring-purple-500/20",
   reply_needs_review: "bg-zinc-500/[0.10] text-zinc-300 ring-zinc-500/20",
   reply_received: "bg-fuchsia-500/[0.10] text-fuchsia-400 ring-fuchsia-500/20",
   approval_required: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
@@ -69,6 +71,8 @@ const ACTION_STAGE_BADGE_CLS: Record<ActionStage, string> = {
   delivered: "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20",
   sent: "bg-sky-500/[0.10] text-sky-400 ring-sky-500/20",
   ready: "bg-violet-500/[0.10] text-violet-300 ring-violet-500/20",
+  won: "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20",
+  lost: "bg-rose-500/[0.10] text-rose-500 ring-rose-500/20",
   unknown: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
 };
 
@@ -84,6 +88,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
   const [recentIntelligence, setRecentIntelligence] = useState<ReplyIntelligenceItem[]>([]);
   const [recentDemoItems, setRecentDemoItems] = useState<DemoScheduleItem[]>([]);
   const [recentFollowUps, setRecentFollowUps] = useState<FollowUpCandidate[]>([]);
+  const [recentSalesOutcomes, setRecentSalesOutcomes] = useState<SalesOutcomeItem[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -177,6 +182,23 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     let cancelled = false;
     void (async () => {
       try {
+        const res = await fetch("/api/hermes/sales-outcomes");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { items?: SalesOutcomeItem[] };
+        if (!cancelled) setRecentSalesOutcomes(data.items ?? []);
+      } catch {
+        // leave empty — "Kazanıldı"/"Kaybedildi"/"Outcome Bekliyor" summaries report 0 rather than guessing
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
         const res = await fetch("/api/hermes/providers/whatsapp/status");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { readinessStatus?: WhatsAppReadinessStatus };
@@ -190,8 +212,24 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     };
   }, []);
 
-  const summary = computeRevenueSummary(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
-  const queue = computeActionQueue(missions, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
+  const summary = computeRevenueSummary(
+    missions,
+    recentReceipts,
+    recentReplies,
+    recentIntelligence,
+    recentDemoItems,
+    recentFollowUps,
+    recentSalesOutcomes,
+  );
+  const queue = computeActionQueue(
+    missions,
+    recentReceipts,
+    recentReplies,
+    recentIntelligence,
+    recentDemoItems,
+    recentFollowUps,
+    recentSalesOutcomes,
+  );
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
@@ -201,7 +239,15 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
   const focus = selectedMission
-    ? computeMissionFocus(selectedMission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps)
+    ? computeMissionFocus(
+        selectedMission,
+        recentReceipts,
+        recentReplies,
+        recentIntelligence,
+        recentDemoItems,
+        recentFollowUps,
+        recentSalesOutcomes,
+      )
     : null;
 
   return (
@@ -220,6 +266,15 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
           <SummaryTile label="Başarısız" value={summary.failedCount} accent="text-rose-400" />
           <SummaryTile label="Demo Bekleyen" value={summary.demoPendingCount} />
           <SummaryTile label="Takip Gerekli" value={summary.followUpRequiredCount} accent="text-cyan-400" />
+          <SummaryTile label="Outcome Bekliyor" value={summary.outcomeRequiredCount} accent="text-purple-400" />
+          <SummaryTile label="Kazanıldı" value={summary.wonCount} accent="text-emerald-400" />
+          <SummaryTile label="Kaybedildi" value={summary.lostCount} accent="text-rose-400" />
+          <SummaryTile
+            label="Tahmini MRR"
+            value={summary.estimatedMrrTotal}
+            accent="text-emerald-400"
+            format={(v) => `₺${v.toLocaleString("tr-TR")}`}
+          />
           <SummaryTile label="Needs Attention" value={summary.needsAttentionCount} accent="text-amber-400" />
         </div>
       </div>
@@ -332,6 +387,39 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
             {focus.followUpSuggestedAction && (
               <p className="text-[10px] font-medium text-cyan-300">{focus.followUpSuggestedAction}</p>
             )}
+            {focus.outcomeStatusLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Satış Sonucu</span>
+                <span className="text-[10px] text-purple-300">{focus.outcomeStatusLabel}</span>
+              </div>
+            )}
+            {focus.outcomePackageLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Paket</span>
+                <span className="text-[10px] text-zinc-300">{focus.outcomePackageLabel}</span>
+              </div>
+            )}
+            {focus.outcomeEstimatedMrrLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Tahmini MRR</span>
+                <span className="text-[10px] text-zinc-300">{focus.outcomeEstimatedMrrLabel}</span>
+              </div>
+            )}
+            {focus.outcomeEstimatedArrLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Tahmini ARR</span>
+                <span className="text-[10px] text-zinc-300">{focus.outcomeEstimatedArrLabel}</span>
+              </div>
+            )}
+            {focus.outcomeLostReasonLabel && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-zinc-500">Kayıp Nedeni</span>
+                <span className="text-[10px] text-zinc-300">{focus.outcomeLostReasonLabel}</span>
+              </div>
+            )}
+            {focus.outcomeSuggestedAction && (
+              <p className="text-[10px] font-medium text-purple-300">{focus.outcomeSuggestedAction}</p>
+            )}
             <p className="border-t border-white/[0.06] pt-2 text-[10px] font-medium text-indigo-300">
               {focus.suggestedNextAction}
             </p>
@@ -370,11 +458,21 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
   );
 }
 
-function SummaryTile({ label, value, accent }: { label: string; value: number; accent?: string }) {
+function SummaryTile({
+  label,
+  value,
+  accent,
+  format,
+}: {
+  label: string;
+  value: number;
+  accent?: string;
+  format?: (value: number) => string;
+}) {
   return (
     <div className="px-4 py-3.5">
       <p className={kpiLabelCls}>{label}</p>
-      <p className={`${kpiValueCls} ${accent ?? "text-zinc-100"} mt-1`}>{value}</p>
+      <p className={`${kpiValueCls} ${accent ?? "text-zinc-100"} mt-1`}>{format ? format(value) : value}</p>
       <p className={kpiSubCls}>&nbsp;</p>
     </div>
   );

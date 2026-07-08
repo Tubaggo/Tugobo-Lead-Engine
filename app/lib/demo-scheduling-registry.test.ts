@@ -10,10 +10,12 @@ import {
 } from "./demo-scheduling-registry.ts";
 import type { DemoScheduleCandidateInput } from "./demo-scheduling-runtime.ts";
 import { __resetFollowUpRegistryForTests, getRecentFollowUpCandidates } from "./follow-up-registry.ts";
+import { __resetSalesOutcomeRegistryForTests, getSalesOutcomeByMissionId } from "./sales-outcome-registry.ts";
 
 beforeEach(() => {
   __resetDemoSchedulingRegistryForTests();
   __resetFollowUpRegistryForTests();
+  __resetSalesOutcomeRegistryForTests();
 });
 
 function buildInput(overrides: Partial<DemoScheduleCandidateInput> = {}): DemoScheduleCandidateInput {
@@ -132,4 +134,38 @@ test("transitioning a demo item to no_show seeds a demo_no_show follow-up candid
   const followUps = getRecentFollowUpCandidates(10, 2000);
   const noShow = followUps.find((f) => f.reason === "demo_no_show");
   assert.ok(noShow);
+});
+
+/* ── v6.6 Sales Outcome integration ──────────────────────────────── */
+
+test("transitioning a demo item to completed seeds an open sales outcome item", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.COMPLETED1", missionId: "mission-completed" }), 1000);
+  updateDemoScheduleStatus("demo:wamid.COMPLETED1", "completed", undefined, 2000);
+  const outcome = getSalesOutcomeByMissionId("mission-completed", 2000);
+  assert.ok(outcome);
+  assert.equal(outcome?.status, "open");
+});
+
+test("transitioning a demo item to cancelled seeds a paused sales outcome, never auto-lost", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.CANCEL1", missionId: "mission-cancelled" }), 1000);
+  updateDemoScheduleStatus("demo:wamid.CANCEL1", "cancelled", undefined, 2000);
+  const outcome = getSalesOutcomeByMissionId("mission-cancelled", 2000);
+  assert.ok(outcome);
+  assert.equal(outcome?.status, "paused");
+  assert.notEqual(outcome?.status, "lost");
+});
+
+test("transitioning a demo item to no_show seeds an open sales outcome with a no-show-specific action hint", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.NOSHOW2", missionId: "mission-noshow" }), 1000);
+  updateDemoScheduleStatus("demo:wamid.NOSHOW2", "no_show", undefined, 2000);
+  const outcome = getSalesOutcomeByMissionId("mission-noshow", 2000);
+  assert.ok(outcome);
+  assert.equal(outcome?.status, "open");
+  assert.equal(outcome?.suggestedAction, "No-show sonrası sonucu belirle");
+});
+
+test("a demo item transitioning to scheduled does not seed any sales outcome", () => {
+  upsertDemoScheduleItem(buildInput({ providerMessageId: "wamid.SCHED2", missionId: "mission-sched" }), 1000);
+  updateDemoScheduleStatus("demo:wamid.SCHED2", "scheduled", undefined, 2000);
+  assert.equal(getSalesOutcomeByMissionId("mission-sched", 2000), undefined);
 });

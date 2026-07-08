@@ -7,9 +7,10 @@ import {
   type FollowUpStatus,
   type FollowUpStatusUpdateTarget,
 } from "./follow-up-runtime.ts";
+import { upsertSalesOutcomeItem } from "./sales-outcome-registry.ts";
 
 /**
- * Follow-up Registry (v6.5).
+ * Follow-up Registry (v6.5, feeds Sales Outcome in v6.6).
  *
  * Server-only, in-memory store of follow-up candidates. `Map` keyed by the
  * deterministic id `follow-up-runtime.ts` computes
@@ -26,6 +27,12 @@ import {
  * `not_needed`) is what `clearExpiredFollowUpCandidates` hard-deletes —
  * a separate, explicitly-invoked cleanup, never auto-run (no cron, per
  * this sprint's safety rules).
+ *
+ * v6.6: transitioning to `completed` seeds an `open` sales outcome item
+ * (a decision is needed, never auto-won). `dismissed`/`approved` seed
+ * nothing — per this sprint's spec, only completion implies "something
+ * happened worth a decision." Wrapped so a sales-outcome failure can never
+ * break follow-up status updates.
  */
 
 /** 14 days — matches the demo scheduling registry TTL this feed is populated alongside. */
@@ -84,6 +91,23 @@ export function updateFollowUpStatus(id: string, status: FollowUpStatusUpdateTar
 
   const updated = applyFollowUpStatusUpdate(existing, status, now);
   items.set(id, updated);
+
+  if (status === "completed") {
+    try {
+      upsertSalesOutcomeItem(
+        {
+          missionId: updated.missionId,
+          leadId: updated.leadId,
+          source: "follow_up",
+          sourceProviderMessageId: updated.sourceProviderMessageId ?? id,
+        },
+        now,
+      );
+    } catch {
+      // Sales outcome seeding must never break follow-up status updates.
+    }
+  }
+
   return updated;
 }
 

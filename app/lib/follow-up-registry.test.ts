@@ -9,9 +9,11 @@ import {
   upsertFollowUpCandidate,
 } from "./follow-up-registry.ts";
 import type { FollowUpCandidateInput } from "./follow-up-runtime.ts";
+import { __resetSalesOutcomeRegistryForTests, getSalesOutcomeByMissionId } from "./sales-outcome-registry.ts";
 
 beforeEach(() => {
   __resetFollowUpRegistryForTests();
+  __resetSalesOutcomeRegistryForTests();
 });
 
 function buildInput(overrides: Partial<FollowUpCandidateInput> = {}): FollowUpCandidateInput {
@@ -115,4 +117,26 @@ test("getRecentFollowUpCandidates sorts candidates before completed/dismissed it
 
   const recent = getRecentFollowUpCandidates(10, 1000);
   assert.equal(recent[0].id, pending.id);
+});
+
+/* ── v6.6 Sales Outcome integration ──────────────────────────────── */
+
+test("marking a follow-up completed seeds an open sales outcome item", () => {
+  const created = upsertFollowUpCandidate(buildInput({ sourceId: "wamid.FUCOMPLETE1", missionId: "mission-fu-completed" }), 1000);
+  updateFollowUpStatus(created.id, "completed", 2000);
+  const outcome = getSalesOutcomeByMissionId("mission-fu-completed", 2000);
+  assert.ok(outcome);
+  assert.equal(outcome?.status, "open");
+});
+
+test("dismissing a follow-up never seeds a sales outcome (no auto-lost)", () => {
+  const created = upsertFollowUpCandidate(buildInput({ sourceId: "wamid.FUDISMISS1", missionId: "mission-fu-dismissed" }), 1000);
+  updateFollowUpStatus(created.id, "dismissed", 2000);
+  assert.equal(getSalesOutcomeByMissionId("mission-fu-dismissed", 2000), undefined);
+});
+
+test("approving a follow-up never seeds a sales outcome", () => {
+  const created = upsertFollowUpCandidate(buildInput({ sourceId: "wamid.FUAPPROVE1", missionId: "mission-fu-approved" }), 1000);
+  updateFollowUpStatus(created.id, "approved", 2000);
+  assert.equal(getSalesOutcomeByMissionId("mission-fu-approved", 2000), undefined);
 });

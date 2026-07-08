@@ -5,10 +5,18 @@ import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.t
 import { isHotReplyIntelligence, type ReplyIntelligenceItem } from "../../../lib/reply-intelligence-runtime.ts";
 import { DEMO_STATUS_LABELS_TR, type DemoScheduleItem } from "../../../lib/demo-scheduling-runtime.ts";
 import { FOLLOW_UP_REASON_LABELS_TR, FOLLOW_UP_STATUS_LABELS_TR, type FollowUpCandidate } from "../../../lib/follow-up-runtime.ts";
+import {
+  SALES_LOST_REASON_LABELS_TR,
+  SALES_OUTCOME_STATUS_LABELS_TR,
+  SALES_PACKAGE_LABELS_TR,
+  summarizeSalesOutcomes,
+  type SalesOutcomeItem,
+} from "../../../lib/sales-outcome-runtime.ts";
 
 /**
  * Founder Revenue Workspace adapter (v6.1, hot-reply intelligence added in
- * v6.3, demo scheduling added in v6.4, follow-up candidates added in v6.5).
+ * v6.3, demo scheduling added in v6.4, follow-up candidates added in v6.5,
+ * sales outcome added in v6.6).
  *
  * Pure presentation-layer aggregation over Hermes runtime state that
  * already exists — `HermesMission[]` (mission runtime), the mission's own
@@ -56,6 +64,7 @@ export type ActionStage =
   | "hot_reply"
   | "demo_pending"
   | "follow_up_required"
+  | "outcome_required"
   | "reply_needs_review"
   | "reply_received"
   | "approval_required"
@@ -63,6 +72,8 @@ export type ActionStage =
   | "delivered"
   | "sent"
   | "ready"
+  | "won"
+  | "lost"
   | "unknown";
 
 export const ACTION_STAGE_LABELS: Record<ActionStage, string> = {
@@ -70,6 +81,7 @@ export const ACTION_STAGE_LABELS: Record<ActionStage, string> = {
   hot_reply: "Sıcak Cevap",
   demo_pending: "Demo Bekliyor",
   follow_up_required: "Takip Gerekli",
+  outcome_required: "Sonuç Bekliyor",
   reply_needs_review: "İnceleme Gerekiyor",
   reply_received: "Cevap Geldi",
   approval_required: "Onay Bekliyor",
@@ -77,6 +89,8 @@ export const ACTION_STAGE_LABELS: Record<ActionStage, string> = {
   delivered: "Teslim Edildi",
   sent: "Gönderildi",
   ready: "Yürütmeye Hazır",
+  won: "Kazanıldı",
+  lost: "Kaybedildi",
   unknown: "Bilinmiyor",
 };
 
@@ -85,6 +99,7 @@ export const SUGGESTED_ACTION_LABELS: Record<ActionStage, string> = {
   hot_reply: "Sıcak cevap — hemen aksiyon alın",
   demo_pending: "Demo zamanı planla",
   follow_up_required: "Takip mesajı öner",
+  outcome_required: "Demo/follow-up sonrası satış sonucunu belirle",
   reply_needs_review: "Cevap net değil — manuel inceleyin",
   reply_received: "Cevap geldi, incele",
   approval_required: "Founder onayı bekleniyor",
@@ -92,31 +107,39 @@ export const SUGGESTED_ACTION_LABELS: Record<ActionStage, string> = {
   delivered: "Teslim edildi — yanıt bekleniyor",
   sent: "Gönderildi — teslimat bekleniyor",
   ready: "Yürütmeye hazır",
+  won: "Satış kazanıldı, onboarding sürecine geç",
+  lost: "Kayıp nedeni kaydedildi",
   unknown: "İzleniyor",
 };
 
 /**
  * Lower rank = higher priority in the Action Queue: FAILED → HOT_REPLY →
- * DEMO_PENDING → FOLLOW_UP_REQUIRED → REPLY_NEEDS_REVIEW → REPLY_RECEIVED →
- * APPROVAL_REQUIRED → READ → DELIVERED → SENT → READY → UNKNOWN.
- * `reply_needs_review` ranks just below `follow_up_required` (not
- * explicitly ordered by the v6.3 spec) because an unclassifiable reply
- * might *be* a hot one — the founder just can't know that without opening
- * it, so it deserves attention almost as urgently.
+ * DEMO_PENDING → FOLLOW_UP_REQUIRED → OUTCOME_REQUIRED → REPLY_NEEDS_REVIEW
+ * → REPLY_RECEIVED → APPROVAL_REQUIRED → READ → DELIVERED → SENT → READY →
+ * WON → LOST → UNKNOWN. `won`/`lost` rank near the very bottom — a mission
+ * with a decided outcome needs nothing further from the founder, but still
+ * gets a badge (rather than vanishing) so its final state stays visible.
+ * `reply_needs_review` ranks just below `outcome_required` (not explicitly
+ * ordered by the v6.3 spec) because an unclassifiable reply might *be* a
+ * hot one — the founder just can't know that without opening it, so it
+ * deserves attention almost as urgently.
  */
 const ACTION_STAGE_RANK: Record<ActionStage, number> = {
   failed: 0,
   hot_reply: 1,
   demo_pending: 2,
   follow_up_required: 3,
-  reply_needs_review: 4,
-  reply_received: 5,
-  approval_required: 6,
-  read: 7,
-  delivered: 8,
-  sent: 9,
-  ready: 10,
-  unknown: 11,
+  outcome_required: 4,
+  reply_needs_review: 5,
+  reply_received: 6,
+  approval_required: 7,
+  read: 8,
+  delivered: 9,
+  sent: 10,
+  ready: 11,
+  won: 12,
+  lost: 13,
+  unknown: 14,
 };
 
 /** `recentReceipts` is assumed newest-first (the processor's own feed convention) — `.find` returns the latest match. */
@@ -153,13 +176,20 @@ function hasActiveFollowUpForMission(missionId: string, recentFollowUps: FollowU
   return recentFollowUps.some((f) => f.missionId === missionId && (f.status === "candidate" || f.status === "approval_required"));
 }
 
+function outcomeForMission(missionId: string, recentSalesOutcomes: SalesOutcomeItem[]): SalesOutcomeItem | undefined {
+  return recentSalesOutcomes.find((o) => o.missionId === missionId);
+}
+
 /**
- * `demo_pending`/`follow_up_required` are checked independently of whether
- * a "latest mapped reply" is still in `recentReplies` (a capped, aging
- * feed) — a demo item or follow-up candidate lives in its own 14-day
- * registry and can outlive the specific reply that created it (e.g. the
- * customer sends a later, less-hot follow-up message). An unresolved
- * opportunity should keep surfacing regardless.
+ * `demo_pending`/`follow_up_required`/`outcome_required` are checked
+ * independently of whether a "latest mapped reply" is still in
+ * `recentReplies` (a capped, aging feed) — a demo item, follow-up
+ * candidate, or sales outcome lives in its own registry and can outlive
+ * the specific reply that created it. An unresolved opportunity should
+ * keep surfacing regardless. `won`/`lost` are checked last, right before
+ * the `unknown` fallback — every more urgent stage above still wins even
+ * for an already-decided mission (e.g. a stray follow-up after a won
+ * deal still deserves the founder's attention first).
  */
 export function actionStageOf(
   mission: MissionLike,
@@ -168,6 +198,7 @@ export function actionStageOf(
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
   recentFollowUps: FollowUpCandidate[] = [],
+  recentSalesOutcomes: SalesOutcomeItem[] = [],
 ): ActionStage {
   const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
   if (receipt?.status === "failed") return "failed";
@@ -178,6 +209,10 @@ export function actionStageOf(
   if (intelligence && isHotReplyIntelligence(intelligence)) return "hot_reply";
   if (hasPendingDemoForMission(mission.missionId, recentDemoItems)) return "demo_pending";
   if (hasActiveFollowUpForMission(mission.missionId, recentFollowUps)) return "follow_up_required";
+
+  const outcome = outcomeForMission(mission.missionId, recentSalesOutcomes);
+  if (outcome?.status === "open") return "outcome_required";
+
   if (reply) {
     if (intelligence?.intent === "human_review_required") return "reply_needs_review";
     return "reply_received";
@@ -188,6 +223,10 @@ export function actionStageOf(
   if (receipt?.status === "delivered") return "delivered";
   if (receipt?.status === "sent") return "sent";
   if (mission.stage === "execution-ready") return "ready";
+
+  if (outcome?.status === "won") return "won";
+  if (outcome?.status === "lost") return "lost";
+
   return "unknown";
 }
 
@@ -205,6 +244,10 @@ export type RevenueSummary = {
   replyReceivedCount: number;
   hotReplyCount: number;
   followUpRequiredCount: number;
+  wonCount: number;
+  lostCount: number;
+  outcomeRequiredCount: number;
+  estimatedMrrTotal: number;
 };
 
 export function computeRevenueSummary(
@@ -214,6 +257,7 @@ export function computeRevenueSummary(
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
   recentFollowUps: FollowUpCandidate[] = [],
+  recentSalesOutcomes: SalesOutcomeItem[] = [],
 ): RevenueSummary {
   const totalActiveMissions = missions.filter((m) => m.stage !== "completed").length;
   const founderApprovalPending = missions.filter((m) => m.stage === "approval").length;
@@ -226,11 +270,12 @@ export function computeRevenueSummary(
   const demoPendingCount = recentDemoItems.filter((d) => d.status === "demo_requested" || d.status === "scheduling_needed").length;
 
   const needsAttentionCount = missions.filter((m) => {
-    const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
+    const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps, recentSalesOutcomes);
     return stage === "failed" || stage === "approval_required";
   }).length;
 
   const followUpRequiredCount = recentFollowUps.filter((f) => f.status === "candidate" || f.status === "approval_required").length;
+  const outcomeSummary = summarizeSalesOutcomes(recentSalesOutcomes);
 
   return {
     totalActiveMissions,
@@ -244,6 +289,10 @@ export function computeRevenueSummary(
     replyReceivedCount: recentReplies.length,
     hotReplyCount: recentIntelligence.filter(isHotReplyIntelligence).length,
     followUpRequiredCount,
+    wonCount: outcomeSummary.won,
+    lostCount: outcomeSummary.lost,
+    outcomeRequiredCount: outcomeSummary.open,
+    estimatedMrrTotal: outcomeSummary.estimatedMrrTotal,
   };
 }
 
@@ -273,11 +322,12 @@ export function computeActionQueue(
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
   recentFollowUps: FollowUpCandidate[] = [],
+  recentSalesOutcomes: SalesOutcomeItem[] = [],
 ): ActionQueueItem[] {
   return missions
     .filter((m) => m.stage !== "completed")
     .map((m) => {
-      const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
+      const stage = actionStageOf(m, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps, recentSalesOutcomes);
       const lastTimelineEntry = m.timeline[m.timeline.length - 1];
       return {
         missionId: m.missionId,
@@ -315,6 +365,12 @@ export type MissionFocusSummary = {
   followUpReasonLabel: string | null;
   followUpSuggestedAction: string | null;
   followUpSuggestedTiming: string | null;
+  outcomeStatusLabel: string | null;
+  outcomePackageLabel: string | null;
+  outcomeEstimatedMrrLabel: string | null;
+  outcomeEstimatedArrLabel: string | null;
+  outcomeLostReasonLabel: string | null;
+  outcomeSuggestedAction: string | null;
 };
 
 export function computeMissionFocus(
@@ -324,11 +380,13 @@ export function computeMissionFocus(
   recentIntelligence: ReplyIntelligenceItem[] = [],
   recentDemoItems: DemoScheduleItem[] = [],
   recentFollowUps: FollowUpCandidate[] = [],
+  recentSalesOutcomes: SalesOutcomeItem[] = [],
 ): MissionFocusSummary {
-  const stage = actionStageOf(mission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps);
+  const stage = actionStageOf(mission, recentReceipts, recentReplies, recentIntelligence, recentDemoItems, recentFollowUps, recentSalesOutcomes);
   const receipt = latestReceiptForMission(mission.missionId, recentReceipts);
   const demoItem = recentDemoItems.find((d) => d.missionId === mission.missionId) ?? null;
   const followUp = recentFollowUps.find((f) => f.missionId === mission.missionId) ?? null;
+  const outcome = outcomeForMission(mission.missionId, recentSalesOutcomes) ?? null;
 
   return {
     missionId: mission.missionId,
@@ -348,6 +406,12 @@ export function computeMissionFocus(
     followUpReasonLabel: followUp ? FOLLOW_UP_REASON_LABELS_TR[followUp.reason] : null,
     followUpSuggestedAction: followUp ? followUp.suggestedAction : null,
     followUpSuggestedTiming: followUp ? followUp.suggestedTiming : null,
+    outcomeStatusLabel: outcome ? SALES_OUTCOME_STATUS_LABELS_TR[outcome.status] : null,
+    outcomePackageLabel: outcome && outcome.package !== "unknown" ? SALES_PACKAGE_LABELS_TR[outcome.package] : null,
+    outcomeEstimatedMrrLabel: outcome?.estimatedMrr != null ? `₺${outcome.estimatedMrr.toLocaleString("tr-TR")}` : null,
+    outcomeEstimatedArrLabel: outcome?.estimatedArr != null ? `₺${outcome.estimatedArr.toLocaleString("tr-TR")}` : null,
+    outcomeLostReasonLabel: outcome?.lostReason && outcome.lostReason !== "unknown" ? SALES_LOST_REASON_LABELS_TR[outcome.lostReason] : null,
+    outcomeSuggestedAction: outcome ? outcome.suggestedAction : null,
   };
 }
 
