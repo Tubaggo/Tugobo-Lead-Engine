@@ -70,13 +70,13 @@ function Chevron({ open }: { open: boolean }) {
 /* ── component ────────────────────────────────────────────────── */
 
 /**
- * v8.0 — Hermes Operating System sidebar.
+ * v8.0.1 — Founder Navigation Lockdown.
  *
- * Exactly four top-level entries (Hermes / Gelir / Ayarlar / Developer),
- * defined as pure data in `v2-nav.ts`. The badge exists only on Hermes and
- * only carries the pending-decision count. Developer sits at the bottom,
- * separated and low-contrast — every legacy screen lives under it (or under
- * Gelir/Ayarlar), untouched.
+ * Exactly one founder-facing top-level entry (Hermes), defined as pure data
+ * in `v2-nav.ts`. The badge exists only on Hermes and only carries the
+ * pending-decision count. Developer sits at the bottom, separated,
+ * low-contrast and collapsed by default — every other screen (former
+ * Gelir + Ayarlar + legacy dashboard screens) lives under it, untouched.
  */
 
 type Props = {
@@ -223,7 +223,7 @@ export default function V2Sidebar({ activeScreen, onNavigate, counts }: Props) {
         </div>
       </div>
 
-      {/* Founder nav: Hermes / Gelir / Ayarlar */}
+      {/* Founder nav: Hermes only */}
       <nav className="flex-1 space-y-0.5">
         {founderEntries.map(renderEntry)}
       </nav>

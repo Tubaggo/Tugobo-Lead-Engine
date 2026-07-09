@@ -1,14 +1,14 @@
 import type { V2Screen } from "../types.ts";
 
 /**
- * v8.0 — Hermes Operating System information architecture.
+ * v8.0.1 — Founder Navigation Lockdown.
  *
- * The founder-facing navigation is exactly four top-level entries:
+ * The founder-facing navigation is exactly one top-level entry:
  *
  *   Hermes    → the single operating screen (Hermes Home)
- *   Gelir     → the existing revenue screens, grouped
- *   Ayarlar   → data/configuration screens, grouped
- *   Developer → every legacy dashboard screen, grouped and visually muted
+ *   Developer → every other screen (former Gelir + Ayarlar + legacy
+ *               dashboard screens), grouped, visually muted, collapsed by
+ *               default at the bottom — a back door, not a destination.
  *
  * Nothing was deleted: every pre-v8 screen keeps its component, its adapter
  * and its V2Screen id — the only change is where it hangs in the tree.
@@ -22,7 +22,7 @@ export type V2NavLeaf = {
   icon: string;
 };
 
-export type V2NavEntryId = "hermes" | "gelir" | "ayarlar" | "developer";
+export type V2NavEntryId = "hermes" | "developer";
 
 export type V2NavEntry = {
   id: V2NavEntryId;
@@ -50,32 +50,18 @@ export const V2_NAV: V2NavEntry[] = [
     showsPendingDecisionBadge: true,
   },
   {
-    id: "gelir",
-    label: "Gelir",
-    icon: "bar-chart",
+    id: "developer",
+    label: "Developer",
+    icon: "integration",
+    muted: true,
     items: [
       { label: "Gelir Pipeline", screen: "revenue-pipeline", icon: "funnel" },
       { label: "Gelir Tahmini", screen: "revenue-forecast", icon: "forecast" },
       { label: "Gelir Risk", screen: "revenue-risk", icon: "risk" },
       { label: "Gelir Recovery", screen: "revenue-recovery", icon: "refresh" },
       { label: "Gelir Analizi", screen: "revenue-analytics", icon: "bar-chart" },
-    ],
-  },
-  {
-    id: "ayarlar",
-    label: "Ayarlar",
-    icon: "settings",
-    items: [
       { label: "Veri Kaynakları", screen: "data-sources", icon: "database" },
       { label: "Lead Import", screen: "lead-import", icon: "import" },
-    ],
-  },
-  {
-    id: "developer",
-    label: "Developer",
-    icon: "integration",
-    muted: true,
-    items: [
       { label: "Günlük Operasyon", screen: "command-center", icon: "command" },
       { label: "Fırsat Kuyruğu", screen: "revenue-queue", icon: "queue" },
       { label: "Takip Edilecekler", screen: "follow-ups", icon: "clock" },
