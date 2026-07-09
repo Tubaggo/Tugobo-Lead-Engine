@@ -30,6 +30,8 @@ import {
   type MissionBucket,
 } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import type { ScoredLead } from "@/app/lib/leads";
+import type { V2Screen } from "@/app/components/v2/types";
+import type { ImportHistoryEntry } from "@/app/components/v2/hooks/useLeadImport";
 import { SALES_PRIORITY_LABELS } from "@/lib/verified-opportunity/priority-engine";
 import { HERMES_AGENT_REGISTRY } from "@/app/lib/hermes-monitor";
 import type { HermesAgentKey, HermesMonitor, ShadowTask } from "@/app/lib/hermes-monitor";
@@ -157,6 +159,11 @@ type Props = {
   onRunProviderApiDryMode: (missionId: string) => void;
   hermesLiveSendResults: Record<string, HermesLiveSendResult>;
   onAttemptControlledLiveSend: (missionId: string) => void;
+  /** v8.1 — Hermes Lead Intake section's only navigation: jumps to the Developer-only Lead Import screen. */
+  onNavigate: (screen: V2Screen) => void;
+  importHistory: ImportHistoryEntry[];
+  importInProgress: boolean;
+  importError: string;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -2026,6 +2033,10 @@ export default function AutomationCenterScreen({
   onRunProviderApiDryMode,
   hermesLiveSendResults,
   onAttemptControlledLiveSend,
+  onNavigate,
+  importHistory,
+  importInProgress,
+  importError,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -2058,6 +2069,11 @@ export default function AutomationCenterScreen({
           missions={missions}
           selectedHermesMissionId={selectedHermesMissionId}
           onSelectHermesMission={onSelectHermesMission}
+          leads={leads}
+          importHistory={importHistory}
+          importInProgress={importInProgress}
+          importError={importError}
+          onNavigateToLeadImport={() => onNavigate("lead-import")}
         />
 
         {developerMode && (

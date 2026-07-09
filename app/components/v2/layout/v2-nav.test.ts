@@ -67,6 +67,15 @@ test("v8.0.1 IA: all 14 screens reachable exactly once; automation-center is gon
   assert.ok(!(ALL_NAV_SCREENS as string[]).includes("automation-center"));
 });
 
+// v8.1: Hermes Autonomous Lead Intake demotes manual Lead Import to a
+// Developer-only fallback — this pins that contract explicitly.
+test("v8.1: Lead Import is reachable only under Developer, never top-level", () => {
+  assert.equal(navEntryIdForScreen("lead-import"), "developer");
+  const developer = V2_NAV.find((e) => e.id === "developer")!;
+  assert.ok(developer.items!.some((i) => i.screen === "lead-import"));
+  assert.ok(!V2_NAV.some((e) => e.screen === "lead-import"));
+});
+
 test("navEntryIdForScreen resolves each screen to its owning top-level entry", () => {
   assert.equal(navEntryIdForScreen("hermes"), "hermes");
   assert.equal(navEntryIdForScreen("revenue-forecast"), "developer");

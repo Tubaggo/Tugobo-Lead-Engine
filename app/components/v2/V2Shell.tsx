@@ -1072,6 +1072,10 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onRunProviderApiDryMode={runProviderApiDryModeForMission}
                 hermesLiveSendResults={hermesLiveSendResults}
                 onAttemptControlledLiveSend={attemptControlledLiveSendForMission}
+                onNavigate={handleNavigate}
+                importHistory={leadImportState.importHistory}
+                importInProgress={leadImportState.loading}
+                importError={leadImportState.error}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}

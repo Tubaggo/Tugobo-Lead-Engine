@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { ScoredLead } from "@/app/lib/leads";
 import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import {
   computeActionQueue,
@@ -11,6 +12,11 @@ import {
   FOUNDER_EMPTY_STATE_LABELS,
   type ActionStage,
 } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
+import {
+  computeHermesLeadIntakeSummary,
+  HERMES_LEAD_INTAKE_BUTTON_LABELS,
+  type HermesLeadIntakeImportEntryLike,
+} from "@/app/components/v2/adapters/hermes-lead-intake-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -18,7 +24,7 @@ import type { ReplyIntelligenceItem } from "@/app/lib/reply-intelligence-runtime
 import type { DemoScheduleItem } from "@/app/lib/demo-scheduling-runtime";
 import type { FollowUpCandidate } from "@/app/lib/follow-up-runtime";
 import type { SalesOutcomeItem } from "@/app/lib/sales-outcome-runtime";
-import { kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } from "@/app/components/v2/design-system";
+import { btnCls, btnPrimaryCls, kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } from "@/app/components/v2/design-system";
 
 /**
  * Founder Revenue Workspace (v6.1, replies added in v6.2, reply
@@ -65,13 +71,33 @@ import { kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } fro
  * adapter calls, the same tiles regrouped (operational counters under
  * Hermes Bugün, won/lost/MRR under Gelir Nabzı, health folded into Hermes
  * Bugün), zero new computation.
+ *
+ * v8.1 (Hermes Autonomous Lead Intake): adds a sixth section, Hermes Lead
+ * Intake, between Hermes Bugün and Karar Kuyruğu — an operational summary of
+ * what Hermes's intake side has done (`hermes-lead-intake-adapter.ts`, a
+ * pure read over the scored lead pool + missions + `useLeadImport`'s own
+ * history/loading/error state). It replaces manual Lead Import as the
+ * founder's daily lead-intake view; Lead Import itself is untouched and
+ * still lives one click away under Developer. This section never triggers
+ * an import, never sends a message — its only two actions are scrolling to
+ * the existing Karar Kuyruğu section below and jumping to the Developer
+ * Lead Import screen.
  */
 
 type Props = {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
   onSelectHermesMission: (mission: HermesMission) => void;
+  /** The full scored lead pool (seed + imported) — same value already passed to `AutomationCenterScreen`. */
+  leads: ScoredLead[];
+  importHistory: HermesLeadIntakeImportEntryLike[];
+  importInProgress: boolean;
+  importError: string;
+  /** Jumps to the Developer-only Lead Import screen — the sole fallback entry point this section exposes. */
+  onNavigateToLeadImport: () => void;
 };
+
+const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
 
 const ACTION_STAGE_BADGE_CLS: Record<ActionStage, string> = {
   failed: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
@@ -95,7 +121,20 @@ function formatTime(at: number): string {
   return at > 0 ? new Date(at).toLocaleString("tr-TR") : "—";
 }
 
-export default function FounderRevenueWorkspace({ missions, selectedHermesMissionId, onSelectHermesMission }: Props) {
+function scrollToKararKuyrugu() {
+  document.getElementById(KARAR_KUYRUGU_ANCHOR_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+export default function FounderRevenueWorkspace({
+  missions,
+  selectedHermesMissionId,
+  onSelectHermesMission,
+  leads,
+  importHistory,
+  importInProgress,
+  importError,
+  onNavigateToLeadImport,
+}: Props) {
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
   const [whatsappReadinessStatus, setWhatsappReadinessStatus] = useState<WhatsAppReadinessStatus | null>(null);
@@ -251,6 +290,13 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
     whatsappReadinessStatus,
     deliveryFeedReachable: receiptsReachable,
   });
+  const intake = computeHermesLeadIntakeSummary({
+    leads,
+    missions,
+    importHistory,
+    importInProgress,
+    importError,
+  });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
   const focus = selectedMission
@@ -287,8 +333,37 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
         </div>
       </div>
 
-      {/* Section 2 — Karar Kuyruğu: only items awaiting a founder decision */}
+      {/* Section 2 — Hermes Lead Intake: what Hermes's intake side has done, operational summary only (v8.1) */}
       <div className="border-b border-white/[0.06] px-5 py-3">
+        <p className={`${sectionLabelCls} mb-2`}>Hermes Lead Intake</p>
+        <p className="mb-2.5 text-[11px] leading-relaxed text-zinc-400">{intake.founderSummary}</p>
+        <div className={kpiStripCls}>
+          <SummaryTile label="Değerlendirilen İşletme" value={intake.evaluatedLeadCount} />
+          <SummaryTile label="Yeni Fırsat" value={intake.newOpportunityCount} accent="text-emerald-400" />
+          <SummaryTile label="Aktif Mission" value={intake.activeMissionCount} />
+          <SummaryTile label="Onay Bekleyen" value={intake.approvalRequiredCount} accent="text-amber-400" />
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">Son Tarama</p>
+            <p className="mt-0.5 text-[11px] text-zinc-300">{formatTime(intake.lastImportAt ?? 0)}</p>
+          </div>
+          <p className="min-w-0 flex-1 truncate text-right text-[10px] font-medium text-indigo-300">
+            {intake.suggestedAction}
+          </p>
+        </div>
+        <div className="mt-2.5 flex items-center gap-2">
+          <button type="button" onClick={scrollToKararKuyrugu} className={btnPrimaryCls}>
+            {HERMES_LEAD_INTAKE_BUTTON_LABELS.reviewOpportunities}
+          </button>
+          <button type="button" onClick={onNavigateToLeadImport} className={btnCls}>
+            {HERMES_LEAD_INTAKE_BUTTON_LABELS.openDeveloperLeadImport}
+          </button>
+        </div>
+      </div>
+
+      {/* Section 3 — Karar Kuyruğu: only items awaiting a founder decision */}
+      <div id={KARAR_KUYRUGU_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Karar Kuyruğu</p>
         {queue.length === 0 ? (
           <p className="text-[11px] text-zinc-600">
@@ -328,7 +403,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
         )}
       </div>
 
-      {/* Section 3 — Fırsat Odağı: the selected item's full context */}
+      {/* Section 4 — Fırsat Odağı: the selected item's full context */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Fırsat Odağı</p>
         {!focus ? (
@@ -437,7 +512,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
         )}
       </div>
 
-      {/* Section 4 — Gelir Nabzı: won / lost / estimated MRR */}
+      {/* Section 5 — Gelir Nabzı: won / lost / estimated MRR */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
         <div className={kpiStripCls}>
@@ -452,7 +527,7 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
         </div>
       </div>
 
-      {/* Section 5 — Hermes Aktivitesi: meaningful events, not technical logs */}
+      {/* Section 6 — Hermes Aktivitesi: meaningful events, not technical logs */}
       <div className="px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Hermes Aktivitesi</p>
         {timeline.length === 0 ? (
