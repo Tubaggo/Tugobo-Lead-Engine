@@ -7,7 +7,6 @@ import {
   computeActionQueue,
   computeHermesHealth,
   computeHermesTimeline,
-  computeMissionFocus,
   computeRevenueSummary,
 } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
 import {
@@ -20,6 +19,11 @@ import {
   type HermesDecisionItem,
   type HermesDecisionPriority,
 } from "@/app/components/v2/adapters/hermes-decision-queue-adapter";
+import {
+  computeHermesOpportunityFocus,
+  type HermesOpportunityTimelineTone,
+  type HermesOpportunityUrgency,
+} from "@/app/components/v2/adapters/hermes-opportunity-focus-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -97,6 +101,22 @@ import { btnCls, btnPrimaryCls, kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls
  * card are the one exception, reusing the screen's existing
  * `onApproveMission`/`onRejectTask` handlers verbatim — everything else is
  * focus-only, per the sprint's explicit "no real mutation required" scope.
+ *
+ * v8.3 (Opportunity Focus Operating Layer): Fırsat Odağı stopped being a
+ * mission-object viewer (raw stage label, "Mevcut Mission"/"Aşama" rows) and
+ * now answers one question — "Bu otel için şimdi ne yapmalıyım?"
+ * `hermes-opportunity-focus-adapter.ts` calls the exact same
+ * `actionStageOf`/`computeMissionFocus` this screen already used, then
+ * reframes their output as current-state/why-it-matters/recommendation/
+ * next-action plus a compact status strip and a 5-event timeline. When the
+ * selected mission has a matching Karar Merkezi decision item, its own
+ * `hermesRecommendation`/`primaryActionLabel`/`secondaryActionLabel` are
+ * reused verbatim (single source of truth); passive/won/lost missions fall
+ * back to the adapter's own generic copy and render no action button at
+ * all. The card's primary button either calls the same
+ * `onApproveMission`/`onRejectTask` handlers Karar Merkezi uses
+ * (approve_message) or scrolls the matching Karar Merkezi card into view
+ * (every other active type) — no new mutation, no new state.
  */
 
 type Props = {
@@ -124,6 +144,23 @@ const DECISION_PRIORITY_BADGE_CLS: Record<HermesDecisionPriority, string> = {
   high: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
   medium: "bg-cyan-500/[0.10] text-cyan-400 ring-cyan-500/20",
   low: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+};
+
+/** v8.3 — Opportunity Focus's current-state badge is styled by urgency, not by the underlying (now-hidden) runtime stage. */
+const OPPORTUNITY_URGENCY_BADGE_CLS: Record<HermesOpportunityUrgency, string> = {
+  critical: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
+  high: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
+  medium: "bg-cyan-500/[0.10] text-cyan-400 ring-cyan-500/20",
+  low: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+  none: "bg-white/[0.04] text-zinc-600 ring-white/[0.06]",
+};
+
+const OPPORTUNITY_TIMELINE_DOT_CLS: Record<HermesOpportunityTimelineTone, string> = {
+  success: "bg-emerald-400",
+  warning: "bg-amber-400",
+  danger: "bg-rose-400",
+  info: "bg-sky-400",
+  neutral: "bg-zinc-500",
 };
 
 function formatTime(at: number): string {
@@ -319,17 +356,16 @@ export default function FounderRevenueWorkspace({
   });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
-  const focus = selectedMission
-    ? computeMissionFocus(
-        selectedMission,
-        recentReceipts,
-        recentReplies,
-        recentIntelligence,
-        recentDemoItems,
-        recentFollowUps,
-        recentSalesOutcomes,
-      )
-    : null;
+  const opportunityFocus = computeHermesOpportunityFocus({
+    selectedMission,
+    decisionItems,
+    recentReceipts,
+    recentReplies,
+    recentIntelligence,
+    recentDemoItems,
+    recentFollowUps,
+    recentSalesOutcomes,
+  });
 
   // v8.2 — Karar Merkezi interactions. Selecting a card (or its primary
   // action, for every decisionType except approve_message) reuses the
@@ -359,6 +395,23 @@ export default function FounderRevenueWorkspace({
     if (mission && item.decisionType === "approve_message") {
       onRejectTask(mission.primaryTaskId);
     }
+  };
+
+  // v8.3 — Opportunity Focus's own primary/secondary buttons are only ever
+  // shown when a matching Karar Merkezi decision item exists (the adapter
+  // leaves both labels null otherwise). Their behavior reuses the exact same
+  // handlers Karar Merkezi's own cards use: approve_message really approves
+  // (`runPrimaryDecisionAction`/`runSecondaryDecisionAction`, unchanged);
+  // every other active type has no safe direct mutation, so its primary
+  // button scrolls the matching card into view instead ("focus only", Scope
+  // 3) — the mission is already selected, so nothing else needs to change.
+  const focusMatchingDecisionItem = selectedHermesMissionId
+    ? (decisionItems.find((d) => d.missionId === selectedHermesMissionId) ?? null)
+    : null;
+
+  const runOpportunityFocusPrimaryAction = (item: HermesDecisionItem) => {
+    runPrimaryDecisionAction(item);
+    if (item.decisionType !== "approve_message") scrollToKararKuyrugu();
   };
 
   return (
@@ -478,111 +531,84 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
-      {/* Section 4 — Fırsat Odağı: the selected item's full context */}
+      {/* Section 4 — Fırsat Odağı (v8.3): "Bu otel için şimdi ne yapmalıyım?" — never a mission object viewer */}
       <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Fırsat Odağı</p>
-        {!focus ? (
-          <p className="text-[11px] text-zinc-600">İncelemek için Karar Merkezi&apos;nden bir fırsat seçin.</p>
+        <p className={sectionLabelCls}>Fırsat Odağı</p>
+        <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Seçili otel için Hermes&apos;in önerdiği sonraki adım.</p>
+        {opportunityFocus.emptyState ? (
+          <p className="text-[11px] text-zinc-600">{opportunityFocus.emptyState}</p>
         ) : (
-          <div className="space-y-1.5 rounded-lg bg-white/[0.02] px-3 py-2.5">
+          <div className="space-y-2 rounded-lg bg-white/[0.02] px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-zinc-500">Otel</span>
-              <span className="text-[11px] font-semibold text-zinc-200">{focus.hotelName}</span>
+              <div className="min-w-0">
+                <p className="truncate text-[11px] font-semibold text-zinc-200">{opportunityFocus.title}</p>
+                <p className="text-[9px] text-zinc-600">{opportunityFocus.subtitle}</p>
+              </div>
+              <span
+                className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${OPPORTUNITY_URGENCY_BADGE_CLS[opportunityFocus.urgency]}`}
+              >
+                {opportunityFocus.currentStateLabel}
+              </span>
             </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-zinc-500">Mevcut Mission</span>
-              <span className="text-[10px] text-zinc-300">{focus.currentMissionLabel}</span>
+
+            <p className="text-[10px] text-zinc-500">{opportunityFocus.whyThisMatters}</p>
+            <p className="text-[10px] font-medium text-indigo-300">{opportunityFocus.hermesRecommendation}</p>
+            <p className="text-[10px] font-semibold text-zinc-300">{opportunityFocus.founderNextAction}</p>
+
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.02] px-2.5 py-2">
+              <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">Gelir Sinyali</span>
+              <span className="text-[10px] font-medium text-emerald-300">
+                {opportunityFocus.revenueSignalLabel}
+                {opportunityFocus.estimatedMrrLabel ? ` · ${opportunityFocus.estimatedMrrLabel}` : ""}
+              </span>
             </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-zinc-500">Aşama</span>
-              <span className="text-[10px] text-zinc-300">{focus.currentStageLabel}</span>
+
+            {/* Compact status strip */}
+            <div className="grid grid-cols-5 gap-1.5 text-center">
+              <StatusStripItem label="Mesaj" value={opportunityFocus.whatsappStatusLabel} />
+              <StatusStripItem label="Cevap" value={opportunityFocus.replyIntentLabel} />
+              <StatusStripItem label="Demo" value={opportunityFocus.demoStatusLabel} />
+              <StatusStripItem label="Takip" value={opportunityFocus.followUpStatusLabel} />
+              <StatusStripItem label="Sonuç" value={opportunityFocus.outcomeStatusLabel} />
             </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-zinc-500">WhatsApp Durumu</span>
-              <span className="text-[10px] text-zinc-300">{focus.whatsappStatusLabel}</span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-zinc-500">Teslimat Durumu</span>
-              <span className="text-[10px] text-zinc-300">{focus.deliveryStateLabel}</span>
-            </div>
-            {focus.latestReceiptLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Son Makbuz</span>
-                <span className="text-[10px] text-zinc-300">{focus.latestReceiptLabel}</span>
+
+            {(opportunityFocus.primaryActionLabel || opportunityFocus.secondaryActionLabel) && (
+              <div className="flex items-center gap-2 pt-0.5">
+                {opportunityFocus.primaryActionLabel && focusMatchingDecisionItem && (
+                  <button
+                    type="button"
+                    onClick={() => runOpportunityFocusPrimaryAction(focusMatchingDecisionItem)}
+                    className={btnPrimaryCls}
+                  >
+                    {opportunityFocus.primaryActionLabel}
+                  </button>
+                )}
+                {opportunityFocus.secondaryActionLabel && focusMatchingDecisionItem && (
+                  <button
+                    type="button"
+                    onClick={() => runSecondaryDecisionAction(focusMatchingDecisionItem)}
+                    className={btnCls}
+                  >
+                    {opportunityFocus.secondaryActionLabel}
+                  </button>
+                )}
               </div>
             )}
-            {focus.demoStatusLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Demo Durumu</span>
-                <span className="text-[10px] text-teal-300">{focus.demoStatusLabel}</span>
+
+            {/* Compact timeline summary — max 5 latest meaningful events */}
+            {opportunityFocus.timeline.length > 0 && (
+              <div className="border-t border-white/[0.06] pt-2">
+                <ul className="space-y-1">
+                  {opportunityFocus.timeline.map((entry, i) => (
+                    <li key={i} className="flex items-center gap-2">
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${OPPORTUNITY_TIMELINE_DOT_CLS[entry.tone]}`} />
+                      <span className="flex-1 truncate text-[10px] text-zinc-400">{entry.label}</span>
+                      <span className="shrink-0 text-[9px] text-zinc-600">{formatTime(entry.occurredAt ?? 0)}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
-            {focus.demoScheduledAtLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Planlanan Zaman</span>
-                <span className="text-[10px] text-zinc-300">{focus.demoScheduledAtLabel}</span>
-              </div>
-            )}
-            {focus.demoSuggestedAction && (
-              <p className="text-[10px] font-medium text-teal-300">{focus.demoSuggestedAction}</p>
-            )}
-            {focus.followUpStatusLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Takip Durumu</span>
-                <span className="text-[10px] text-cyan-300">{focus.followUpStatusLabel}</span>
-              </div>
-            )}
-            {focus.followUpReasonLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Takip Nedeni</span>
-                <span className="text-[10px] text-zinc-300">{focus.followUpReasonLabel}</span>
-              </div>
-            )}
-            {focus.followUpSuggestedTiming && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Önerilen Zaman</span>
-                <span className="text-[10px] text-zinc-300">{focus.followUpSuggestedTiming}</span>
-              </div>
-            )}
-            {focus.followUpSuggestedAction && (
-              <p className="text-[10px] font-medium text-cyan-300">{focus.followUpSuggestedAction}</p>
-            )}
-            {focus.outcomeStatusLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Satış Sonucu</span>
-                <span className="text-[10px] text-purple-300">{focus.outcomeStatusLabel}</span>
-              </div>
-            )}
-            {focus.outcomePackageLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Paket</span>
-                <span className="text-[10px] text-zinc-300">{focus.outcomePackageLabel}</span>
-              </div>
-            )}
-            {focus.outcomeEstimatedMrrLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Tahmini MRR</span>
-                <span className="text-[10px] text-zinc-300">{focus.outcomeEstimatedMrrLabel}</span>
-              </div>
-            )}
-            {focus.outcomeEstimatedArrLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Tahmini ARR</span>
-                <span className="text-[10px] text-zinc-300">{focus.outcomeEstimatedArrLabel}</span>
-              </div>
-            )}
-            {focus.outcomeLostReasonLabel && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-zinc-500">Kayıp Nedeni</span>
-                <span className="text-[10px] text-zinc-300">{focus.outcomeLostReasonLabel}</span>
-              </div>
-            )}
-            {focus.outcomeSuggestedAction && (
-              <p className="text-[10px] font-medium text-purple-300">{focus.outcomeSuggestedAction}</p>
-            )}
-            <p className="border-t border-white/[0.06] pt-2 text-[10px] font-medium text-indigo-300">
-              {focus.suggestedNextAction}
-            </p>
           </div>
         )}
       </div>
@@ -652,6 +678,16 @@ function HealthTile({ label, value }: { label: string; value: string }) {
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${healthy ? "bg-emerald-400" : "bg-zinc-500"}`} />
         <span className="text-[11px] font-medium text-zinc-200">{value}</span>
       </div>
+    </div>
+  );
+}
+
+/** v8.3 — Opportunity Focus's compact status strip (Mesaj/Cevap/Demo/Takip/Sonuç). `null` renders a plain dash — never a technical placeholder. */
+function StatusStripItem({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="rounded-lg bg-white/[0.02] px-1.5 py-2">
+      <p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-zinc-600">{label}</p>
+      <p className="mt-0.5 truncate text-[9px] font-medium text-zinc-300">{value ?? "—"}</p>
     </div>
   );
 }
