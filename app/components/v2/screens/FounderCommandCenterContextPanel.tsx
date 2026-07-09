@@ -404,7 +404,7 @@ function LeadDetail({
 // (markContacted / scheduleFollowUp) for action types that map cleanly to
 // one, (2) a navigation to the existing screen that already owns that
 // action (verify_contact → Communication Intelligence, re_enrich/ai_review →
-// Automation Center) with the same lead re-selected there, or (3) — only for
+// Hermes Home) with the same lead re-selected there, or (3) — only for
 // action types with neither a safe mutation nor an existing owning screen —
 // visibly disabled with a helper line explaining why. Regardless of which
 // of these applies, a secondary action row (Temas Kuruldu / Takip Planla /
@@ -421,8 +421,8 @@ const SAFE_PRIMARY_ACTIONS = new Set<RecommendedActionKey>(["call", "whatsapp", 
 // button navigates there instead of sitting disabled.
 const NAVIGATION_ACTION_TARGET: Partial<Record<RecommendedActionKey, V2Screen>> = {
   verify_contact: "communication-intelligence",
-  re_enrich: "automation-center",
-  ai_review: "automation-center",
+  re_enrich: "hermes",
+  ai_review: "hermes",
 };
 
 // UI-only display relabeling — does not touch execution-runtime's own

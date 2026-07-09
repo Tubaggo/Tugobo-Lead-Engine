@@ -4,8 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { DEVELOPER_MODE_STORAGE_KEY, parseDeveloperModeFlag, serializeDeveloperModeFlag } from "./developer-mode-storage";
 
 /**
- * Developer Mode toggle (v6.1). Default OFF — the Founder Revenue Workspace
- * is the default experience; the existing Hermes runtime cards only appear
+ * Developer Mode toggle (v6.1). Default OFF — Hermes Home (named Founder
+ * Revenue Workspace before v8.0) is the default experience; the existing
+ * Hermes runtime cards only appear
  * once the founder explicitly opts into Developer Mode, and even then start
  * collapsed (see `AutomationCenterScreen.tsx`'s `<details>` wrapper).
  *

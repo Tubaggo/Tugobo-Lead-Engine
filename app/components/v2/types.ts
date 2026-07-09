@@ -12,4 +12,7 @@ export type V2Screen =
   | "command-center"
   | "lead-import"
   | "data-sources"
-  | "automation-center";
+  // v8.0 (Hermes Operating System): was "automation-center". Same screen,
+  // same components — only the identity changed. Legacy persisted values are
+  // migrated in active-screen-storage.ts.
+  | "hermes";

@@ -484,20 +484,31 @@ export function computeHermesTimeline(
 
 /* ── Section 5 — Hermes Health ──────────────────────────────────── */
 
+/**
+ * v7.0 — relabeled to the founder-facing 5-item vocabulary (Hermes /
+ * WhatsApp / Webhook / Delivery / Runtime), replacing the earlier
+ * "Mission Bridge" wording which leaked an internal architecture term into
+ * the founder view. Same underlying signals, no new probes.
+ */
 export type HermesHealthSummary = {
-  hermesRuntimeLabel: string;
+  hermesLabel: string;
   whatsappLabel: string;
+  webhookLabel: string;
   deliveryLabel: string;
-  missionBridgeLabel: string;
+  runtimeLabel: string;
 };
 
+/** "Hazır / Eksik / Kapalı" — the three founder-facing WhatsApp states the spec asks for. */
 const WHATSAPP_HEALTH_LABEL: Record<WhatsAppReadinessStatus, string> = {
-  controlled_live_ready: "Bağlı",
-  dry_run_ready: "Test Modu",
-  blocked: "Politika ile Kısıtlı",
-  partial: "Kısmi Yapılandırma",
-  not_configured: "Yapılandırılmadı",
+  controlled_live_ready: "Hazır",
+  dry_run_ready: "Hazır",
+  blocked: "Kapalı",
+  partial: "Eksik",
+  not_configured: "Kapalı",
 };
+
+/** A webhook is only ever "listening" once WhatsApp itself reports a ready mode — no separate probe exists (or should exist) for this. */
+const WEBHOOK_READY_STATUSES: ReadonlySet<WhatsAppReadinessStatus> = new Set(["controlled_live_ready", "dry_run_ready"]);
 
 export type ComputeHermesHealthInput = {
   hermesRuntimeAvailable: boolean;
@@ -506,16 +517,39 @@ export type ComputeHermesHealthInput = {
 };
 
 /**
- * "Mission Bridge: Healthy" is structural, not a live probe — no server
- * endpoint exposes bridge health today, and adding one would mean adding
- * new runtime instrumentation, which this sprint explicitly avoids. If this
- * card renders at all, the bridge module it depends on loaded successfully.
+ * "Runtime: Sağlıklı" is structural, not a live probe — no server endpoint
+ * exposes bridge/runtime health today, and adding one would mean adding new
+ * runtime instrumentation, which this sprint explicitly avoids. If this
+ * card renders at all, the runtime module it depends on loaded successfully.
+ * "Webhook" is derived from the same `whatsappReadinessStatus` fetch the
+ * WhatsApp tile already uses — not a second network call.
  */
 export function computeHermesHealth(input: ComputeHermesHealthInput): HermesHealthSummary {
   return {
-    hermesRuntimeLabel: input.hermesRuntimeAvailable ? "Sağlıklı" : "Bilinmiyor",
+    hermesLabel: input.hermesRuntimeAvailable ? "Aktif" : "Bilinmiyor",
     whatsappLabel: input.whatsappReadinessStatus ? WHATSAPP_HEALTH_LABEL[input.whatsappReadinessStatus] : "Bilinmiyor",
+    webhookLabel: input.whatsappReadinessStatus
+      ? WEBHOOK_READY_STATUSES.has(input.whatsappReadinessStatus)
+        ? "Dinliyor"
+        : "Kurulmadı"
+      : "Bilinmiyor",
     deliveryLabel: input.deliveryFeedReachable === null ? "Bilinmiyor" : input.deliveryFeedReachable ? "Çalışıyor" : "Erişilemiyor",
-    missionBridgeLabel: "Sağlıklı",
+    runtimeLabel: "Sağlıklı",
   };
 }
+
+/* ── Founder-facing empty states (v7.0) ─────────────────────────── */
+
+/**
+ * The exact Turkish copy the founder sees when a section has nothing to
+ * show. Centralized here so every consumer (the workspace screen itself,
+ * and the Developer Mode cards whose lists these summarize) uses the same
+ * wording instead of drifting copies.
+ */
+export const FOUNDER_EMPTY_STATE_LABELS = {
+  noActiveMissions: "Henüz aktif satış görevi yok. Yeni lead seçerek Hermes'i başlatabilirsin.",
+  noActions: "Şu anda founder aksiyonu bekleyen kayıt yok.",
+  noReplies: "Henüz cevap gelen lead yok.",
+  noDemos: "Henüz demo bekleyen fırsat yok.",
+  noOutcomes: "Henüz satış sonucu kaydedilmedi.",
+} as const;

@@ -1,6 +1,13 @@
 "use client";
 
+import { useState } from "react";
 import type { V2Screen } from "@/app/components/v2/types";
+import {
+  V2_NAV,
+  navEntryIdForScreen,
+  type V2NavEntry,
+  type V2NavEntryId,
+} from "@/app/components/v2/layout/v2-nav";
 
 /* ── icons ────────────────────────────────────────────────────── */
 
@@ -21,8 +28,8 @@ const p = {
   "aria-hidden": true,
 } as const;
 
-function NavIcon({ name }: { name: IconName }) {
-  switch (name) {
+function NavIcon({ name }: { name: string }) {
+  switch (name as IconName) {
     case "queue":      return <svg {...p}><path d="M2 4h12M2 8h12M2 12h7" /></svg>;
     case "list":       return <svg {...p}><path d="M5 4h9M5 8h9M5 12h9" /><circle cx="2.5" cy="4" r="0.6" fill="currentColor" stroke="none" /><circle cx="2.5" cy="8" r="0.6" fill="currentColor" stroke="none" /><circle cx="2.5" cy="12" r="0.6" fill="currentColor" stroke="none" /></svg>;
     case "analysis":   return <svg {...p}><path d="M2 13V3M2 13h12M5 10l3-3 2 2 4-4" /></svg>;
@@ -47,70 +54,152 @@ function NavIcon({ name }: { name: IconName }) {
   }
 }
 
-/* ── nav data ─────────────────────────────────────────────────── */
-
-type NavItem = {
-  label: string;
-  icon: IconName;
-  screen?: V2Screen;
-};
-
-type NavGroup = {
-  label: string;
-  items: NavItem[];
-};
-
-const NAV_GROUPS: NavGroup[] = [
-  {
-    label: "Genel",
-    items: [
-      { label: "Günlük Operasyon", icon: "command", screen: "command-center" },
-    ],
-  },
-  {
-    label: "Operasyon",
-    items: [
-      { label: "Fırsat Kuyruğu", icon: "queue", screen: "revenue-queue" },
-      { label: "Takip Edilecekler", icon: "clock", screen: "follow-ups" },
-    ],
-  },
-  {
-    label: "Analiz",
-    items: [
-      { label: "Lead Listesi", icon: "users", screen: "lead-list" },
-      { label: "ICP Analizi", icon: "target", screen: "icp-analysis" },
-      { label: "İletişim Zekası", icon: "message", screen: "communication-intelligence" },
-    ],
-  },
-  {
-    label: "Gelir",
-    items: [
-      { label: "Gelir Pipeline", icon: "funnel", screen: "revenue-pipeline" },
-      { label: "Gelir Tahmini", icon: "forecast", screen: "revenue-forecast" },
-      { label: "Gelir Risk", icon: "risk", screen: "revenue-risk" },
-      { label: "Gelir Recovery", icon: "refresh", screen: "revenue-recovery" },
-      { label: "Gelir Analizi", icon: "bar-chart", screen: "revenue-analytics" },
-    ],
-  },
-  {
-    label: "Sistem",
-    items: [
-      { label: "Lead Import", icon: "import", screen: "lead-import" as const },
-      { label: "Veri Kaynakları", icon: "database", screen: "data-sources" as const },
-      { label: "Hermes Workspace", icon: "automation", screen: "automation-center" as const },
-    ],
-  },
-];
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      className={`h-[11px] w-[11px] shrink-0 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+      aria-hidden
+    >
+      <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 /* ── component ────────────────────────────────────────────────── */
+
+/**
+ * v8.0 — Hermes Operating System sidebar.
+ *
+ * Exactly four top-level entries (Hermes / Gelir / Ayarlar / Developer),
+ * defined as pure data in `v2-nav.ts`. The badge exists only on Hermes and
+ * only carries the pending-decision count. Developer sits at the bottom,
+ * separated and low-contrast — every legacy screen lives under it (or under
+ * Gelir/Ayarlar), untouched.
+ */
 
 type Props = {
   activeScreen: V2Screen;
   onNavigate: (screen: V2Screen) => void;
+  /** v8.0: only "hermes" is ever read — the sole badge in the sidebar. */
   counts?: Partial<Record<V2Screen, number>>;
 };
 
 export default function V2Sidebar({ activeScreen, onNavigate, counts }: Props) {
+  // Explicit founder toggles; a group without an explicit toggle auto-opens
+  // when it contains the active screen, so deep-linked state stays visible.
+  const [expanded, setExpanded] = useState<Partial<Record<V2NavEntryId, boolean>>>({});
+  const activeEntryId = navEntryIdForScreen(activeScreen);
+
+  const isOpen = (entry: V2NavEntry) => expanded[entry.id] ?? entry.id === activeEntryId;
+  const toggle = (id: V2NavEntryId) =>
+    setExpanded((prev) => ({ ...prev, [id]: !(prev[id] ?? id === activeEntryId) }));
+
+  const pendingDecisionCount = counts?.hermes ?? 0;
+
+  const renderEntry = (entry: V2NavEntry) => {
+    const isGroup = entry.items !== undefined;
+    const open = isGroup && isOpen(entry);
+    const entryActive = entry.screen !== undefined && activeScreen === entry.screen;
+    const containsActive = entry.id === activeEntryId;
+
+    const baseTone = entry.muted
+      ? "text-zinc-600 hover:bg-white/[0.03] hover:text-zinc-400"
+      : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300";
+
+    return (
+      <div key={entry.id}>
+        <button
+          type="button"
+          onClick={() => (isGroup ? toggle(entry.id) : onNavigate(entry.screen!))}
+          className={[
+            "group relative flex w-full items-center gap-2 rounded-md px-2 py-[7px] text-[13px] font-medium leading-none transition-all duration-150",
+            entryActive
+              ? "bg-indigo-500/[0.12] text-zinc-100"
+              : containsActive && !open
+                ? "text-zinc-300"
+                : baseTone,
+          ].join(" ")}
+        >
+          {entryActive && (
+            <span className="absolute left-0 top-[6px] bottom-[6px] w-[3px] rounded-r-full bg-indigo-500" />
+          )}
+          <span
+            className={[
+              "shrink-0 transition-colors duration-150",
+              entryActive
+                ? "text-indigo-400"
+                : entry.muted
+                  ? "text-zinc-700 group-hover:text-zinc-500"
+                  : "text-zinc-600 group-hover:text-zinc-400",
+            ].join(" ")}
+          >
+            <NavIcon name={entry.icon} />
+          </span>
+          <span className="flex-1 truncate text-left">{entry.label}</span>
+          {entry.showsPendingDecisionBadge && pendingDecisionCount > 0 ? (
+            <span
+              className={[
+                "ml-auto flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 text-[9px] font-bold tabular-nums leading-none",
+                entryActive ? "bg-indigo-500/25 text-indigo-300" : "bg-amber-500/[0.15] text-amber-400",
+              ].join(" ")}
+            >
+              {pendingDecisionCount}
+            </span>
+          ) : isGroup ? (
+            <span className={entry.muted ? "text-zinc-700" : "text-zinc-600"}>
+              <Chevron open={open} />
+            </span>
+          ) : null}
+        </button>
+
+        {isGroup && open && (
+          <div className="mt-0.5 space-y-0.5 pl-3">
+            {entry.items!.map((item) => {
+              const itemActive = activeScreen === item.screen;
+              return (
+                <button
+                  key={item.screen}
+                  type="button"
+                  onClick={() => onNavigate(item.screen)}
+                  className={[
+                    "group relative flex w-full items-center gap-2 rounded-md px-2 py-[6px] text-[12px] font-medium leading-none transition-all duration-150",
+                    itemActive
+                      ? "bg-indigo-500/[0.12] text-zinc-100"
+                      : entry.muted
+                        ? "text-zinc-600 hover:bg-white/[0.03] hover:text-zinc-400"
+                        : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300",
+                  ].join(" ")}
+                >
+                  {itemActive && (
+                    <span className="absolute left-0 top-[5px] bottom-[5px] w-[3px] rounded-r-full bg-indigo-500" />
+                  )}
+                  <span
+                    className={[
+                      "shrink-0 transition-colors duration-150",
+                      itemActive
+                        ? "text-indigo-400"
+                        : entry.muted
+                          ? "text-zinc-700 group-hover:text-zinc-500"
+                          : "text-zinc-600 group-hover:text-zinc-400",
+                    ].join(" ")}
+                  >
+                    <NavIcon name={item.icon} />
+                  </span>
+                  <span className="flex-1 truncate text-left">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const founderEntries = V2_NAV.filter((entry) => !entry.muted);
+  const developerEntries = V2_NAV.filter((entry) => entry.muted);
+
   return (
     <aside className="flex w-[208px] shrink-0 flex-col border-r border-white/[0.06] bg-[var(--background-elev)] px-2 py-4">
 
@@ -126,105 +215,22 @@ export default function V2Sidebar({ activeScreen, onNavigate, counts }: Props) {
             </svg>
           </div>
           <div>
-            <p className="text-[12px] font-extrabold tracking-tight text-zinc-100 leading-none">TUGOBO</p>
+            <p className="text-[12px] font-extrabold tracking-tight text-zinc-100 leading-none">HERMES</p>
             <p className="mt-[3px] text-[8px] font-bold uppercase tracking-[0.22em] text-indigo-400/75">
-              Lead Engine
+              Operating System
             </p>
           </div>
         </div>
       </div>
 
-      {/* Nav groups */}
-      <nav className="flex-1 space-y-4">
-        {NAV_GROUPS.map((group) => (
-          <div key={group.label}>
-            <p className="mb-1 px-2 text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
-              {group.label}
-            </p>
-            <div className="space-y-0.5">
-              {group.items.map((item) => {
-                const isActive = item.screen !== undefined && activeScreen === item.screen;
-                const count = item.screen !== undefined ? counts?.[item.screen] : undefined;
-
-                if (!item.screen) {
-                  return (
-                    <div
-                      key={item.label}
-                      className="flex w-full cursor-default items-center gap-2 px-2 py-[7px] text-[12px] font-medium text-zinc-700"
-                    >
-                      <span className="shrink-0 text-zinc-700">
-                        <NavIcon name={item.icon} />
-                      </span>
-                      <span className="flex-1 truncate">{item.label}</span>
-                    </div>
-                  );
-                }
-
-                return (
-                  <button
-                    key={item.label}
-                    type="button"
-                    onClick={() => onNavigate(item.screen!)}
-                    className={[
-                      "group relative flex w-full items-center gap-2 rounded-md px-2 py-[7px] text-[13px] font-medium leading-none transition-all duration-150",
-                      isActive
-                        ? "bg-indigo-500/[0.12] text-zinc-100"
-                        : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300",
-                    ].join(" ")}
-                  >
-                    {/* Left accent bar for active state */}
-                    {isActive && (
-                      <span className="absolute left-0 top-[6px] bottom-[6px] w-[3px] rounded-r-full bg-indigo-500" />
-                    )}
-                    <span
-                      className={[
-                        "shrink-0 transition-colors duration-150",
-                        isActive ? "text-indigo-400" : "text-zinc-600 group-hover:text-zinc-400",
-                      ].join(" ")}
-                    >
-                      <NavIcon name={item.icon} />
-                    </span>
-                    <span className="flex-1 truncate">{item.label}</span>
-                    {count !== undefined ? (
-                      <span
-                        className={[
-                          "ml-auto flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 text-[9px] font-bold tabular-nums leading-none",
-                          isActive
-                            ? "bg-indigo-500/25 text-indigo-300"
-                            : "bg-white/[0.07] text-zinc-500",
-                        ].join(" ")}
-                      >
-                        {count}
-                      </span>
-                    ) : isActive ? (
-                      <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-400/60" />
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+      {/* Founder nav: Hermes / Gelir / Ayarlar */}
+      <nav className="flex-1 space-y-0.5">
+        {founderEntries.map(renderEntry)}
       </nav>
 
-      {/* Bottom CTA */}
-      <div className="mt-3 border-t border-white/[0.06] pt-3">
-        <button
-          type="button"
-          onClick={() => onNavigate("revenue-queue")}
-          className="flex h-9 w-full items-center justify-between gap-2 rounded-lg bg-amber-500/[0.12] px-3 ring-1 ring-inset ring-amber-400/[0.18] transition-colors duration-150 hover:bg-amber-500/[0.18]"
-        >
-          <div className="flex items-center gap-2">
-            <svg viewBox="0 0 16 16" fill="none" className="h-[13px] w-[13px] shrink-0 text-amber-400" aria-hidden>
-              <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M5 1.5v3M11 1.5v3M2 7h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            <span className="text-[11.5px] font-semibold text-amber-300">Günlük Operasyon</span>
-          </div>
-          <svg viewBox="0 0 16 16" fill="none" className="h-[11px] w-[11px] shrink-0 text-amber-400/50" aria-hidden>
-            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+      {/* Developer: separated, muted — the back door, never the destination */}
+      <div className="mt-3 space-y-0.5 border-t border-white/[0.06] pt-3">
+        {developerEntries.map(renderEntry)}
       </div>
     </aside>
   );

@@ -4,6 +4,11 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import type { V2Screen } from "@/app/components/v2/types";
 import type { ScoredLead } from "@/app/lib/leads";
 import V2Sidebar from "@/app/components/v2/layout/V2Sidebar";
+import {
+  DEFAULT_V2_SCREEN,
+  V2_ACTIVE_SCREEN_STORAGE_KEY,
+  parseStoredActiveScreen,
+} from "@/app/components/v2/layout/active-screen-storage";
 import V2Header from "@/app/components/v2/layout/V2Header";
 import V2KpiStrip from "@/app/components/v2/layout/V2KpiStrip";
 import RevenueQueueScreen from "@/app/components/v2/screens/RevenueQueueScreen";
@@ -165,28 +170,25 @@ export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> 
     title: "Veri Kaynakları",
     subtitle: "Entegrasyon sağlık durumu, sağlayıcı bağlantıları ve operasyonel hazırlık.",
   },
-  "automation-center": {
-    title: "Hermes Workspace",
-    subtitle: "AI işgücü çalışıyor — Founder bugünün operasyonunu denetliyor.",
+  hermes: {
+    title: "Hermes Home",
+    subtitle: "Hermes çalışır, sen karar verirsin — bugün ne oldu, ne bekliyor, nerede fırsat var.",
   },
 };
 
-const V2_ACTIVE_SCREEN_STORAGE_KEY = "tugobo-lead-engine:v2-active-screen";
-
-function isV2Screen(value: string): value is V2Screen {
-  return Object.prototype.hasOwnProperty.call(SCREEN_META, value);
-}
-
-/** Reads the persisted active screen, validated against the known V2 screen IDs. Client-only. */
+/**
+ * Reads the persisted active screen. Parsing + legacy-id migration
+ * ("automation-center" → "hermes", v8.0) live in active-screen-storage.ts;
+ * this wrapper only touches the browser storage API. Client-only.
+ */
 function readStoredActiveScreen(): V2Screen | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(V2_ACTIVE_SCREEN_STORAGE_KEY);
-    if (raw && isV2Screen(raw)) return raw;
+    return parseStoredActiveScreen(window.localStorage.getItem(V2_ACTIVE_SCREEN_STORAGE_KEY));
   } catch {
     // storage unavailable (privacy mode, quota, etc.) — fall back to default
+    return null;
   }
-  return null;
 }
 
 type Props = {
@@ -203,7 +205,10 @@ export default function V2Shell({ scoredLeads }: Props) {
 
   useEffect(() => {
     const stored = readStoredActiveScreen();
-    setActiveScreen(stored ?? "command-center");
+    // v8.0 (Hermes Operating System): Hermes Home is the single entry point.
+    // Every legacy screen remains intact and reachable from the sidebar's
+    // Gelir / Ayarlar / Developer groups.
+    setActiveScreen(stored ?? DEFAULT_V2_SCREEN);
   }, []);
 
   useEffect(() => {
@@ -802,7 +807,7 @@ export default function V2Shell({ scoredLeads }: Props) {
     if (screen === "communication-intelligence") {
       const card = commCards.find((c) => c.id === leadId);
       if (card) setSelectedCommCard(card);
-    } else if (screen === "automation-center") {
+    } else if (screen === "hermes") {
       const card = automationCards.find((c) => c.id === leadId);
       if (card) setSelectedAutomationCard(card);
     }
@@ -838,17 +843,17 @@ export default function V2Shell({ scoredLeads }: Props) {
   const isAnalytics = activeScreen === "revenue-analytics";
   const isLeadImport = activeScreen === "lead-import";
   const isDataSources = activeScreen === "data-sources";
-  const isAutomationCenter = activeScreen === "automation-center";
+  const isHermes = activeScreen === "hermes";
 
   return (
     <div className="flex h-screen overflow-hidden">
       <V2Sidebar
         activeScreen={activeScreen}
         onNavigate={handleNavigate}
+        // v8.0: the sidebar carries exactly one badge — pending founder
+        // decisions on Hermes. No other screen may surface a count.
         counts={{
-          "revenue-queue": rows.length,
-          "follow-ups": followUpCards.length,
-          "automation-center":
+          hermes:
             hermesMissions.filter((m) => missionBucketOf(m) === "approval").length +
             // Ready-for-provider AND not yet shadow-sent — a completed shadow
             // receipt is done, not pending, so it must not inflate this count.
@@ -1036,7 +1041,7 @@ export default function V2Shell({ scoredLeads }: Props) {
               <DataSourcesScreen onStateChange={setDataSourcesState} />
               <DataSourcesContextPanel screenState={dataSourcesState} />
             </>
-          ) : isAutomationCenter ? (
+          ) : isHermes ? (
             <>
               <AutomationCenterScreen
                 leads={allLeads}
@@ -1256,7 +1261,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                     | "revenue-analytics"
                     | "lead-import"
                     | "data-sources"
-                    | "automation-center"
+                    | "hermes"
                   >
                 }
               />
@@ -1277,7 +1282,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                     | "revenue-analytics"
                     | "lead-import"
                     | "data-sources"
-                    | "automation-center"
+                    | "hermes"
                   >
                 }
               />

@@ -5,6 +5,7 @@ import {
   REPLY_MESSAGE_TYPE_LABELS_TR,
   type WhatsAppInboundMessageType,
 } from "@/app/lib/whatsapp-reply-listener-runtime";
+import { FOUNDER_EMPTY_STATE_LABELS } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
 
 /**
  * WhatsApp Reply Listener Card (v6.2).
@@ -78,7 +79,7 @@ export default function WhatsAppReplyListenerCard() {
 
       {error && <p className="mt-2 text-[10px] text-rose-400">{error}</p>}
 
-      {latest === null && <p className="mt-2 text-[10px] text-zinc-600">Henüz cevap alınmadı.</p>}
+      {latest === null && <p className="mt-2 text-[10px] text-zinc-600">{FOUNDER_EMPTY_STATE_LABELS.noReplies}</p>}
 
       {latest && (
         <div className="mt-2.5 space-y-2">

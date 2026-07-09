@@ -8,6 +8,7 @@ import {
   computeHermesTimeline,
   computeMissionFocus,
   computeRevenueSummary,
+  FOUNDER_EMPTY_STATE_LABELS,
   type MissionLike,
 } from "./founder-revenue-workspace-adapter.ts";
 import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
@@ -747,21 +748,43 @@ test("computeHermesHealth: unknown inputs produce safe unknown labels", () => {
     whatsappReadinessStatus: null,
     deliveryFeedReachable: null,
   });
-  assert.equal(health.hermesRuntimeLabel, "Bilinmiyor");
+  assert.equal(health.hermesLabel, "Bilinmiyor");
   assert.equal(health.whatsappLabel, "Bilinmiyor");
+  assert.equal(health.webhookLabel, "Bilinmiyor");
   assert.equal(health.deliveryLabel, "Bilinmiyor");
-  assert.equal(health.missionBridgeLabel, "Sağlıklı");
+  assert.equal(health.runtimeLabel, "Sağlıklı");
 });
 
-test("computeHermesHealth: healthy inputs produce the expected Turkish labels", () => {
+test("computeHermesHealth: healthy inputs produce the founder-facing v7.0 labels", () => {
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
     whatsappReadinessStatus: "controlled_live_ready",
     deliveryFeedReachable: true,
   });
-  assert.equal(health.hermesRuntimeLabel, "Sağlıklı");
-  assert.equal(health.whatsappLabel, "Bağlı");
+  assert.equal(health.hermesLabel, "Aktif");
+  assert.equal(health.whatsappLabel, "Hazır");
+  assert.equal(health.webhookLabel, "Dinliyor");
   assert.equal(health.deliveryLabel, "Çalışıyor");
+});
+
+test("computeHermesHealth: dry_run_ready is also reported as Hazır/Dinliyor", () => {
+  const health = computeHermesHealth({
+    hermesRuntimeAvailable: true,
+    whatsappReadinessStatus: "dry_run_ready",
+    deliveryFeedReachable: true,
+  });
+  assert.equal(health.whatsappLabel, "Hazır");
+  assert.equal(health.webhookLabel, "Dinliyor");
+});
+
+test("computeHermesHealth: partial configuration is reported as Eksik", () => {
+  const health = computeHermesHealth({
+    hermesRuntimeAvailable: true,
+    whatsappReadinessStatus: "partial",
+    deliveryFeedReachable: true,
+  });
+  assert.equal(health.whatsappLabel, "Eksik");
+  assert.equal(health.webhookLabel, "Kurulmadı");
 });
 
 test("computeHermesHealth: an unreachable delivery feed is reported, not hidden", () => {
@@ -771,5 +794,29 @@ test("computeHermesHealth: an unreachable delivery feed is reported, not hidden"
     deliveryFeedReachable: false,
   });
   assert.equal(health.deliveryLabel, "Erişilemiyor");
-  assert.equal(health.whatsappLabel, "Yapılandırılmadı");
+  assert.equal(health.whatsappLabel, "Kapalı");
+  assert.equal(health.webhookLabel, "Kurulmadı");
+});
+
+test("computeHermesHealth: blocked WhatsApp policy is reported as Kapalı", () => {
+  const health = computeHermesHealth({
+    hermesRuntimeAvailable: true,
+    whatsappReadinessStatus: "blocked",
+    deliveryFeedReachable: true,
+  });
+  assert.equal(health.whatsappLabel, "Kapalı");
+  assert.equal(health.webhookLabel, "Kurulmadı");
+});
+
+/* ── FOUNDER_EMPTY_STATE_LABELS (v7.0) ──────────────────────────── */
+
+test("FOUNDER_EMPTY_STATE_LABELS: exact founder-facing Turkish copy", () => {
+  assert.equal(
+    FOUNDER_EMPTY_STATE_LABELS.noActiveMissions,
+    "Henüz aktif satış görevi yok. Yeni lead seçerek Hermes'i başlatabilirsin.",
+  );
+  assert.equal(FOUNDER_EMPTY_STATE_LABELS.noActions, "Şu anda founder aksiyonu bekleyen kayıt yok.");
+  assert.equal(FOUNDER_EMPTY_STATE_LABELS.noReplies, "Henüz cevap gelen lead yok.");
+  assert.equal(FOUNDER_EMPTY_STATE_LABELS.noDemos, "Henüz demo bekleyen fırsat yok.");
+  assert.equal(FOUNDER_EMPTY_STATE_LABELS.noOutcomes, "Henüz satış sonucu kaydedilmedi.");
 });

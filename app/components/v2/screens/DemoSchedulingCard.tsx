@@ -7,6 +7,7 @@ import {
   type DemoScheduleStatus,
   type DemoStatusUpdateTarget,
 } from "@/app/lib/demo-scheduling-runtime";
+import { FOUNDER_EMPTY_STATE_LABELS } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
 
 /**
  * Demo Scheduling Card (v6.4).
@@ -107,7 +108,7 @@ export default function DemoSchedulingCard() {
       {error && <p className="mt-2 text-[10px] text-rose-400">{error}</p>}
 
       {visibleItems.length === 0 && !loading && (
-        <p className="mt-2 text-[10px] text-zinc-600">Şu anda bekleyen bir demo talebi yok.</p>
+        <p className="mt-2 text-[10px] text-zinc-600">{FOUNDER_EMPTY_STATE_LABELS.noDemos}</p>
       )}
 
       {visibleItems.length > 0 && (

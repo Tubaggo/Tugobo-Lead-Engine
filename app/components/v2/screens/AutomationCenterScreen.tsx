@@ -2033,8 +2033,8 @@ export default function AutomationCenterScreen({
   const toggleExpand = (missionId: string) =>
     setExpandedMissionId((cur) => (cur === missionId ? null : missionId));
 
-  // v6.1 Founder Revenue Workspace: the default experience. Developer Mode
-  // (off by default, persisted) reveals the existing, unchanged Hermes
+  // v6.1 (renamed Hermes Home in v8.0): the default experience. Developer
+  // Mode (off by default, persisted) reveals the existing, unchanged Hermes
   // runtime below it — collapsed behind a <details> so it never competes
   // with the founder-facing summary for attention.
   const [developerMode, toggleDeveloperMode] = useDeveloperMode();
@@ -2043,7 +2043,7 @@ export default function AutomationCenterScreen({
     <div className={`${screenCardCls} flex-1`}>
       <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-2.5">
         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-          Hermes — Founder Revenue Workspace
+          Hermes Home
         </span>
         <button
           type="button"

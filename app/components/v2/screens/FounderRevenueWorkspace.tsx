@@ -8,6 +8,7 @@ import {
   computeHermesTimeline,
   computeMissionFocus,
   computeRevenueSummary,
+  FOUNDER_EMPTY_STATE_LABELS,
   type ActionStage,
 } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
@@ -50,6 +51,20 @@ import { kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } fro
  * Deliberately does not render Mission Runtime cards, the Provider
  * Registry, Policy Runtime, Courier Runtime, or Delivery Gateway objects —
  * those stay in Developer Mode. Everything here is operational language.
+ *
+ * v7.0 (Founder Experience Simplification): promoted to the app's default
+ * screen (see `V2Shell.tsx`); the top KPI strip was trimmed to the 8 tiles
+ * the founder actually needs (the underlying `RevenueSummary` still
+ * computes every counter — nothing here was removed from the adapter,
+ * only from what this screen renders), and the Hermes Health strip was
+ * relabeled to a 5-item vocabulary that drops the "Mission Bridge" term.
+ *
+ * v8.0 (Hermes Operating System): renamed Hermes Home and restructured into
+ * the five canonical sections — Hermes Bugün, Karar Kuyruğu, Fırsat Odağı,
+ * Gelir Nabzı, Hermes Aktivitesi. Pure information architecture: the same
+ * adapter calls, the same tiles regrouped (operational counters under
+ * Hermes Bugün, won/lost/MRR under Gelir Nabzı, health folded into Hermes
+ * Bugün), zero new computation.
  */
 
 type Props = {
@@ -252,38 +267,33 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
 
   return (
     <div>
-      {/* Section 1 — Revenue Summary */}
+      {/* Section 1 — Hermes Bugün: what Hermes did + whether it's healthy */}
       <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Gelir Özeti</p>
+        <p className={`${sectionLabelCls} mb-2`}>Hermes Bugün</p>
         <div className={kpiStripCls}>
-          <SummaryTile label="Toplam Aktif Mission" value={summary.totalActiveMissions} />
-          <SummaryTile label="Founder Onayı Bekleyen" value={summary.founderApprovalPending} />
+          <SummaryTile label="Aktif Mission" value={summary.totalActiveMissions} />
+          <SummaryTile label="Onay Bekleyen" value={summary.founderApprovalPending} accent="text-amber-400" />
           <SummaryTile label="Sıcak Cevap" value={summary.hotReplyCount} accent="text-orange-400" />
-          <SummaryTile label="Cevap Geldi" value={summary.replyReceivedCount} accent="text-fuchsia-400" />
-          <SummaryTile label="Gönderildi" value={summary.sentCount} />
-          <SummaryTile label="Teslim Edildi" value={summary.deliveredCount} />
-          <SummaryTile label="Okundu" value={summary.readCount} />
-          <SummaryTile label="Başarısız" value={summary.failedCount} accent="text-rose-400" />
-          <SummaryTile label="Demo Bekleyen" value={summary.demoPendingCount} />
+          <SummaryTile label="Demo Bekleyen" value={summary.demoPendingCount} accent="text-teal-400" />
           <SummaryTile label="Takip Gerekli" value={summary.followUpRequiredCount} accent="text-cyan-400" />
           <SummaryTile label="Outcome Bekliyor" value={summary.outcomeRequiredCount} accent="text-purple-400" />
-          <SummaryTile label="Kazanıldı" value={summary.wonCount} accent="text-emerald-400" />
-          <SummaryTile label="Kaybedildi" value={summary.lostCount} accent="text-rose-400" />
-          <SummaryTile
-            label="Tahmini MRR"
-            value={summary.estimatedMrrTotal}
-            accent="text-emerald-400"
-            format={(v) => `₺${v.toLocaleString("tr-TR")}`}
-          />
-          <SummaryTile label="Needs Attention" value={summary.needsAttentionCount} accent="text-amber-400" />
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <HealthTile label="Hermes" value={health.hermesLabel} />
+          <HealthTile label="WhatsApp" value={health.whatsappLabel} />
+          <HealthTile label="Webhook" value={health.webhookLabel} />
+          <HealthTile label="Teslimat" value={health.deliveryLabel} />
+          <HealthTile label="Runtime" value={health.runtimeLabel} />
         </div>
       </div>
 
-      {/* Section 2 — Action Queue */}
+      {/* Section 2 — Karar Kuyruğu: only items awaiting a founder decision */}
       <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>İş Kuyruğu</p>
+        <p className={`${sectionLabelCls} mb-2`}>Karar Kuyruğu</p>
         {queue.length === 0 ? (
-          <p className="text-[11px] text-zinc-600">Şu anda dikkat gerektiren bir mission yok.</p>
+          <p className="text-[11px] text-zinc-600">
+            {summary.totalActiveMissions === 0 ? FOUNDER_EMPTY_STATE_LABELS.noActiveMissions : FOUNDER_EMPTY_STATE_LABELS.noActions}
+          </p>
         ) : (
           <div className="space-y-1.5">
             {queue.map((item) => (
@@ -318,11 +328,11 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
         )}
       </div>
 
-      {/* Section 3 — Mission Focus */}
+      {/* Section 3 — Fırsat Odağı: the selected item's full context */}
       <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Mission Odağı</p>
+        <p className={`${sectionLabelCls} mb-2`}>Fırsat Odağı</p>
         {!focus ? (
-          <p className="text-[11px] text-zinc-600">İncelemek için yukarıdaki kuyruktan bir mission seçin.</p>
+          <p className="text-[11px] text-zinc-600">İncelemek için karar kuyruğundan bir fırsat seçin.</p>
         ) : (
           <div className="space-y-1.5 rounded-lg bg-white/[0.02] px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
@@ -427,9 +437,24 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
         )}
       </div>
 
-      {/* Section 4 — Hermes Timeline */}
+      {/* Section 4 — Gelir Nabzı: won / lost / estimated MRR */}
       <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Hermes Zaman Akışı</p>
+        <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
+        <div className={kpiStripCls}>
+          <SummaryTile label="Kazanıldı" value={summary.wonCount} accent="text-emerald-400" />
+          <SummaryTile label="Kaybedildi" value={summary.lostCount} accent="text-rose-400" />
+          <SummaryTile
+            label="Tahmini MRR"
+            value={summary.estimatedMrrTotal}
+            accent="text-emerald-400"
+            format={(v) => `₺${v.toLocaleString("tr-TR")}`}
+          />
+        </div>
+      </div>
+
+      {/* Section 5 — Hermes Aktivitesi: meaningful events, not technical logs */}
+      <div className="px-5 py-3">
+        <p className={`${sectionLabelCls} mb-2`}>Hermes Aktivitesi</p>
         {timeline.length === 0 ? (
           <p className="text-[11px] text-zinc-600">Henüz kayıtlı bir aktivite yok.</p>
         ) : (
@@ -442,17 +467,6 @@ export default function FounderRevenueWorkspace({ missions, selectedHermesMissio
             ))}
           </ul>
         )}
-      </div>
-
-      {/* Section 5 — Hermes Health */}
-      <div className="px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Hermes Sağlığı</p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <HealthTile label="Hermes Runtime" value={health.hermesRuntimeLabel} />
-          <HealthTile label="WhatsApp" value={health.whatsappLabel} />
-          <HealthTile label="Teslimat" value={health.deliveryLabel} />
-          <HealthTile label="Mission Bridge" value={health.missionBridgeLabel} />
-        </div>
       </div>
     </div>
   );
@@ -479,7 +493,8 @@ function SummaryTile({
 }
 
 function HealthTile({ label, value }: { label: string; value: string }) {
-  const healthy = value === "Sağlıklı" || value === "Bağlı" || value === "Çalışıyor";
+  const healthy =
+    value === "Sağlıklı" || value === "Aktif" || value === "Hazır" || value === "Dinliyor" || value === "Çalışıyor";
   return (
     <div className="rounded-lg bg-white/[0.02] px-3 py-2.5">
       <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">{label}</p>

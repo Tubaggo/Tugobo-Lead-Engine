@@ -13,6 +13,7 @@ import {
   type SalesOutcomeStatusUpdateTarget,
   type SalesPackage,
 } from "@/app/lib/sales-outcome-runtime";
+import { FOUNDER_EMPTY_STATE_LABELS } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
 
 /**
  * Sales Outcome Card (v6.6).
@@ -130,7 +131,7 @@ export default function SalesOutcomeCard() {
       {error && <p className="mt-2 text-[10px] text-rose-400">{error}</p>}
 
       {visibleItems.length === 0 && !loading && (
-        <p className="mt-2 text-[10px] text-zinc-600">Şu anda bekleyen bir satış sonucu yok.</p>
+        <p className="mt-2 text-[10px] text-zinc-600">{FOUNDER_EMPTY_STATE_LABELS.noOutcomes}</p>
       )}
 
       {visibleItems.length > 0 && (
