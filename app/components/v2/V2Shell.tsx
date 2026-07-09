@@ -48,6 +48,7 @@ import {
 } from "@/app/components/v2/adapters/automation-center-adapter";
 import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
 import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
+import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import { useHermesMissionStateBridgePublisher } from "@/app/components/v2/hooks/useHermesMissionStateBridgePublisher";
 import {
   buildExecutionContexts,
@@ -313,6 +314,12 @@ export default function V2Shell({ scoredLeads }: Props) {
 
   const leadImportState = useLeadImport();
   const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
+
+  // v8.1.1: lifted from AutomationCenterScreen so the same flag gates both
+  // the sidebar's Developer group and Hermes Home's own Developer runtime
+  // view — a single source of truth instead of two independent hook copies
+  // that would silently desync.
+  const [developerMode, toggleDeveloperMode] = useDeveloperMode();
 
   const scoredLeadsById = useMemo(
     () => new Map(allLeads.map((l) => [l.id, l])),
@@ -850,6 +857,9 @@ export default function V2Shell({ scoredLeads }: Props) {
       <V2Sidebar
         activeScreen={activeScreen}
         onNavigate={handleNavigate}
+        // v8.1.1: Developer only renders in the sidebar while Developer
+        // Mode is ON — hidden by default, same flag Hermes Home itself uses.
+        developerMode={developerMode}
         // v8.0: the sidebar carries exactly one badge — pending founder
         // decisions on Hermes. No other screen may surface a count.
         counts={{
@@ -1076,6 +1086,8 @@ export default function V2Shell({ scoredLeads }: Props) {
                 importHistory={leadImportState.importHistory}
                 importInProgress={leadImportState.loading}
                 importError={leadImportState.error}
+                developerMode={developerMode}
+                onToggleDeveloperMode={toggleDeveloperMode}
               />
               <AutomationCenterContextPanel
                 selectedCard={selectedAutomationCard}

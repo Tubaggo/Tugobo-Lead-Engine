@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { V2Screen } from "@/app/components/v2/types";
 import {
-  V2_NAV,
+  founderVisibleNavEntries,
   navEntryIdForScreen,
   type V2NavEntry,
   type V2NavEntryId,
@@ -70,13 +70,15 @@ function Chevron({ open }: { open: boolean }) {
 /* ── component ────────────────────────────────────────────────── */
 
 /**
- * v8.0.1 — Founder Navigation Lockdown.
+ * v8.1.1 — Hide Developer Navigation.
  *
- * Exactly one founder-facing top-level entry (Hermes), defined as pure data
- * in `v2-nav.ts`. The badge exists only on Hermes and only carries the
- * pending-decision count. Developer sits at the bottom, separated,
- * low-contrast and collapsed by default — every other screen (former
- * Gelir + Ayarlar + legacy dashboard screens) lives under it, untouched.
+ * Exactly one founder-facing top-level entry (Hermes) by default, defined as
+ * pure data in `v2-nav.ts`. The badge exists only on Hermes and only carries
+ * the pending-decision count. Developer no longer renders at all unless
+ * Developer Mode is ON (`developerMode` prop, sourced from the existing
+ * `useDeveloperMode` hook lifted to `V2Shell.tsx`) — when it is, the same
+ * separated, low-contrast, collapsed-by-default group from v8.0.1 appears at
+ * the bottom, untouched.
  */
 
 type Props = {
@@ -84,9 +86,11 @@ type Props = {
   onNavigate: (screen: V2Screen) => void;
   /** v8.0: only "hermes" is ever read — the sole badge in the sidebar. */
   counts?: Partial<Record<V2Screen, number>>;
+  /** v8.1.1 — the Developer group renders only while this is true. */
+  developerMode: boolean;
 };
 
-export default function V2Sidebar({ activeScreen, onNavigate, counts }: Props) {
+export default function V2Sidebar({ activeScreen, onNavigate, counts, developerMode }: Props) {
   // Explicit founder toggles; a group without an explicit toggle auto-opens
   // when it contains the active screen, so deep-linked state stays visible.
   const [expanded, setExpanded] = useState<Partial<Record<V2NavEntryId, boolean>>>({});
@@ -197,8 +201,9 @@ export default function V2Sidebar({ activeScreen, onNavigate, counts }: Props) {
     );
   };
 
-  const founderEntries = V2_NAV.filter((entry) => !entry.muted);
-  const developerEntries = V2_NAV.filter((entry) => entry.muted);
+  const visibleEntries = founderVisibleNavEntries(developerMode);
+  const founderEntries = visibleEntries.filter((entry) => !entry.muted);
+  const developerEntries = visibleEntries.filter((entry) => entry.muted);
 
   return (
     <aside className="flex w-[208px] shrink-0 flex-col border-r border-white/[0.06] bg-[var(--background-elev)] px-2 py-4">
@@ -228,10 +233,12 @@ export default function V2Sidebar({ activeScreen, onNavigate, counts }: Props) {
         {founderEntries.map(renderEntry)}
       </nav>
 
-      {/* Developer: separated, muted — the back door, never the destination */}
-      <div className="mt-3 space-y-0.5 border-t border-white/[0.06] pt-3">
-        {developerEntries.map(renderEntry)}
-      </div>
+      {/* Developer: only rendered at all while Developer Mode is ON — invisible otherwise, not just muted */}
+      {developerEntries.length > 0 && (
+        <div className="mt-3 space-y-0.5 border-t border-white/[0.06] pt-3">
+          {developerEntries.map(renderEntry)}
+        </div>
+      )}
     </aside>
   );
 }

@@ -4,6 +4,7 @@ import {
   computeHermesLeadIntakeSummary,
   HERMES_LEAD_INTAKE_BUTTON_LABELS,
   HERMES_LEAD_INTAKE_FORBIDDEN_BUTTON_LABELS,
+  resolveDeveloperLeadImportNavigation,
   type HermesLeadIntakeImportEntryLike,
   type HermesLeadIntakeMissionLike,
 } from "./hermes-lead-intake-adapter.ts";
@@ -180,4 +181,17 @@ test("no forbidden button labels: the two allowed labels never overlap the forbi
   for (const forbidden of HERMES_LEAD_INTAKE_FORBIDDEN_BUTTON_LABELS) {
     assert.ok(!allowed.includes(forbidden as (typeof allowed)[number]));
   }
+});
+
+// v8.1.1 — Hide Developer Navigation: "Developer'da Lead Import'u Aç" must
+// still navigate even though Developer is no longer in the sidebar. It
+// enables Developer Mode first (if it wasn't already on), then navigates.
+test("lead import button still navigates: enables developer mode first when it was off", () => {
+  const result = resolveDeveloperLeadImportNavigation(false);
+  assert.equal(result.shouldEnableDeveloperMode, true);
+});
+
+test("lead import button still navigates: does not re-toggle developer mode when it was already on", () => {
+  const result = resolveDeveloperLeadImportNavigation(true);
+  assert.equal(result.shouldEnableDeveloperMode, false);
 });

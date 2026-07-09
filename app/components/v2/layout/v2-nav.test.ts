@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALL_NAV_SCREENS, V2_NAV, navEntryIdForScreen } from "./v2-nav.ts";
+import { ALL_NAV_SCREENS, founderVisibleNavEntries, V2_NAV, navEntryIdForScreen } from "./v2-nav.ts";
 
 // v8.0.1 acceptance: the founder sidebar is exactly two top-level entries.
 test("v8.0.1 IA: exactly two top-level entries, in founder order", () => {
@@ -82,4 +82,64 @@ test("navEntryIdForScreen resolves each screen to its owning top-level entry", (
   assert.equal(navEntryIdForScreen("data-sources"), "developer");
   assert.equal(navEntryIdForScreen("lead-list"), "developer");
   assert.equal(navEntryIdForScreen("command-center"), "developer");
+});
+
+// v8.1.1 — Hide Developer Navigation: the sidebar renders only Hermes by
+// default; Developer (and everything under it, including Lead Import)
+// appears only once Developer Mode is explicitly ON.
+test("v8.1.1: sidebar only renders Hermes when Developer Mode is off (default)", () => {
+  const visible = founderVisibleNavEntries(false);
+  assert.deepEqual(visible.map((e) => e.id), ["hermes"]);
+});
+
+test("v8.1.1: developer is hidden by default", () => {
+  const visible = founderVisibleNavEntries(false);
+  assert.ok(!visible.some((e) => e.id === "developer"));
+});
+
+test("v8.1.1: developer becomes visible only when developer mode is on, with every legacy screen intact", () => {
+  const visible = founderVisibleNavEntries(true);
+  assert.deepEqual(visible.map((e) => e.id), ["hermes", "developer"]);
+  const developer = visible.find((e) => e.id === "developer")!;
+  assert.equal(developer.items!.length, 13);
+});
+
+test("v8.1.1: lead import is not visible when developer mode is off", () => {
+  const visible = founderVisibleNavEntries(false);
+  const reachableScreens = visible.flatMap((e) => [
+    ...(e.screen ? [e.screen] : []),
+    ...(e.items ? e.items.map((i) => i.screen) : []),
+  ]);
+  assert.ok(!reachableScreens.includes("lead-import"));
+});
+
+test("v8.1.1: hermes badge is preserved regardless of developer mode", () => {
+  for (const developerMode of [false, true]) {
+    const badged = founderVisibleNavEntries(developerMode).filter((e) => e.showsPendingDecisionBadge);
+    assert.equal(badged.length, 1);
+    assert.equal(badged[0]!.id, "hermes");
+  }
+  // Developer itself never carries a badge, in either mode.
+  const developerInDevMode = founderVisibleNavEntries(true).find((e) => e.id === "developer")!;
+  assert.equal(developerInDevMode.showsPendingDecisionBadge, undefined);
+});
+
+test("v8.1.1: no runtime removed — V2_NAV and ALL_NAV_SCREENS are untouched by the visibility filter", () => {
+  // founderVisibleNavEntries only ever narrows what's rendered; the
+  // underlying data — every screen, every runtime — stays exactly as before.
+  assert.equal(V2_NAV.length, 2);
+  assert.equal(ALL_NAV_SCREENS.length, 14);
+  assert.ok(ALL_NAV_SCREENS.includes("lead-import"));
+  assert.ok(ALL_NAV_SCREENS.includes("revenue-pipeline"));
+});
+
+test("v8.1.1: navigation migration still works — legacy 'automation-center' still resolves away regardless of developer mode", () => {
+  for (const developerMode of [false, true]) {
+    const visible = founderVisibleNavEntries(developerMode);
+    const reachableScreens = visible.flatMap((e) => [
+      ...(e.screen ? [e.screen] : []),
+      ...(e.items ? e.items.map((i) => i.screen) : []),
+    ]);
+    assert.ok(!(reachableScreens as string[]).includes("automation-center"));
+  }
 });

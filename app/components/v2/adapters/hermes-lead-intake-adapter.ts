@@ -71,6 +71,24 @@ export const HERMES_LEAD_INTAKE_BUTTON_LABELS = {
   openDeveloperLeadImport: "Developer'da Lead Import'u Aç",
 } as const;
 
+export type ResolvedDeveloperLeadImportNavigation = {
+  shouldEnableDeveloperMode: boolean;
+};
+
+/**
+ * v8.1.1 — the founder never manually flips Developer Mode to reach Lead
+ * Import: clicking "Developer'da Lead Import'u Aç" while Developer Mode is
+ * OFF enables it first, then navigates, in the same click, so the founder
+ * never feels the technical detail. Pure decision only — the actual
+ * `onToggleDeveloperMode()`/`onNavigate("lead-import")` calls happen in
+ * `AutomationCenterScreen.tsx`, which owns both callbacks already.
+ */
+export function resolveDeveloperLeadImportNavigation(
+  developerMode: boolean,
+): ResolvedDeveloperLeadImportNavigation {
+  return { shouldEnableDeveloperMode: !developerMode };
+}
+
 /** Labels the founder-facing Lead Intake section must never show — manual/bulk/auto-send controls stay Developer-only. */
 export const HERMES_LEAD_INTAKE_FORBIDDEN_BUTTON_LABELS = [
   "Import Başlat",

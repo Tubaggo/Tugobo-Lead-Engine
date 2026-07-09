@@ -10,7 +10,6 @@ import DemoSchedulingCard from "@/app/components/v2/screens/DemoSchedulingCard";
 import FollowUpRuntimeCard from "@/app/components/v2/screens/FollowUpRuntimeCard";
 import SalesOutcomeCard from "@/app/components/v2/screens/SalesOutcomeCard";
 import FounderRevenueWorkspace from "@/app/components/v2/screens/FounderRevenueWorkspace";
-import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import {
   adaptScoredLeadsToAutomationCards,
   computeAutomationSummary,
@@ -29,6 +28,7 @@ import {
   type HermesMission,
   type MissionBucket,
 } from "@/app/components/v2/adapters/hermes-mission-adapter";
+import { resolveDeveloperLeadImportNavigation } from "@/app/components/v2/adapters/hermes-lead-intake-adapter";
 import type { ScoredLead } from "@/app/lib/leads";
 import type { V2Screen } from "@/app/components/v2/types";
 import type { ImportHistoryEntry } from "@/app/components/v2/hooks/useLeadImport";
@@ -164,6 +164,9 @@ type Props = {
   importHistory: ImportHistoryEntry[];
   importInProgress: boolean;
   importError: string;
+  /** v8.1.1 — lifted from `useDeveloperMode` in `V2Shell.tsx` so the same flag gates both the sidebar and this screen's Developer runtime view. */
+  developerMode: boolean;
+  onToggleDeveloperMode: () => void;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -2037,6 +2040,8 @@ export default function AutomationCenterScreen({
   importHistory,
   importInProgress,
   importError,
+  developerMode,
+  onToggleDeveloperMode,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -2044,11 +2049,18 @@ export default function AutomationCenterScreen({
   const toggleExpand = (missionId: string) =>
     setExpandedMissionId((cur) => (cur === missionId ? null : missionId));
 
-  // v6.1 (renamed Hermes Home in v8.0): the default experience. Developer
-  // Mode (off by default, persisted) reveals the existing, unchanged Hermes
-  // runtime below it — collapsed behind a <details> so it never competes
-  // with the founder-facing summary for attention.
-  const [developerMode, toggleDeveloperMode] = useDeveloperMode();
+  // v8.1.1: Developer Mode is now lifted to V2Shell (`useDeveloperMode`,
+  // passed down as `developerMode`/`onToggleDeveloperMode`) so the same flag
+  // also gates the sidebar's Developer group — this screen no longer owns
+  // its own copy of the hook. Off by default, persisted; the existing,
+  // unchanged Hermes runtime below still stays collapsed behind a <details>
+  // so it never competes with the founder-facing summary for attention.
+  const onNavigateToLeadImport = () => {
+    if (resolveDeveloperLeadImportNavigation(developerMode).shouldEnableDeveloperMode) {
+      onToggleDeveloperMode();
+    }
+    onNavigate("lead-import");
+  };
 
   return (
     <div className={`${screenCardCls} flex-1`}>
@@ -2058,7 +2070,7 @@ export default function AutomationCenterScreen({
         </span>
         <button
           type="button"
-          onClick={toggleDeveloperMode}
+          onClick={onToggleDeveloperMode}
           className="text-[9px] font-semibold text-zinc-600 transition-colors duration-100 hover:text-zinc-300"
         >
           {developerMode ? "Geliştirici Modu: Açık" : "Geliştirici Modu: Kapalı"}
@@ -2073,7 +2085,7 @@ export default function AutomationCenterScreen({
           importHistory={importHistory}
           importInProgress={importInProgress}
           importError={importError}
-          onNavigateToLeadImport={() => onNavigate("lead-import")}
+          onNavigateToLeadImport={onNavigateToLeadImport}
         />
 
         {developerMode && (

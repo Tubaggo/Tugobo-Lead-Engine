@@ -88,3 +88,17 @@ export function navEntryIdForScreen(screen: V2Screen): V2NavEntryId {
   // is the safe home for anything unexpected.
   return "hermes";
 }
+
+/**
+ * v8.1.1 — Founder-visible top-level entries. Hermes always shows; the
+ * Developer group now renders only when Developer Mode is ON (the existing
+ * `useDeveloperMode` hook, lifted to `V2Shell.tsx` so the same flag gates
+ * both the sidebar and Hermes Home's own Developer runtime view) — replacing
+ * v8.0.1's always-present-but-muted Developer entry. Pure data filter: no
+ * entry is ever removed from `V2_NAV`/`ALL_NAV_SCREENS`, only what the
+ * sidebar renders changes, so every screen stays reachable once Developer
+ * Mode is on and no persisted deep link ever breaks.
+ */
+export function founderVisibleNavEntries(developerMode: boolean): V2NavEntry[] {
+  return V2_NAV.filter((entry) => !entry.muted || developerMode);
+}
