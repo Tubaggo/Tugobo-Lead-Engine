@@ -2081,6 +2081,8 @@ export default function AutomationCenterScreen({
           missions={missions}
           selectedHermesMissionId={selectedHermesMissionId}
           onSelectHermesMission={onSelectHermesMission}
+          onApproveMission={onApproveMission}
+          onRejectTask={onRejectTask}
           leads={leads}
           importHistory={importHistory}
           importInProgress={importInProgress}

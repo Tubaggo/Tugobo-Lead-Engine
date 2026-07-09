@@ -9,14 +9,17 @@ import {
   computeHermesTimeline,
   computeMissionFocus,
   computeRevenueSummary,
-  FOUNDER_EMPTY_STATE_LABELS,
-  type ActionStage,
 } from "@/app/components/v2/adapters/founder-revenue-workspace-adapter";
 import {
   computeHermesLeadIntakeSummary,
   HERMES_LEAD_INTAKE_BUTTON_LABELS,
   type HermesLeadIntakeImportEntryLike,
 } from "@/app/components/v2/adapters/hermes-lead-intake-adapter";
+import {
+  computeHermesDecisionQueue,
+  type HermesDecisionItem,
+  type HermesDecisionPriority,
+} from "@/app/components/v2/adapters/hermes-decision-queue-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -82,12 +85,28 @@ import { btnCls, btnPrimaryCls, kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls
  * an import, never sends a message — its only two actions are scrolling to
  * the existing Karar Kuyruğu section below and jumping to the Developer
  * Lead Import screen.
+ *
+ * v8.2 (Decision Queue Operating Layer): Karar Kuyruğu became Karar Merkezi.
+ * `hermes-decision-queue-adapter.ts` filters `computeActionQueue`'s own
+ * output down to stages that carry one concrete, single-touch founder
+ * decision (passive states — read/delivered/sent/ready/won/lost/unknown/
+ * reply_received — never render a card) and translates each into "Ne oldu? /
+ * Neden önemli? / Hermes ne öneriyor? / Founder ne karar vermeli?" Turkish
+ * copy. Clicking a card still only selects the existing mission (Scope 4 —
+ * no new state machine); the "Onayla"/"Reddet" buttons on an approve_message
+ * card are the one exception, reusing the screen's existing
+ * `onApproveMission`/`onRejectTask` handlers verbatim — everything else is
+ * focus-only, per the sprint's explicit "no real mutation required" scope.
  */
 
 type Props = {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
   onSelectHermesMission: (mission: HermesMission) => void;
+  /** Reused verbatim for the Karar Merkezi "Onayla" button — the only decision type with a real existing mutation available. */
+  onApproveMission: (mission: HermesMission) => void;
+  /** Reused verbatim for the Karar Merkezi "Reddet" button. */
+  onRejectTask: (taskId: string) => void;
   /** The full scored lead pool (seed + imported) — same value already passed to `AutomationCenterScreen`. */
   leads: ScoredLead[];
   importHistory: HermesLeadIntakeImportEntryLike[];
@@ -99,22 +118,12 @@ type Props = {
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
 
-const ACTION_STAGE_BADGE_CLS: Record<ActionStage, string> = {
-  failed: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
-  hot_reply: "bg-orange-500/[0.10] text-orange-400 ring-orange-500/20",
-  demo_pending: "bg-teal-500/[0.10] text-teal-400 ring-teal-500/20",
-  follow_up_required: "bg-cyan-500/[0.10] text-cyan-400 ring-cyan-500/20",
-  outcome_required: "bg-purple-500/[0.10] text-purple-400 ring-purple-500/20",
-  reply_needs_review: "bg-zinc-500/[0.10] text-zinc-300 ring-zinc-500/20",
-  reply_received: "bg-fuchsia-500/[0.10] text-fuchsia-400 ring-fuchsia-500/20",
-  approval_required: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
-  read: "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20",
-  delivered: "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20",
-  sent: "bg-sky-500/[0.10] text-sky-400 ring-sky-500/20",
-  ready: "bg-violet-500/[0.10] text-violet-300 ring-violet-500/20",
-  won: "bg-emerald-500/[0.10] text-emerald-400 ring-emerald-500/20",
-  lost: "bg-rose-500/[0.10] text-rose-500 ring-rose-500/20",
-  unknown: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
+/** v8.2 — Decision Queue cards are styled by priority, not by the underlying (now-hidden) runtime stage. */
+const DECISION_PRIORITY_BADGE_CLS: Record<HermesDecisionPriority, string> = {
+  critical: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
+  high: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
+  medium: "bg-cyan-500/[0.10] text-cyan-400 ring-cyan-500/20",
+  low: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
 };
 
 function formatTime(at: number): string {
@@ -129,6 +138,8 @@ export default function FounderRevenueWorkspace({
   missions,
   selectedHermesMissionId,
   onSelectHermesMission,
+  onApproveMission,
+  onRejectTask,
   leads,
   importHistory,
   importInProgress,
@@ -284,6 +295,15 @@ export default function FounderRevenueWorkspace({
     recentFollowUps,
     recentSalesOutcomes,
   );
+  const decisionItems = computeHermesDecisionQueue({
+    actionQueue: queue,
+    missions,
+    recentReceipts,
+    recentIntelligence,
+    recentDemoItems,
+    recentFollowUps,
+    recentSalesOutcomes,
+  });
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
@@ -310,6 +330,36 @@ export default function FounderRevenueWorkspace({
         recentSalesOutcomes,
       )
     : null;
+
+  // v8.2 — Karar Merkezi interactions. Selecting a card (or its primary
+  // action, for every decisionType except approve_message) reuses the
+  // screen's existing mission-selection state — no new state machine, no
+  // navigation away from Hermes (Scope 4). Only approve_message's two
+  // buttons call a real mutation, and only the exact existing handlers this
+  // screen already receives as props.
+  const missionForDecisionItem = (item: HermesDecisionItem) =>
+    item.missionId ? (missions.find((m) => m.missionId === item.missionId) ?? null) : null;
+
+  const focusDecisionItem = (item: HermesDecisionItem) => {
+    const mission = missionForDecisionItem(item);
+    if (mission) onSelectHermesMission(mission);
+  };
+
+  const runPrimaryDecisionAction = (item: HermesDecisionItem) => {
+    const mission = missionForDecisionItem(item);
+    if (mission && item.decisionType === "approve_message") {
+      onApproveMission(mission);
+      return;
+    }
+    focusDecisionItem(item);
+  };
+
+  const runSecondaryDecisionAction = (item: HermesDecisionItem) => {
+    const mission = missionForDecisionItem(item);
+    if (mission && item.decisionType === "approve_message") {
+      onRejectTask(mission.primaryTaskId);
+    }
+  };
 
   return (
     <div>
@@ -362,42 +412,67 @@ export default function FounderRevenueWorkspace({
         </div>
       </div>
 
-      {/* Section 3 — Karar Kuyruğu: only items awaiting a founder decision */}
+      {/* Section 3 — Karar Merkezi (v8.2): only single-touch founder decisions, never a status list */}
       <div id={KARAR_KUYRUGU_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Karar Kuyruğu</p>
-        {queue.length === 0 ? (
+        <p className={sectionLabelCls}>Karar Merkezi</p>
+        <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Hermes işi yürütür; sen yalnızca karar verirsin.</p>
+        {decisionItems.length === 0 ? (
           <p className="text-[11px] text-zinc-600">
-            {summary.totalActiveMissions === 0 ? FOUNDER_EMPTY_STATE_LABELS.noActiveMissions : FOUNDER_EMPTY_STATE_LABELS.noActions}
+            Şu anda senden karar bekleyen bir satış görevi yok. Hermes çalışmaya devam ediyor.
           </p>
         ) : (
           <div className="space-y-1.5">
-            {queue.map((item) => (
-              <button
-                key={item.missionId}
-                type="button"
-                onClick={() => {
-                  const mission = missions.find((m) => m.missionId === item.missionId);
-                  if (mission) onSelectHermesMission(mission);
+            {decisionItems.map((item) => (
+              <div
+                key={item.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => focusDecisionItem(item)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") focusDecisionItem(item);
                 }}
-                className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors duration-150 ${
+                className={`w-full cursor-pointer rounded-lg border px-3 py-2.5 text-left transition-colors duration-150 ${
                   item.missionId === selectedHermesMissionId
                     ? "border-indigo-500/40 bg-indigo-500/[0.08]"
                     : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04]"
                 }`}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-[11px] font-semibold text-zinc-200">{item.hotelName}</span>
-                    <span
-                      className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${ACTION_STAGE_BADGE_CLS[item.stage]}`}
-                    >
-                      {item.stageLabel}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 truncate text-[10px] text-zinc-500">{item.suggestedAction}</p>
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[11px] font-semibold text-zinc-200">{item.title}</span>
+                  <span
+                    className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${DECISION_PRIORITY_BADGE_CLS[item.priority]}`}
+                  >
+                    {item.statusLabel}
+                  </span>
                 </div>
-                <span className="shrink-0 text-[9px] text-zinc-600">{item.currentStageLabel}</span>
-              </button>
+                <p className="mt-1 text-[10px] text-zinc-400">{item.whatHappened}</p>
+                <p className="mt-0.5 text-[10px] text-zinc-500">{item.whyItMatters}</p>
+                <p className="mt-1 text-[10px] font-medium text-indigo-300">{item.hermesRecommendation}</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      runPrimaryDecisionAction(item);
+                    }}
+                    className={btnPrimaryCls}
+                  >
+                    {item.primaryActionLabel}
+                  </button>
+                  {item.secondaryActionLabel && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        runSecondaryDecisionAction(item);
+                      }}
+                      className={btnCls}
+                    >
+                      {item.secondaryActionLabel}
+                    </button>
+                  )}
+                </div>
+              </div>
             ))}
           </div>
         )}
@@ -407,7 +482,7 @@ export default function FounderRevenueWorkspace({
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Fırsat Odağı</p>
         {!focus ? (
-          <p className="text-[11px] text-zinc-600">İncelemek için karar kuyruğundan bir fırsat seçin.</p>
+          <p className="text-[11px] text-zinc-600">İncelemek için Karar Merkezi&apos;nden bir fırsat seçin.</p>
         ) : (
           <div className="space-y-1.5 rounded-lg bg-white/[0.02] px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
