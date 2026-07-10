@@ -11,6 +11,10 @@ import {
 } from "@/app/components/v2/layout/active-screen-storage";
 import V2Header from "@/app/components/v2/layout/V2Header";
 import V2KpiStrip from "@/app/components/v2/layout/V2KpiStrip";
+import {
+  computeFounderDaySummary,
+  computeHermesHeaderStatus,
+} from "@/app/components/v2/adapters/hermes-daily-workspace-adapter";
 import RevenueQueueScreen from "@/app/components/v2/screens/RevenueQueueScreen";
 import RevenueQueueContextPanel from "@/app/components/v2/screens/RevenueQueueContextPanel";
 import LeadListScreen from "@/app/components/v2/screens/LeadListScreen";
@@ -73,7 +77,6 @@ import type { HermesDeliveryRequest } from "@/app/components/v2/hermes-delivery-
 import { PROVIDER_CONNECTORS, canProviderSend, runShadowSend } from "@/app/components/v2/hermes-provider-connectors";
 import type { HermesProviderReceipt } from "@/app/components/v2/hermes-provider-connectors";
 import { buildProviderSessions, canUseProviderSession } from "@/app/components/v2/hermes-provider-sessions";
-import type { HermesProviderSession } from "@/app/components/v2/hermes-provider-sessions";
 import { buildProviderRuntime } from "@/app/components/v2/hermes-provider-runtime";
 import type { HermesProvider } from "@/app/components/v2/hermes-provider-runtime";
 import {
@@ -312,6 +315,13 @@ export default function V2Shell({ scoredLeads }: Props) {
   const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
   const onFollowUpMutation = useCallback(() => setFollowUpMutVersion((v) => v + 1), []);
 
+  // v8.6 — one signal for both header actions ("Hermes'i Çalıştır" while
+  // idle, "Durumu Yenile" always): each bump re-runs FounderRevenueWorkspace's
+  // existing seven read-only fetches. No new runtime, no new API — the same
+  // pass the workspace's own "Tekrar Dene" already triggers.
+  const [hermesRefreshSignal, setHermesRefreshSignal] = useState(0);
+  const bumpHermesRefresh = useCallback(() => setHermesRefreshSignal((s) => s + 1), []);
+
   const leadImportState = useLeadImport();
   const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
 
@@ -361,6 +371,56 @@ export default function V2Shell({ scoredLeads }: Props) {
     () => buildHermesMissions(hermesMonitor, hermesDecisions),
     [hermesMonitor, hermesDecisions],
   );
+
+  // v8.0/v8.6 — the single "pending founder decisions" number. The sidebar
+  // badge and the header's "Bekleyen Karar" both read this value — never two
+  // independently drifting counts.
+  const pendingHermesDecisionCount = useMemo(
+    () =>
+      hermesMissions.filter((m) => missionBucketOf(m) === "approval").length +
+      // Ready-for-provider AND not yet shadow-sent — a completed shadow
+      // receipt is done, not pending, so it must not inflate this count.
+      Object.values(hermesDeliveries).filter(
+        (d) => d.status === "ready" && !hermesProviderReceipts[d.missionId],
+      ).length +
+      // Gates awaiting final confirmation only — cancelled/blocked/
+      // confirmed gates are resolved, not pending founder attention.
+      Object.values(hermesLiveSendGates).filter((g) => g.status === "pending_confirmation").length +
+      // Dry-mode-ready only — confirmed_but_blocked gates that don't yet
+      // have a dry response. A completed dry response is resolved, not
+      // pending, so it must not inflate this count (no overcounting).
+      Object.values(hermesLiveSendGates).filter(
+        (g) => g.status === "confirmed_but_blocked" && !hermesProviderApiDryResponses[g.missionId],
+      ).length +
+      // Controlled live checks pending only — dry_ready responses that
+      // don't yet have a live-send result. A completed (always
+      // "blocked") result is resolved, not pending, so it must not
+      // inflate this count (no overcounting).
+      Object.entries(hermesProviderApiDryResponses).filter(
+        ([missionId, r]) => r.status === "dry_ready" && !hermesLiveSendResults[missionId],
+      ).length,
+    [
+      hermesMissions,
+      hermesDeliveries,
+      hermesProviderReceipts,
+      hermesLiveSendGates,
+      hermesProviderApiDryResponses,
+      hermesLiveSendResults,
+    ],
+  );
+
+  // v8.6 — the header's "Son Aktivite": the newest moment across every
+  // mission's existing timeline. Read-only over state that already exists;
+  // null (never a made-up date) when nothing has happened yet.
+  const hermesLastActivityAt = useMemo(() => {
+    let max = 0;
+    for (const m of hermesMissions) {
+      for (const t of m.timeline) {
+        if (t.at > max) max = t.at;
+      }
+    }
+    return max > 0 ? max : null;
+  }, [hermesMissions]);
 
   // Mission State Bridge (v5.1.2): maps the *selected* mission's existing
   // founder-decision / courier-draft / delivery-request state into the
@@ -852,6 +912,26 @@ export default function V2Shell({ scoredLeads }: Props) {
   const isDataSources = activeScreen === "data-sources";
   const isHermes = activeScreen === "hermes";
 
+  // v8.6 (Scope 2/3) — the header's operational state and the Hermes Home
+  // subtitle, both derived from existing runtime state at render time. The
+  // clock is only ever read here on the client (V2Shell renders "Yükleniyor…"
+  // until the persisted screen is known), so there is no hydration mismatch
+  // and no hardcoded date anywhere.
+  const hermesHeaderStatus = computeHermesHeaderStatus({
+    importInProgress: leadImportState.loading,
+    runningJobCount: Object.values(hermesPipelines).filter((p) => p.state === "running").length,
+    lastScanAt: leadImportState.importHistory[0]?.importedAt ?? null,
+    lastActivityAt: hermesLastActivityAt,
+    pendingDecisionCount: pendingHermesDecisionCount,
+  });
+  const headerSubtitle = isHermes
+    ? computeFounderDaySummary({
+        hour: new Date().getHours(),
+        isRunning: hermesHeaderStatus.mode === "running",
+        pendingDecisionCount: pendingHermesDecisionCount,
+      })
+    : meta.subtitle;
+
   return (
     <div className="flex h-screen overflow-hidden">
       <V2Sidebar
@@ -862,34 +942,25 @@ export default function V2Shell({ scoredLeads }: Props) {
         developerMode={developerMode}
         // v8.0: the sidebar carries exactly one badge — pending founder
         // decisions on Hermes. No other screen may surface a count.
-        counts={{
-          hermes:
-            hermesMissions.filter((m) => missionBucketOf(m) === "approval").length +
-            // Ready-for-provider AND not yet shadow-sent — a completed shadow
-            // receipt is done, not pending, so it must not inflate this count.
-            Object.values(hermesDeliveries).filter(
-              (d) => d.status === "ready" && !hermesProviderReceipts[d.missionId],
-            ).length +
-            // Gates awaiting final confirmation only — cancelled/blocked/
-            // confirmed gates are resolved, not pending founder attention.
-            Object.values(hermesLiveSendGates).filter((g) => g.status === "pending_confirmation").length +
-            // Dry-mode-ready only — confirmed_but_blocked gates that don't yet
-            // have a dry response. A completed dry response is resolved, not
-            // pending, so it must not inflate this count (no overcounting).
-            Object.values(hermesLiveSendGates).filter(
-              (g) => g.status === "confirmed_but_blocked" && !hermesProviderApiDryResponses[g.missionId],
-            ).length +
-            // Controlled live checks pending only — dry_ready responses that
-            // don't yet have a live-send result. A completed (always
-            // "blocked") result is resolved, not pending, so it must not
-            // inflate this count (no overcounting).
-            Object.entries(hermesProviderApiDryResponses).filter(
-              ([missionId, r]) => r.status === "dry_ready" && !hermesLiveSendResults[missionId],
-            ).length,
-        }}
+        // v8.6: the same number the header's "Bekleyen Karar" shows.
+        counts={{ hermes: pendingHermesDecisionCount }}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <V2Header title={meta.title} subtitle={meta.subtitle} />
+        <V2Header
+          title={meta.title}
+          subtitle={headerSubtitle}
+          hermes={
+            isHermes
+              ? {
+                  status: hermesHeaderStatus,
+                  onRunHermes: bumpHermesRefresh,
+                  onRefreshStatus: bumpHermesRefresh,
+                  developerMode,
+                  onToggleDeveloperMode: toggleDeveloperMode,
+                }
+              : undefined
+          }
+        />
         {isQueue && <V2KpiStrip kpi={kpi} onNavigate={handleNavigate} />}
         <div className="flex flex-1 gap-3 overflow-hidden p-3">
           {isQueue ? (
@@ -1088,8 +1159,10 @@ export default function V2Shell({ scoredLeads }: Props) {
                 importError={leadImportState.error}
                 developerMode={developerMode}
                 onToggleDeveloperMode={toggleDeveloperMode}
+                refreshSignal={hermesRefreshSignal}
               />
               <AutomationCenterContextPanel
+                developerMode={developerMode}
                 selectedCard={selectedAutomationCard}
                 summary={automationSummary}
                 hermesSummary={hermesMonitor.summary}

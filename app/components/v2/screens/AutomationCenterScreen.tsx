@@ -32,7 +32,6 @@ import { resolveDeveloperLeadImportNavigation } from "@/app/components/v2/adapte
 import type { ScoredLead } from "@/app/lib/leads";
 import type { V2Screen } from "@/app/components/v2/types";
 import type { ImportHistoryEntry } from "@/app/components/v2/hooks/useLeadImport";
-import { SALES_PRIORITY_LABELS } from "@/lib/verified-opportunity/priority-engine";
 import { HERMES_AGENT_REGISTRY } from "@/app/lib/hermes-monitor";
 import type { HermesAgentKey, HermesMonitor, ShadowTask } from "@/app/lib/hermes-monitor";
 import {
@@ -76,7 +75,6 @@ import {
 } from "@/app/components/v2/hermes-provider-sessions";
 import {
   CONNECTION_STATE_LABELS,
-  PROVIDER_HEALTH_LABELS,
   PROVIDER_READINESS_LABELS,
   PROVIDER_RUNTIME_CHAIN_LABEL,
   buildProviderRuntimeTimelineEntries,
@@ -100,14 +98,12 @@ import {
   PROVIDER_API_DRY_MODE_SECTION_LABEL,
   buildProviderApiDryTimelineEntries,
   getProviderApiAdapter,
-  type HermesProviderApiAdapter,
   type HermesProviderApiDryResponse,
   type MissionApiDryUiState,
 } from "@/app/components/v2/hermes-provider-api-runtime";
 import {
   CONTROLLED_LIVE_ADAPTER_SECTION_LABEL,
   CONTROLLED_LIVE_SEND_WARNING,
-  LIVE_SEND_RESULT_STATUS_LABELS,
   MISSION_LIVE_ADAPTER_STATE_LABELS,
   RUN_LIVE_SEND_AUDIT_BUTTON_LABEL,
   buildLiveSendTimelineEntries,
@@ -167,6 +163,8 @@ type Props = {
   /** v8.1.1 — lifted from `useDeveloperMode` in `V2Shell.tsx` so the same flag gates both the sidebar and this screen's Developer runtime view. */
   developerMode: boolean;
   onToggleDeveloperMode: () => void;
+  /** v8.6 — bumped by the header's "Hermes'i Çalıştır"/"Durumu Yenile" actions; re-runs the workspace's existing read-only data pass. */
+  refreshSignal: number;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -2042,6 +2040,7 @@ export default function AutomationCenterScreen({
   importError,
   developerMode,
   onToggleDeveloperMode,
+  refreshSignal,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -2088,6 +2087,8 @@ export default function AutomationCenterScreen({
           importInProgress={importInProgress}
           importError={importError}
           onNavigateToLeadImport={onNavigateToLeadImport}
+          developerMode={developerMode}
+          refreshSignal={refreshSignal}
         />
 
         {developerMode && (

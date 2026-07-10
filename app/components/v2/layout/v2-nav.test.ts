@@ -40,24 +40,51 @@ test("v8.0.1 IA: only Developer is muted", () => {
 
 test("v8.0.1 IA: Developer keeps every legacy dashboard + former Gelir/Ayarlar screen — nothing deleted", () => {
   const developer = V2_NAV.find((e) => e.id === "developer")!;
+  // v8.4 — Developer Panel Organization reordered the same 13 screens into
+  // logical sections; the set itself is unchanged.
   assert.deepEqual(
-    developer.items!.map((i) => i.screen),
+    developer.items!.map((i) => i.screen).sort(),
     [
-      "revenue-pipeline",
-      "revenue-forecast",
-      "revenue-risk",
-      "revenue-recovery",
-      "revenue-analytics",
-      "data-sources",
-      "lead-import",
       "command-center",
-      "revenue-queue",
-      "follow-ups",
-      "lead-list",
-      "icp-analysis",
       "communication-intelligence",
+      "data-sources",
+      "follow-ups",
+      "icp-analysis",
+      "lead-import",
+      "lead-list",
+      "revenue-analytics",
+      "revenue-forecast",
+      "revenue-pipeline",
+      "revenue-queue",
+      "revenue-recovery",
+      "revenue-risk",
     ],
   );
+});
+
+// v8.4 — Developer Panel Organization: every Developer screen belongs to a
+// named logical section, and sections are contiguous (the sidebar renders a
+// header exactly once per group).
+test("v8.4: every developer item carries a section, in contiguous logical groups", () => {
+  const developer = V2_NAV.find((e) => e.id === "developer")!;
+  for (const item of developer.items!) {
+    assert.ok(item.section && item.section.length > 0, `${item.screen} must have a section`);
+  }
+  const seen: string[] = [];
+  for (const item of developer.items!) {
+    const section = item.section!;
+    if (seen[seen.length - 1] !== section) {
+      assert.ok(!seen.includes(section), `section "${section}" must be contiguous`);
+      seen.push(section);
+    }
+  }
+  assert.deepEqual(seen, ["Gelir", "Operasyon", "Lead", "Veri"]);
+});
+
+// v8.4 — the Hermes entry (the founder's only entry) never carries a section.
+test("v8.4: founder-facing Hermes entry has no developer grouping", () => {
+  const hermes = V2_NAV.find((e) => e.id === "hermes")!;
+  assert.equal(hermes.items, undefined);
 });
 
 test("v8.0.1 IA: all 14 screens reachable exactly once; automation-center is gone", () => {

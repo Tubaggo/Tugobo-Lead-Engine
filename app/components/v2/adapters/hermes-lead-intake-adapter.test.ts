@@ -143,7 +143,7 @@ test("intakeStatus is ready when there is data and nothing needs the founder's a
 
 test("founder summary with no data: exact idle-state Turkish copy", () => {
   const result = computeHermesLeadIntakeSummary({ leads: [], missions: [], now: NOW });
-  assert.equal(result.founderSummary, "Hermes henüz yeni lead taraması başlatmadı.");
+  assert.equal(result.founderSummary, "Hermes henüz yeni fırsat taraması başlatmadı.");
 });
 
 test("founder summary with active missions: mentions the mission conversion sentence", () => {
@@ -177,13 +177,13 @@ test("founder summary and suggested action are never empty, in any state (always
 
 test("no forbidden button labels: the two allowed labels never overlap the forbidden manual-import vocabulary", () => {
   const allowed = Object.values(HERMES_LEAD_INTAKE_BUTTON_LABELS);
-  assert.deepEqual(allowed, ["Fırsatları İncele", "Developer'da Lead Import'u Aç"]);
+  assert.deepEqual(allowed, ["Fırsatları İncele", "Tarama Ekranını Aç"]);
   for (const forbidden of HERMES_LEAD_INTAKE_FORBIDDEN_BUTTON_LABELS) {
     assert.ok(!allowed.includes(forbidden as (typeof allowed)[number]));
   }
 });
 
-// v8.1.1 — Hide Developer Navigation: "Developer'da Lead Import'u Aç" must
+// v8.1.1 — Hide Developer Navigation: "Tarama Ekranını Aç" must
 // still navigate even though Developer is no longer in the sidebar. It
 // enables Developer Mode first (if it wasn't already on), then navigates.
 test("lead import button still navigates: enables developer mode first when it was off", () => {

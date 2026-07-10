@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ScoredLead } from "@/app/lib/leads";
 import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import {
@@ -24,6 +24,10 @@ import {
   type HermesOpportunityTimelineTone,
   type HermesOpportunityUrgency,
 } from "@/app/components/v2/adapters/hermes-opportunity-focus-adapter";
+import {
+  HERMES_DAILY_WORKSPACE_LABELS,
+  computeTodayStatusSentence,
+} from "@/app/components/v2/adapters/hermes-daily-workspace-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -31,6 +35,11 @@ import type { ReplyIntelligenceItem } from "@/app/lib/reply-intelligence-runtime
 import type { DemoScheduleItem } from "@/app/lib/demo-scheduling-runtime";
 import type { FollowUpCandidate } from "@/app/lib/follow-up-runtime";
 import type { SalesOutcomeItem } from "@/app/lib/sales-outcome-runtime";
+import {
+  FOUNDER_ERROR_LABELS,
+  FOUNDER_HOME_EMPTY_STATE_LABELS,
+  FOUNDER_HOME_LABELS,
+} from "@/app/components/v2/founder-language";
 import { btnCls, btnPrimaryCls, kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls, sectionLabelCls } from "@/app/components/v2/design-system";
 
 /**
@@ -117,6 +126,17 @@ import { btnCls, btnPrimaryCls, kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls
  * `onApproveMission`/`onRejectTask` handlers Karar Merkezi uses
  * (approve_message) or scrolls the matching Karar Merkezi card into view
  * (every other active type) — no new mutation, no new state.
+ *
+ * v8.6 (Founder Workflow Optimization): pure reordering + reweighting, zero
+ * new computation. Decision first — the section order became Karar Merkezi →
+ * Fırsat Odağı → Hermes Bugün → Hermes Fırsat Keşfi → Gelir Nabzı → Hermes
+ * Aktivitesi, with one compact status sentence (`computeTodayStatusSentence`)
+ * above everything. Hermes Bugün dropped its six hero KPI tiles for three
+ * compact rows (decisions waiting / opportunities discovered / revenue won)
+ * plus one muted counters line; an empty Karar Merkezi renders as a positive
+ * all-clear state, never a warning box. `refreshSignal` lets the header's
+ * operational actions re-run the same seven read-only fetches "Tekrar Dene"
+ * always re-ran — no new runtime, no new API.
  */
 
 type Props = {
@@ -134,6 +154,10 @@ type Props = {
   importError: string;
   /** Jumps to the Developer-only Lead Import screen — the sole fallback entry point this section exposes. */
   onNavigateToLeadImport: () => void;
+  /** v8.4 — the same single V2Shell flag; gates the two technical health tiles (Webhook/Runtime). */
+  developerMode: boolean;
+  /** v8.6 — bumped by the header's "Hermes'i Çalıştır"/"Durumu Yenile" actions; re-runs the same seven read-only fetches "Tekrar Dene" already re-runs. */
+  refreshSignal: number;
 };
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
@@ -182,15 +206,56 @@ export default function FounderRevenueWorkspace({
   importInProgress,
   importError,
   onNavigateToLeadImport,
+  developerMode,
+  refreshSignal,
 }: Props) {
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
   const [whatsappReadinessStatus, setWhatsappReadinessStatus] = useState<WhatsAppReadinessStatus | null>(null);
+  const [whatsappStatusReachable, setWhatsappStatusReachable] = useState<boolean | null>(null);
   const [recentReplies, setRecentReplies] = useState<StoredWhatsAppReply[]>([]);
+  const [repliesReachable, setRepliesReachable] = useState<boolean | null>(null);
   const [recentIntelligence, setRecentIntelligence] = useState<ReplyIntelligenceItem[]>([]);
+  const [intelligenceReachable, setIntelligenceReachable] = useState<boolean | null>(null);
   const [recentDemoItems, setRecentDemoItems] = useState<DemoScheduleItem[]>([]);
+  const [demoReachable, setDemoReachable] = useState<boolean | null>(null);
   const [recentFollowUps, setRecentFollowUps] = useState<FollowUpCandidate[]>([]);
+  const [followUpsReachable, setFollowUpsReachable] = useState<boolean | null>(null);
   const [recentSalesOutcomes, setRecentSalesOutcomes] = useState<SalesOutcomeItem[]>([]);
+  const [outcomesReachable, setOutcomesReachable] = useState<boolean | null>(null);
+
+  // v8.5 (Release Candidate Polish, Scope 4/5) — a single "Tekrar Dene" re-runs
+  // every one of the seven read-only fetches below; `initialLoadDone` gates
+  // the compact "Hermes verileri hazırlanıyor…" line so the founder never
+  // sees a flash of zeroed-out KPI tiles on first paint.
+  const [retryTick, setRetryTick] = useState(0);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
+  const pendingFetchesRef = useRef(0);
+  const FETCH_COUNT = 7;
+
+  useEffect(() => {
+    pendingFetchesRef.current = FETCH_COUNT;
+    setInitialLoadDone(false);
+  }, [retryTick]);
+
+  function markFetchSettled() {
+    pendingFetchesRef.current -= 1;
+    if (pendingFetchesRef.current <= 0) setInitialLoadDone(true);
+  }
+
+  const retryDataFetches = () => setRetryTick((t) => t + 1);
+
+  // v8.6 — the header's "Hermes'i Çalıştır"/"Durumu Yenile" actions bump
+  // `refreshSignal` in V2Shell; each bump re-runs the exact same seven
+  // read-only fetches below. The ref guards the mount render — the fetch
+  // effects already run once on mount without any help.
+  const lastRefreshSignalRef = useRef(refreshSignal);
+  useEffect(() => {
+    if (refreshSignal !== lastRefreshSignalRef.current) {
+      lastRefreshSignalRef.current = refreshSignal;
+      setRetryTick((t) => t + 1);
+    }
+  }, [refreshSignal]);
 
   useEffect(() => {
     let cancelled = false;
@@ -205,12 +270,14 @@ export default function FounderRevenueWorkspace({
         }
       } catch {
         if (!cancelled) setReceiptsReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,15 +286,21 @@ export default function FounderRevenueWorkspace({
         const res = await fetch("/api/hermes/providers/whatsapp/replies");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { replies?: StoredWhatsAppReply[] };
-        if (!cancelled) setRecentReplies(data.replies ?? []);
+        if (!cancelled) {
+          setRecentReplies(data.replies ?? []);
+          setRepliesReachable(true);
+        }
       } catch {
         // leave empty — "Cevap Geldi" summary reports 0 rather than guessing
+        if (!cancelled) setRepliesReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -236,15 +309,21 @@ export default function FounderRevenueWorkspace({
         const res = await fetch("/api/hermes/reply-intelligence");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { items?: ReplyIntelligenceItem[] };
-        if (!cancelled) setRecentIntelligence(data.items ?? []);
+        if (!cancelled) {
+          setRecentIntelligence(data.items ?? []);
+          setIntelligenceReachable(true);
+        }
       } catch {
         // leave empty — "Sıcak Cevap" summary reports 0 rather than guessing
+        if (!cancelled) setIntelligenceReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -253,15 +332,21 @@ export default function FounderRevenueWorkspace({
         const res = await fetch("/api/hermes/demo-scheduling");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { items?: DemoScheduleItem[] };
-        if (!cancelled) setRecentDemoItems(data.items ?? []);
+        if (!cancelled) {
+          setRecentDemoItems(data.items ?? []);
+          setDemoReachable(true);
+        }
       } catch {
         // leave empty — "Demo Bekleyen" summary reports 0 rather than guessing
+        if (!cancelled) setDemoReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -270,15 +355,21 @@ export default function FounderRevenueWorkspace({
         const res = await fetch("/api/hermes/follow-ups");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { items?: FollowUpCandidate[] };
-        if (!cancelled) setRecentFollowUps(data.items ?? []);
+        if (!cancelled) {
+          setRecentFollowUps(data.items ?? []);
+          setFollowUpsReachable(true);
+        }
       } catch {
         // leave empty — "Takip Gerekli" summary reports 0 rather than guessing
+        if (!cancelled) setFollowUpsReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -287,15 +378,21 @@ export default function FounderRevenueWorkspace({
         const res = await fetch("/api/hermes/sales-outcomes");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { items?: SalesOutcomeItem[] };
-        if (!cancelled) setRecentSalesOutcomes(data.items ?? []);
+        if (!cancelled) {
+          setRecentSalesOutcomes(data.items ?? []);
+          setOutcomesReachable(true);
+        }
       } catch {
         // leave empty — "Kazanıldı"/"Kaybedildi"/"Outcome Bekliyor" summaries report 0 rather than guessing
+        if (!cancelled) setOutcomesReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryTick]);
 
   useEffect(() => {
     let cancelled = false;
@@ -304,15 +401,34 @@ export default function FounderRevenueWorkspace({
         const res = await fetch("/api/hermes/providers/whatsapp/status");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { readinessStatus?: WhatsAppReadinessStatus };
-        if (!cancelled && data.readinessStatus) setWhatsappReadinessStatus(data.readinessStatus);
+        if (!cancelled) {
+          if (data.readinessStatus) setWhatsappReadinessStatus(data.readinessStatus);
+          setWhatsappStatusReachable(true);
+        }
       } catch {
         // leave null — health card reports "Bilinmiyor" rather than guessing
+        if (!cancelled) setWhatsappStatusReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryTick]);
+
+  // v8.5 (Scope 5) — safe, deduplicated, founder-operational error copy only;
+  // never a raw fetch error, HTTP status, or route path.
+  const rawDataErrorMessages: (string | null)[] = [
+    whatsappStatusReachable === false ? FOUNDER_ERROR_LABELS.whatsappStatus : null,
+    receiptsReachable === false ? FOUNDER_ERROR_LABELS.deliveryReceipts : null,
+    repliesReachable === false ? FOUNDER_ERROR_LABELS.replies : null,
+    intelligenceReachable === false ? FOUNDER_ERROR_LABELS.replyIntelligence : null,
+    demoReachable === false ? FOUNDER_ERROR_LABELS.demoScheduling : null,
+    followUpsReachable === false ? FOUNDER_ERROR_LABELS.followUps : null,
+    outcomesReachable === false ? FOUNDER_ERROR_LABELS.salesOutcomes : null,
+  ];
+  const dataErrorMessages = Array.from(new Set(rawDataErrorMessages.filter((m): m is string => m !== null)));
 
   const summary = computeRevenueSummary(
     missions,
@@ -414,65 +530,67 @@ export default function FounderRevenueWorkspace({
     if (item.decisionType !== "approve_message") scrollToKararKuyrugu();
   };
 
+  // v8.5 (Scope 3) — "no activity yet" only when literally nothing has
+  // happened: every Hermes Bugün counter at zero. Once any counter is
+  // non-zero the KPI strip itself carries the information.
+  const hasNoTodayActivity =
+    summary.totalActiveMissions === 0 &&
+    summary.founderApprovalPending === 0 &&
+    summary.hotReplyCount === 0 &&
+    summary.demoPendingCount === 0 &&
+    summary.followUpRequiredCount === 0 &&
+    summary.outcomeRequiredCount === 0;
+
+  const hasNoRevenueOutcomes = summary.wonCount === 0 && summary.lostCount === 0 && summary.estimatedMrrTotal === 0;
+
+  // v8.6 (Scope 5) — the one compact sentence the founder reads before
+  // anything else: "Hermes N karar hazırladı." / "Her şey kontrol altında…"
+  const todayStatusSentence = computeTodayStatusSentence(decisionItems.length);
+
   return (
     <div>
-      {/* Section 1 — Hermes Bugün: what Hermes did + whether it's healthy */}
-      <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Hermes Bugün</p>
-        <div className={kpiStripCls}>
-          <SummaryTile label="Aktif Mission" value={summary.totalActiveMissions} />
-          <SummaryTile label="Onay Bekleyen" value={summary.founderApprovalPending} accent="text-amber-400" />
-          <SummaryTile label="Sıcak Cevap" value={summary.hotReplyCount} accent="text-orange-400" />
-          <SummaryTile label="Demo Bekleyen" value={summary.demoPendingCount} accent="text-teal-400" />
-          <SummaryTile label="Takip Gerekli" value={summary.followUpRequiredCount} accent="text-cyan-400" />
-          <SummaryTile label="Outcome Bekliyor" value={summary.outcomeRequiredCount} accent="text-purple-400" />
-        </div>
-        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
-          <HealthTile label="Hermes" value={health.hermesLabel} />
-          <HealthTile label="WhatsApp" value={health.whatsappLabel} />
-          <HealthTile label="Webhook" value={health.webhookLabel} />
-          <HealthTile label="Teslimat" value={health.deliveryLabel} />
-          <HealthTile label="Runtime" value={health.runtimeLabel} />
-        </div>
-      </div>
-
-      {/* Section 2 — Hermes Lead Intake: what Hermes's intake side has done, operational summary only (v8.1) */}
-      <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Hermes Lead Intake</p>
-        <p className="mb-2.5 text-[11px] leading-relaxed text-zinc-400">{intake.founderSummary}</p>
-        <div className={kpiStripCls}>
-          <SummaryTile label="Değerlendirilen İşletme" value={intake.evaluatedLeadCount} />
-          <SummaryTile label="Yeni Fırsat" value={intake.newOpportunityCount} accent="text-emerald-400" />
-          <SummaryTile label="Aktif Mission" value={intake.activeMissionCount} />
-          <SummaryTile label="Onay Bekleyen" value={intake.approvalRequiredCount} accent="text-amber-400" />
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2.5">
-          <div className="min-w-0">
-            <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">Son Tarama</p>
-            <p className="mt-0.5 text-[11px] text-zinc-300">{formatTime(intake.lastImportAt ?? 0)}</p>
-          </div>
-          <p className="min-w-0 flex-1 truncate text-right text-[10px] font-medium text-indigo-300">
-            {intake.suggestedAction}
-          </p>
-        </div>
-        <div className="mt-2.5 flex items-center gap-2">
-          <button type="button" onClick={scrollToKararKuyrugu} className={btnPrimaryCls}>
-            {HERMES_LEAD_INTAKE_BUTTON_LABELS.reviewOpportunities}
-          </button>
-          <button type="button" onClick={onNavigateToLeadImport} className={btnCls}>
-            {HERMES_LEAD_INTAKE_BUTTON_LABELS.openDeveloperLeadImport}
+      {/* v8.5 (Scope 4/5) — compact loading line + safe error banner, shared across every section below. No spinner overload, no layout-shifting full-page loader. */}
+      {!initialLoadDone && (
+        <p className="border-b border-white/[0.06] px-5 py-2 text-[10px] text-zinc-600">{FOUNDER_ERROR_LABELS.loading}</p>
+      )}
+      {initialLoadDone && dataErrorMessages.length > 0 && (
+        <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] bg-rose-500/[0.06] px-5 py-2">
+          <p className="text-[10px] text-rose-300">{dataErrorMessages.join(" ")}</p>
+          <button type="button" onClick={retryDataFetches} className="shrink-0 text-[10px] font-semibold text-rose-200 hover:text-rose-100">
+            {FOUNDER_ERROR_LABELS.retryButton}
           </button>
         </div>
+      )}
+
+      {/* v8.6 (Scope 5) — one compact sentence before anything else: what requires attention today */}
+      <div className="border-b border-white/[0.06] px-5 py-3">
+        <p className="text-[12.5px] font-medium text-zinc-200">{todayStatusSentence}</p>
       </div>
 
-      {/* Section 3 — Karar Merkezi (v8.2): only single-touch founder decisions, never a status list */}
+      {/* Section 1 — Karar Merkezi (v8.2, decision-first since v8.6): only single-touch founder decisions, never a status list */}
       <div id={KARAR_KUYRUGU_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
         <p className={sectionLabelCls}>Karar Merkezi</p>
         <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Hermes işi yürütür; sen yalnızca karar verirsin.</p>
         {decisionItems.length === 0 ? (
-          <p className="text-[11px] text-zinc-600">
-            Şu anda senden karar bekleyen bir satış görevi yok. Hermes çalışmaya devam ediyor.
-          </p>
+          /* v8.6 (Scope 6) — no pending decision is a success state, never an empty warning box */
+          <div className="flex items-center gap-3 rounded-lg bg-emerald-500/[0.06] px-4 py-3.5 ring-1 ring-inset ring-emerald-500/15">
+            <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5 shrink-0 text-emerald-400" aria-hidden>
+              <circle cx="10" cy="10" r="8.25" stroke="currentColor" strokeWidth="1.5" />
+              <path
+                d="M6.5 10.5l2.3 2.3L13.5 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <div className="min-w-0">
+              <p className="text-[12px] font-semibold text-emerald-300">
+                {HERMES_DAILY_WORKSPACE_LABELS.decisionAllClearTitle}
+              </p>
+              <p className="mt-0.5 text-[11px] text-zinc-500">{FOUNDER_HOME_EMPTY_STATE_LABELS.decisionCenter}</p>
+            </div>
+          </div>
         ) : (
           <div className="space-y-1.5">
             {decisionItems.map((item) => (
@@ -531,7 +649,7 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
-      {/* Section 4 — Fırsat Odağı (v8.3): "Bu otel için şimdi ne yapmalıyım?" — never a mission object viewer */}
+      {/* Section 2 — Fırsat Odağı (v8.3): "Bu otel için şimdi ne yapmalıyım?" — never a mission object viewer */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={sectionLabelCls}>Fırsat Odağı</p>
         <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Seçili otel için Hermes&apos;in önerdiği sonraki adım.</p>
@@ -613,26 +731,98 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
+      {/* Section 3 — Hermes Bugün (v8.6, Scope 7): numbers are secondary — compact rows instead of hero KPI tiles */}
+      <div className="border-b border-white/[0.06] px-5 py-3">
+        <p className={`${sectionLabelCls} mb-2`}>Hermes Bugün</p>
+        {initialLoadDone && hasNoTodayActivity && (
+          <p className="mb-2 text-[11px] text-zinc-600">{FOUNDER_HOME_EMPTY_STATE_LABELS.hermesToday}</p>
+        )}
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+          <TodayFocusRow
+            label={HERMES_DAILY_WORKSPACE_LABELS.todayPendingDecisions}
+            value={String(decisionItems.length)}
+            accent={decisionItems.length > 0 ? "text-amber-400" : "text-zinc-300"}
+          />
+          <TodayFocusRow
+            label={HERMES_DAILY_WORKSPACE_LABELS.todayDiscoveredOpportunities}
+            value={String(intake.newOpportunityCount)}
+            accent="text-emerald-400"
+          />
+          <TodayFocusRow
+            label={HERMES_DAILY_WORKSPACE_LABELS.todayRevenueWon}
+            value={`₺${summary.estimatedMrrTotal.toLocaleString("tr-TR")}`}
+            accent="text-emerald-300"
+          />
+        </div>
+        {/* Secondary counters — one muted line, never a metric card */}
+        <p className="mt-2 text-[10px] text-zinc-600">
+          Aktif iş {summary.totalActiveMissions} · Onay bekleyen {summary.founderApprovalPending} · Sıcak cevap{" "}
+          {summary.hotReplyCount} · Demo bekleyen {summary.demoPendingCount} · Takip gerekli{" "}
+          {summary.followUpRequiredCount} · Sonuç bekleyen {summary.outcomeRequiredCount}
+        </p>
+        {/* v8.4 — Webhook/Runtime are infrastructure tiles: Developer Mode only. The founder reads Hermes / WhatsApp / Teslimat. */}
+        <div className={`mt-2 grid grid-cols-2 gap-2 ${developerMode ? "sm:grid-cols-5" : "sm:grid-cols-3"}`}>
+          <HealthTile label="Hermes" value={health.hermesLabel} />
+          <HealthTile label="WhatsApp" value={health.whatsappLabel} />
+          {developerMode && <HealthTile label="Webhook" value={health.webhookLabel} />}
+          <HealthTile label="Teslimat" value={health.deliveryLabel} />
+          {developerMode && <HealthTile label="Runtime" value={health.runtimeLabel} />}
+        </div>
+      </div>
+
+      {/* Section 4 — Hermes Fırsat Keşfi: what Hermes's intake side has done, operational summary only (v8.1) */}
+      <div className="border-b border-white/[0.06] px-5 py-3">
+        <p className={`${sectionLabelCls} mb-2`}>{FOUNDER_HOME_LABELS.leadIntakeSection}</p>
+        <p className="mb-2.5 text-[11px] leading-relaxed text-zinc-400">{intake.founderSummary}</p>
+        <div className={kpiStripCls}>
+          <SummaryTile label="Değerlendirilen İşletme" value={intake.evaluatedLeadCount} />
+          <SummaryTile label="Yeni Fırsat" value={intake.newOpportunityCount} accent="text-emerald-400" />
+          <SummaryTile label={FOUNDER_HOME_LABELS.activeJobsTile} value={intake.activeMissionCount} />
+          <SummaryTile label="Onay Bekleyen" value={intake.approvalRequiredCount} accent="text-amber-400" />
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">Son Tarama</p>
+            <p className="mt-0.5 text-[11px] text-zinc-300">{formatTime(intake.lastImportAt ?? 0)}</p>
+          </div>
+          <p className="min-w-0 flex-1 truncate text-right text-[10px] font-medium text-indigo-300">
+            {intake.suggestedAction}
+          </p>
+        </div>
+        <div className="mt-2.5 flex items-center gap-2">
+          <button type="button" onClick={scrollToKararKuyrugu} className={btnPrimaryCls}>
+            {HERMES_LEAD_INTAKE_BUTTON_LABELS.reviewOpportunities}
+          </button>
+          <button type="button" onClick={onNavigateToLeadImport} className={btnCls}>
+            {HERMES_LEAD_INTAKE_BUTTON_LABELS.openDeveloperLeadImport}
+          </button>
+        </div>
+      </div>
+
       {/* Section 5 — Gelir Nabzı: won / lost / estimated MRR */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
-        <div className={kpiStripCls}>
-          <SummaryTile label="Kazanıldı" value={summary.wonCount} accent="text-emerald-400" />
-          <SummaryTile label="Kaybedildi" value={summary.lostCount} accent="text-rose-400" />
-          <SummaryTile
-            label="Tahmini MRR"
-            value={summary.estimatedMrrTotal}
-            accent="text-emerald-400"
-            format={(v) => `₺${v.toLocaleString("tr-TR")}`}
-          />
-        </div>
+        {initialLoadDone && hasNoRevenueOutcomes ? (
+          <p className="text-[11px] text-zinc-600">{FOUNDER_HOME_EMPTY_STATE_LABELS.revenuePulse}</p>
+        ) : (
+          <div className={kpiStripCls}>
+            <SummaryTile label="Kazanıldı" value={summary.wonCount} accent="text-emerald-400" />
+            <SummaryTile label="Kaybedildi" value={summary.lostCount} accent="text-rose-400" />
+            <SummaryTile
+              label="Tahmini MRR"
+              value={summary.estimatedMrrTotal}
+              accent="text-emerald-400"
+              format={(v) => `₺${v.toLocaleString("tr-TR")}`}
+            />
+          </div>
+        )}
       </div>
 
       {/* Section 6 — Hermes Aktivitesi: meaningful events, not technical logs */}
       <div className="px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Hermes Aktivitesi</p>
         {timeline.length === 0 ? (
-          <p className="text-[11px] text-zinc-600">Henüz kayıtlı bir aktivite yok.</p>
+          <p className="text-[11px] text-zinc-600">{FOUNDER_HOME_EMPTY_STATE_LABELS.activity}</p>
         ) : (
           <ul className="space-y-1.5">
             {timeline.map((event) => (
@@ -644,6 +834,20 @@ export default function FounderRevenueWorkspace({
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * v8.6 (Scope 7) — Hermes Bugün's compact stat row: the label leads, the
+ * number stays secondary. Deliberately not a `SummaryTile` — no 28px hero
+ * digits may dominate the daily workspace.
+ */
+function TodayFocusRow({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.02] px-3 py-2.5">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-600">{label}</p>
+      <p className={`text-[13px] font-semibold tabular-nums ${accent ?? "text-zinc-200"}`}>{value}</p>
     </div>
   );
 }

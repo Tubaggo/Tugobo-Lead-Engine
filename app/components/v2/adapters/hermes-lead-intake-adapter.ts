@@ -68,7 +68,10 @@ const OPPORTUNITY_SCORE_THRESHOLD = 70;
 
 export const HERMES_LEAD_INTAKE_BUTTON_LABELS = {
   reviewOpportunities: "Fırsatları İncele",
-  openDeveloperLeadImport: "Developer'da Lead Import'u Aç",
+  // v8.4 — founder wording; the button still opens the Developer-only Lead
+  // Import screen (enabling Developer Mode first, see below), the founder
+  // just never reads the technical name.
+  openDeveloperLeadImport: "Tarama Ekranını Aç",
 } as const;
 
 export type ResolvedDeveloperLeadImportNavigation = {
@@ -77,7 +80,7 @@ export type ResolvedDeveloperLeadImportNavigation = {
 
 /**
  * v8.1.1 — the founder never manually flips Developer Mode to reach Lead
- * Import: clicking "Developer'da Lead Import'u Aç" while Developer Mode is
+ * Import: clicking "Tarama Ekranını Aç" while Developer Mode is
  * OFF enables it first, then navigates, in the same click, so the founder
  * never feels the technical detail. Pure decision only — the actual
  * `onToggleDeveloperMode()`/`onNavigate("lead-import")` calls happen in
@@ -121,11 +124,13 @@ function buildFounderSummary(args: {
   const { intakeStatus, evaluatedLeadCount, newOpportunityCount, activeMissionCount, approvalRequiredCount } = args;
 
   if (intakeStatus === "idle") {
-    return "Hermes henüz yeni lead taraması başlatmadı.";
+    // v8.5 — exact RC-spec copy (Scope 3): "fırsat", not the English "lead".
+    return "Hermes henüz yeni fırsat taraması başlatmadı.";
   }
 
   if (intakeStatus === "error") {
-    return "Son lead taramasında bir sorun oluştu — Hermes yeni işletme değerlendirmesini duraklattı.";
+    // v8.5 — same fix as the idle branch above: "fırsat", not the English "lead".
+    return "Son fırsat taramasında bir sorun oluştu — Hermes yeni işletme değerlendirmesini duraklattı.";
   }
 
   const parts: string[] = [`Hermes bugüne kadar ${evaluatedLeadCount} işletmeyi değerlendirdi.`];
@@ -152,11 +157,11 @@ function buildSuggestedAction(args: {
 }): string {
   switch (args.intakeStatus) {
     case "idle":
-      return "Hermes'in taramaya başlaması için Developer altından Lead Import'u kullanabilirsin.";
+      return "Hermes'in taramaya başlaması için tarama ekranını açabilirsin.";
     case "scanning":
       return "Hermes yeni işletmeleri tarıyor — sonuçlar birazdan burada görünecek.";
     case "error":
-      return "Developer altında Lead Import'u açıp son taramayı kontrol et.";
+      return "Tarama ekranını açıp son taramayı kontrol et.";
     case "needs_attention":
       return `${args.approvalRequiredCount} karar seni bekliyor — fırsatları incele.`;
     case "ready":

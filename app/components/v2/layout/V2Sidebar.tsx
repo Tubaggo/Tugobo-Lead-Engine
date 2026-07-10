@@ -160,11 +160,20 @@ export default function V2Sidebar({ activeScreen, onNavigate, counts, developerM
 
         {isGroup && open && (
           <div className="mt-0.5 space-y-0.5 pl-3">
-            {entry.items!.map((item) => {
+            {entry.items!.map((item, index) => {
               const itemActive = activeScreen === item.screen;
+              // v8.4 — Developer Panel Organization: render a small section
+              // header whenever a leaf starts a new logical group.
+              const previous = entry.items![index - 1];
+              const startsNewSection = item.section !== undefined && item.section !== previous?.section;
               return (
+                <div key={item.screen}>
+                  {startsNewSection && (
+                    <p className={`px-2 pb-0.5 text-[8px] font-bold uppercase tracking-[0.18em] text-zinc-700 ${index > 0 ? "pt-2" : "pt-1"}`}>
+                      {item.section}
+                    </p>
+                  )}
                 <button
-                  key={item.screen}
                   type="button"
                   onClick={() => onNavigate(item.screen)}
                   className={[
@@ -193,6 +202,7 @@ export default function V2Sidebar({ activeScreen, onNavigate, counts, developerM
                   </span>
                   <span className="flex-1 truncate text-left">{item.label}</span>
                 </button>
+                </div>
               );
             })}
           </div>

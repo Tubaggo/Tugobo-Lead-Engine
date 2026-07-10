@@ -444,12 +444,14 @@ export function computeHermesTimeline(
   limit: number = 20,
 ): FounderTimelineEvent[] {
   const events: FounderTimelineEvent[] = [];
+  // v8.4 — receipts carry only a missionId; the founder reads the hotel name.
+  const hotelByMissionId = new Map(missions.map((m) => [m.missionId, m.hotelName]));
 
   for (const m of missions) {
     const first = m.timeline[0];
     const last = m.timeline[m.timeline.length - 1];
     if (first) {
-      events.push({ id: `${m.missionId}:created`, at: first.at, label: `Mission oluşturuldu — ${m.hotelName}` });
+      events.push({ id: `${m.missionId}:created`, at: first.at, label: `Yeni iş açıldı — ${m.hotelName}` });
     }
     if (m.decisionState === "approved") {
       const approvedEntry = m.timeline.find((t) => t.text.startsWith("Onayladı"));
@@ -472,10 +474,13 @@ export function computeHermesTimeline(
   for (const r of recentReceipts) {
     const base = RECEIPT_EVENT_LABEL[r.status];
     if (!base) continue;
+    // v8.4 — never show a raw mission id to the founder: use the hotel name
+    // when the mission is known, otherwise just the event itself.
+    const hotelName = r.missionId ? hotelByMissionId.get(r.missionId) : undefined;
     events.push({
       id: `receipt:${r.providerMessageId}:${r.status}`,
       at: r.occurredAt,
-      label: r.missionId ? `${base} — ${r.missionId}` : base,
+      label: hotelName ? `${base} — ${hotelName}` : base,
     });
   }
 

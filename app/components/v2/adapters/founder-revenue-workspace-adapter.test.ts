@@ -721,7 +721,7 @@ test("computeHermesTimeline: includes mission-created, founder-approved, and rec
   const timeline = computeHermesTimeline([mission], receipts);
   assert.deepEqual(
     timeline.map((e) => e.label),
-    ["Teslim edildi — m1", "Founder onayı verildi — Otel A", "Mission oluşturuldu — Otel A"],
+    ["Teslim edildi — Otel A", "Founder onayı verildi — Otel A", "Yeni iş açıldı — Otel A"],
   );
 });
 

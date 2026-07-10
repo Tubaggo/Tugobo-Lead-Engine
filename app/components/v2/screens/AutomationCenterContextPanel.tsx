@@ -113,6 +113,12 @@ import {
   type HermesLiveSendResult,
 } from "@/app/components/v2/hermes-live-provider-adapters";
 import type { OperationalMomentum, ExecutionState } from "@/app/lib/execution-runtime";
+import {
+  FOUNDER_DECISION_PANEL_LABELS,
+  FOUNDER_PIPELINE_STATE_LABELS,
+  FOUNDER_SUMMARY_PANEL_LABELS,
+  founderizeTimelineText,
+} from "@/app/components/v2/founder-language";
 
 /* ── Design tokens ──────────────────────────────────────────────── */
 
@@ -599,7 +605,15 @@ const REASON_DOT: Record<string, string> = {
   minor: "bg-zinc-600",
 };
 
+/** v8.5 (Scope 8) — the severity dot next to each evidence line is color-only; this backs an sr-only label so the meaning isn't lost for screen readers. */
+const REASON_SEVERITY_LABEL: Record<string, string> = {
+  critical: "Kritik",
+  major: "Önemli",
+  minor: "Küçük",
+};
+
 function MissionDecisionCenter({
+  developerMode,
   mission,
   momentum,
   pipeline,
@@ -634,6 +648,8 @@ function MissionDecisionCenter({
   liveSendGuard,
   onAttemptControlledLiveSend,
 }: {
+  /** v8.4 — the same single V2Shell flag: OFF hides every technical runtime section; ON renders the panel exactly as before. */
+  developerMode: boolean;
   mission: HermesMission;
   momentum: OperationalMomentum | null;
   pipeline: HermesPipeline | null;
@@ -668,6 +684,18 @@ function MissionDecisionCenter({
   liveSendGuard: HermesControlledLiveSendGuardResult;
   onAttemptControlledLiveSend: () => void;
 }) {
+  // v8.5 (Scope 6) — guards the Founder Kararı Onayla/Reddet buttons against
+  // a double-click firing the same decision twice before the mission's own
+  // `decisionState` flips and unmounts this branch. Resets whenever a
+  // different mission is selected so switching missions never leaves a new
+  // mission's buttons stuck disabled.
+  const [decisionSubmitting, setDecisionSubmitting] = useState(false);
+  const [pipelineStarting, setPipelineStarting] = useState(false);
+  useEffect(() => {
+    setDecisionSubmitting(false);
+    setPipelineStarting(false);
+  }, [mission.missionId]);
+
   const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0]!;
   const reasons = primaryTask.reasons.slice(0, 6);
   const pipelineUiState = computeMissionPipelineUiState(mission, pipeline ?? undefined);
@@ -721,12 +749,27 @@ function MissionDecisionCenter({
     ...buildLiveSendTimelineEntries(liveSendResult ?? undefined),
   ].sort((a, b) => a.at - b.at);
 
+  // v8.4 — the founder's activity feed: only the mission's own events plus
+  // real execution progress, never provider/gate/audit internals; texts run
+  // through founderizeTimelineText so no technical word leaks.
+  const founderTimeline = [...mission.timeline, ...buildPipelineTimelineEntries(pipeline ?? undefined)].sort(
+    (a, b) => a.at - b.at,
+  );
+  const visibleTimeline = developerMode ? timeline : founderTimeline;
+
+  // v8.4 — founder never reads the word "Pipeline"; developer keeps the raw runtime vocabulary.
+  const stateBadgeLabel = pipeline
+    ? developerMode
+      ? PIPELINE_STATE_LABELS[pipeline.state]
+      : FOUNDER_PIPELINE_STATE_LABELS[pipeline.state]
+    : mission.stageLabel;
+
   return (
     <div className={PANEL}>
       {/* Header */}
       <div className={SEC}>
         <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400">
-          Hermes Karar Merkezi
+          {FOUNDER_DECISION_PANEL_LABELS.header}
         </p>
         <p className="mt-1.5 text-[14px] font-semibold leading-snug text-zinc-100">
           {mission.hotelName}
@@ -736,17 +779,19 @@ function MissionDecisionCenter({
           <span
             className={`rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold ${pipeline ? "" : MISSION_STAGE_ACCENT_CLS[mission.stage]}`}
           >
-            {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.stageLabel}
+            {stateBadgeLabel}
           </span>
-          <span className="rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] text-zinc-400">
-            {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.status}
-          </span>
+          {developerMode && (
+            <span className="rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] text-zinc-400">
+              {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : mission.status}
+            </span>
+          )}
         </div>
       </div>
 
       {/* Mission Overview */}
       <div className={SEC}>
-        <p className={SEC_TITLE}>Mission Özeti</p>
+        <p className={SEC_TITLE}>{developerMode ? "Mission Özeti" : FOUNDER_DECISION_PANEL_LABELS.jobSummary}</p>
         <p className="text-[11.5px] leading-relaxed text-zinc-200">
           &ldquo;{primaryTask.suggestedAction.label}.&rdquo;
         </p>
@@ -767,7 +812,7 @@ function MissionDecisionCenter({
 
       {/* Mission Progress — reflects real pipeline stage completion once one exists */}
       <div className={SEC}>
-        <p className={SEC_TITLE}>Mission İlerlemesi</p>
+        <p className={SEC_TITLE}>{developerMode ? "Mission İlerlemesi" : FOUNDER_DECISION_PANEL_LABELS.jobProgress}</p>
         <div className="flex items-center gap-2.5">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
             <div
@@ -792,23 +837,31 @@ function MissionDecisionCenter({
           </span>
         </div>
         <p className="mt-1.5 text-[10px] text-zinc-600">
-          {pipeline ? PIPELINE_STATE_LABELS[pipeline.state] : `${mission.stageLabel} — ${mission.status}`}
+          {pipeline
+            ? stateBadgeLabel
+            : developerMode
+              ? `${mission.stageLabel} — ${mission.status}`
+              : mission.stageLabel}
         </p>
       </div>
 
-      {/* Current Agent */}
-      <div className={SEC}>
-        <p className={SEC_TITLE}>Mevcut Ajan</p>
-        <p className="text-[12px] font-semibold text-zinc-100">{currentAgentLabel}</p>
-        <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{currentAgentIntent}</p>
-      </div>
+      {/* Current Agent — Developer Mode only: agent registry vocabulary is runtime detail */}
+      {developerMode && (
+        <div className={SEC}>
+          <p className={SEC_TITLE}>Mevcut Ajan</p>
+          <p className="text-[12px] font-semibold text-zinc-100">{currentAgentLabel}</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{currentAgentIntent}</p>
+        </div>
+      )}
 
-      {/* Next Agent */}
-      <div className={SEC}>
-        <p className={SEC_TITLE}>Sıradaki Ajan</p>
-        <p className="text-[12px] font-semibold text-zinc-100">{nextAgentLabel}</p>
-        <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{nextAgentIntent}</p>
-      </div>
+      {/* Next Agent — Developer Mode only */}
+      {developerMode && (
+        <div className={SEC}>
+          <p className={SEC_TITLE}>Sıradaki Ajan</p>
+          <p className="text-[12px] font-semibold text-zinc-100">{nextAgentLabel}</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{nextAgentIntent}</p>
+        </div>
+      )}
 
       {/* Evidence */}
       <div className={SEC}>
@@ -818,7 +871,9 @@ function MissionDecisionCenter({
             <li key={`${r.source}-${i}`} className="flex items-start gap-2">
               <span
                 className={`mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full ${REASON_DOT[r.severity ?? "minor"] ?? "bg-zinc-600"}`}
-              />
+              >
+                <span className="sr-only">{REASON_SEVERITY_LABEL[r.severity ?? "minor"] ?? "Küçük"}</span>
+              </span>
               <span className="text-[10.5px] leading-relaxed text-zinc-400">{r.message}</span>
             </li>
           ))}
@@ -828,7 +883,8 @@ function MissionDecisionCenter({
         </ul>
       </div>
 
-      {/* Execution Context (borrowed judgements, never recalculated) */}
+      {/* Execution Context (borrowed judgements, never recalculated) — Developer Mode only */}
+      {developerMode && (
       <div className={SEC}>
         <p className={SEC_TITLE}>Execution Context</p>
         <div className="space-y-2">
@@ -867,8 +923,10 @@ function MissionDecisionCenter({
           {primaryTask.suggestedAction.reason}
         </p>
       </div>
+      )}
 
-      {/* Related Lead */}
+      {/* Related Lead — Developer Mode only (points at the Developer-only automation table) */}
+      {developerMode && (
       <div className={SEC}>
         <p className={SEC_TITLE}>İlgili Lead</p>
         <p className="text-[12px] font-semibold text-zinc-100">{mission.hotelName}</p>
@@ -877,6 +935,7 @@ function MissionDecisionCenter({
           Lead detayına Destek Görünümü — Otomasyon Kuyrukları tablosundan ulaşabilirsin.
         </p>
       </div>
+      )}
 
       {/* Founder Decision */}
       <div className={SEC}>
@@ -885,44 +944,66 @@ function MissionDecisionCenter({
           <div className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.08] px-3 py-2.5">
             <span className="text-[10px] font-semibold text-emerald-400">✓</span>
             <span className="text-[10px] text-emerald-400">
-              Onaylandı — pipeline aşağıdan takip edilebilir
+              {developerMode
+                ? "Onaylandı — pipeline aşağıdan takip edilebilir"
+                : FOUNDER_DECISION_PANEL_LABELS.approvedNote}
             </span>
           </div>
         ) : mission.decisionState === "rejected" ? (
           <div className="flex items-center gap-1.5 rounded-lg border border-rose-500/20 bg-rose-500/[0.08] px-3 py-2.5">
             <span className="text-[10px] font-semibold text-rose-400">✕</span>
-            <span className="text-[10px] text-rose-400">Reddedildi — Hermes bu mission&apos;ı bırakır</span>
+            <span className="text-[10px] text-rose-400">
+              {developerMode
+                ? "Reddedildi — Hermes bu mission'ı bırakır"
+                : FOUNDER_DECISION_PANEL_LABELS.rejectedNote}
+            </span>
           </div>
         ) : mission.decisionState === "pending" ? (
           <>
             <div className="flex gap-1.5">
               <button
                 type="button"
-                onClick={() => onApprove(mission)}
-                className="flex h-8 flex-1 items-center justify-center rounded-lg bg-emerald-500/[0.14] text-[11px] font-semibold text-emerald-400 ring-1 ring-inset ring-emerald-500/25 transition-colors duration-150 hover:bg-emerald-500/[0.22]"
+                disabled={decisionSubmitting}
+                onClick={() => {
+                  if (decisionSubmitting) return;
+                  setDecisionSubmitting(true);
+                  onApprove(mission);
+                }}
+                className="flex h-8 flex-1 items-center justify-center rounded-lg bg-emerald-500/[0.14] text-[11px] font-semibold text-emerald-400 ring-1 ring-inset ring-emerald-500/25 transition-colors duration-150 hover:bg-emerald-500/[0.22] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Onayla — Pipeline&apos;ı Başlat
+                {developerMode ? "Onayla — Pipeline'ı Başlat" : FOUNDER_DECISION_PANEL_LABELS.approveButton}
               </button>
               <button
                 type="button"
-                onClick={() => onReject(mission.primaryTaskId)}
-                className="flex h-8 flex-1 items-center justify-center rounded-lg bg-rose-500/[0.10] text-[11px] font-semibold text-rose-400 ring-1 ring-inset ring-rose-500/20 transition-colors duration-150 hover:bg-rose-500/[0.16]"
+                disabled={decisionSubmitting}
+                onClick={() => {
+                  if (decisionSubmitting) return;
+                  setDecisionSubmitting(true);
+                  onReject(mission.primaryTaskId);
+                }}
+                className="flex h-8 flex-1 items-center justify-center rounded-lg bg-rose-500/[0.10] text-[11px] font-semibold text-rose-400 ring-1 ring-inset ring-rose-500/20 transition-colors duration-150 hover:bg-rose-500/[0.16] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Reddet
+                {FOUNDER_DECISION_PANEL_LABELS.rejectButton}
               </button>
             </div>
             <p className="mt-2 text-[9px] leading-relaxed text-zinc-600">
-              Onay, 4 aşamalı pipeline&apos;ı hemen başlatır — Hermes sonrasını tek başına yürütür.
+              {developerMode
+                ? "Onay, 4 aşamalı pipeline'ı hemen başlatır — Hermes sonrasını tek başına yürütür."
+                : FOUNDER_DECISION_PANEL_LABELS.approveHint}
             </p>
           </>
         ) : (
           <p className="text-[10px] leading-relaxed text-zinc-500">
-            Onay gerekmiyor — güvenli iç görev; tek tıkla pipeline başlatılabilir.
+            {developerMode
+              ? "Onay gerekmiyor — güvenli iç görev; tek tıkla pipeline başlatılabilir."
+              : FOUNDER_DECISION_PANEL_LABELS.noApprovalNeededNote}
           </p>
         )}
       </div>
 
-      {/* Hermes Pipeline (A5) — the only place a mission can actually run, autonomously across 4 stages */}
+      {/* Hermes Pipeline (A5) — the only place a mission can actually run, autonomously across 4 stages.
+          v8.4: full runtime view in Developer Mode; a compact founder execution summary otherwise. */}
+      {developerMode ? (
       <div className={SEC}>
         <p className={SEC_TITLE}>Hermes Pipeline</p>
 
@@ -1029,17 +1110,110 @@ function MissionDecisionCenter({
           )}
         </div>
       </div>
-
-      {/* Courier Taslağı (v4.1.0-A) — draft prep + founder review, never a send */}
+      ) : (
       <div className={SEC}>
-        <p className={SEC_TITLE}>Courier Taslağı</p>
+        <p className={SEC_TITLE}>{FOUNDER_DECISION_PANEL_LABELS.execution}</p>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.executionStatus}</span>
+          <span
+            className={`text-[10px] font-semibold ${
+              pipeline?.state === "blocked"
+                ? "text-rose-400"
+                : pipeline?.state === "completed"
+                  ? "text-emerald-400"
+                  : pipeline
+                    ? "text-amber-400"
+                    : "text-zinc-500"
+            }`}
+          >
+            {pipeline
+              ? FOUNDER_PIPELINE_STATE_LABELS[pipeline.state]
+              : FOUNDER_DECISION_PANEL_LABELS.executionNotStarted}
+          </span>
+        </div>
+        <div className="mt-2.5">
+          <p className="text-[10px] text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.executionLastResult}</p>
+          {lastFinishedStep?.result ? (
+            <p
+              className={`mt-1 text-[10px] leading-relaxed ${lastFinishedStep.result.status === "failed" ? "text-rose-400" : "text-zinc-400"}`}
+            >
+              {actionLabelOf(lastFinishedStep.stage)}: {founderizeTimelineText(lastFinishedStep.result.message)}
+            </p>
+          ) : (
+            <p className="mt-1 text-[10px] text-zinc-600">{FOUNDER_DECISION_PANEL_LABELS.executionNoResult}</p>
+          )}
+        </div>
+        {pipelineUiState === "ready" && (
+          <button
+            type="button"
+            disabled={pipelineStarting}
+            onClick={() => {
+              if (pipelineStarting) return;
+              setPipelineStarting(true);
+              onStartPipeline(mission);
+            }}
+            className="mt-3 flex h-8 w-full items-center justify-center rounded-lg bg-indigo-500 text-[11px] font-semibold text-white transition-colors duration-150 hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {FOUNDER_DECISION_PANEL_LABELS.startButton}
+          </button>
+        )}
+        {pipelineUiState === "gated" && (
+          <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.gatedNote}</p>
+        )}
+        {pipelineUiState === "waiting" && (
+          <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.waitingNote}</p>
+        )}
+        {pipelineUiState === "unsupported" && (
+          <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.unsupportedNote}</p>
+        )}
+        <p className="mt-2.5 border-t border-white/[0.06] pt-2 text-[9px] leading-relaxed text-zinc-600">
+          {FOUNDER_DECISION_PANEL_LABELS.safeNote}
+        </p>
+
+        <p className="mt-2.5 text-[9px] font-bold uppercase tracking-[0.13em] text-zinc-600">
+          {FOUNDER_DECISION_PANEL_LABELS.recentActivity}
+        </p>
+        <div className="mt-1.5 max-h-[200px] space-y-1.5 overflow-y-auto">
+          {visibleTimeline.length === 0 ? (
+            <p className="text-[10px] text-zinc-600">{FOUNDER_DECISION_PANEL_LABELS.noActivity}</p>
+          ) : (
+            visibleTimeline.map((item, i) => (
+              <div key={`${item.at}-${i}`} className="flex items-baseline gap-2">
+                <span className="w-[34px] shrink-0 text-[9px] tabular-nums text-zinc-600">
+                  {new Date(item.at).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <span className={`w-[56px] shrink-0 text-[9px] font-semibold ${item.actorCls}`}>
+                  {item.actorLabel}
+                </span>
+                <span className="min-w-0 flex-1 text-[10px] leading-relaxed text-zinc-400">
+                  {founderizeTimelineText(item.text)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      )}
+
+      {/* Courier Taslağı (v4.1.0-A) — draft prep + founder review, never a send.
+          v8.4: the founder still approves the message (a real decision) but reads "Mesaj Onayı", never "Courier". */}
+      <div className={SEC}>
+        <p className={SEC_TITLE}>{developerMode ? "Courier Taslağı" : FOUNDER_DECISION_PANEL_LABELS.messageApproval}</p>
         {draft ? (
           <>
             <div className="flex items-center justify-between gap-2">
               <span className="inline-flex items-center rounded-full bg-sky-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-sky-400 ring-1 ring-inset ring-sky-500/20">
                 {DRAFT_CHANNEL_LABELS[draft.channel]}
               </span>
-              <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+              <span
+                className={`inline-flex items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ${
+                  draft.status === "approved"
+                    ? "bg-emerald-500/[0.10] text-emerald-400"
+                    : draft.status === "rejected"
+                      ? "bg-rose-500/[0.10] text-rose-400"
+                      : "bg-white/[0.06] text-zinc-300"
+                }`}
+              >
                 {DRAFT_STATUS_LABELS[draft.status]}
               </span>
             </div>
@@ -1104,7 +1278,9 @@ function MissionDecisionCenter({
       </div>
 
       {/* Delivery Gateway (v4.2.0) — validates, resolves provider, queues to
-          "ready", then stops. No send button anywhere in this section. */}
+          "ready", then stops. No send button anywhere in this section.
+          v8.4: full gateway view in Developer Mode; a compact founder delivery status otherwise. */}
+      {developerMode ? (
       <div className={SEC}>
         <p className={SEC_TITLE}>Delivery Gateway</p>
         {delivery ? (
@@ -1166,9 +1342,45 @@ function MissionDecisionCenter({
         )}
         <p className="mt-2.5 text-[9px] text-zinc-600">{NO_SEND_BUTTON_NOTE}</p>
       </div>
+      ) : (
+      <div className={SEC}>
+        <p className={SEC_TITLE}>{FOUNDER_DECISION_PANEL_LABELS.deliveryStatus}</p>
+        {delivery ? (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center rounded-full bg-white/[0.06] px-2 py-[2px] text-[9px] font-semibold text-zinc-300">
+                {delivery.status === "ready"
+                  ? FOUNDER_DECISION_PANEL_LABELS.deliveryReadyLabel
+                  : DELIVERY_STATUS_LABELS[delivery.status]}
+              </span>
+              <span className="inline-flex items-center rounded-full bg-sky-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-sky-400 ring-1 ring-inset ring-sky-500/20">
+                {DELIVERY_PROVIDER_LABELS[delivery.provider]}
+              </span>
+            </div>
+            <div className="mt-2.5 space-y-2">
+              <div className={ROW}>
+                <span className={LABEL}>{FOUNDER_DECISION_PANEL_LABELS.deliveryChannel}</span>
+                <span className={VALUE}>{DRAFT_CHANNEL_LABELS[delivery.channel]}</span>
+              </div>
+              <div className={ROW}>
+                <span className={LABEL}>{FOUNDER_DECISION_PANEL_LABELS.deliveryRecipient}</span>
+                <span className={VALUE}>{delivery.recipient ?? "—"}</span>
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="text-[10px] leading-relaxed text-zinc-600">
+            {FOUNDER_DECISION_PANEL_LABELS.deliveryEmpty}
+          </p>
+        )}
+      </div>
+      )}
 
       {/* Provider Connector (v4.4.0) — Shadow Send only. No "Gönder"/"Send"
-          button anywhere in this section; live send stays disabled. */}
+          button anywhere in this section; live send stays disabled.
+          v8.4: Developer Mode only, like every provider-layer section below. */}
+      {developerMode && (
+      <>
       <div className={SEC}>
         <p className={SEC_TITLE}>Provider Connector</p>
         {delivery ? (
@@ -1804,6 +2016,8 @@ function MissionDecisionCenter({
           hesaplanır.
         </p>
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -1811,10 +2025,13 @@ function MissionDecisionCenter({
 /* ── Empty / summary state ──────────────────────────────────────── */
 
 function SummaryView({
+  developerMode,
   summary,
   hermesSummary,
   missionCount,
 }: {
+  /** v8.4 — the same single V2Shell flag: OFF renders only the founder summary rows; ON renders everything as before. */
+  developerMode: boolean;
   summary: AutomationSummary;
   hermesSummary: HermesMonitorSummary;
   missionCount: number;
@@ -1826,27 +2043,41 @@ function SummaryView({
     count: hermesSummary.agentTaskCounts[key] ?? 0,
   }));
 
+  const summaryRows = [
+    {
+      label: developerMode ? "Değerlendirilen Lead" : FOUNDER_SUMMARY_PANEL_LABELS.evaluatedLeads,
+      value: hermesSummary.leadsEvaluated,
+      color: undefined as string | undefined,
+    },
+    {
+      label: developerMode ? "Aktif Mission" : FOUNDER_SUMMARY_PANEL_LABELS.activeJobs,
+      value: missionCount,
+      color: undefined as string | undefined,
+    },
+    { label: FOUNDER_SUMMARY_PANEL_LABELS.awaitingApproval, value: hermesSummary.approvalCandidates.length, color: "text-amber-400" },
+    { label: FOUNDER_SUMMARY_PANEL_LABELS.founderDecisions, value: hermesSummary.escalations.length, color: "text-rose-400" },
+    // "Otomatik (A4)" is internal sprint vocabulary — Developer Mode only.
+    ...(developerMode
+      ? [{ label: "Otomatik (A4)", value: hermesSummary.decisionCounts.RUN, color: "text-emerald-400" }]
+      : []),
+    { label: FOUNDER_SUMMARY_PANEL_LABELS.watching, value: hermesSummary.decisionCounts.WAIT, color: "text-sky-400" },
+  ];
+
   return (
     <div className={PANEL}>
       <div className={SEC}>
-        <p className={SEC_TITLE}>Hermes Workspace</p>
+        <p className={SEC_TITLE}>{developerMode ? "Hermes Workspace" : FOUNDER_SUMMARY_PANEL_LABELS.header}</p>
         <p className="text-[11px] leading-relaxed text-zinc-500">
-          AI işgücü çalışıyor — sen denetliyorsun. Mission kuyruğundan bir mission seç,
-          Karar Merkezi burada açılır.
+          {developerMode
+            ? "AI işgücü çalışıyor — sen denetliyorsun. Mission kuyruğundan bir mission seç, Karar Merkezi burada açılır."
+            : FOUNDER_SUMMARY_PANEL_LABELS.intro}
         </p>
       </div>
 
       <div className={SEC}>
-        <p className={SEC_TITLE}>Hermes Özeti</p>
+        <p className={SEC_TITLE}>{FOUNDER_SUMMARY_PANEL_LABELS.summaryTitle}</p>
         <div className="space-y-2">
-          {[
-            { label: "Değerlendirilen Lead", value: hermesSummary.leadsEvaluated, color: undefined },
-            { label: "Aktif Mission", value: missionCount, color: undefined },
-            { label: "Onay Bekliyor", value: hermesSummary.approvalCandidates.length, color: "text-amber-400" },
-            { label: "Founder Kararı", value: hermesSummary.escalations.length, color: "text-rose-400" },
-            { label: "Otomatik (A4)", value: hermesSummary.decisionCounts.RUN, color: "text-emerald-400" },
-            { label: "İzlemede", value: hermesSummary.decisionCounts.WAIT, color: "text-sky-400" },
-          ].map((row) => (
+          {summaryRows.map((row) => (
             <div key={row.label} className={ROW}>
               <span className={LABEL}>{row.label}</span>
               <span className={`text-[14px] font-bold tabular-nums ${row.color ?? "text-zinc-200"}`}>
@@ -1857,6 +2088,8 @@ function SummaryView({
         </div>
       </div>
 
+      {developerMode && (
+      <>
       <div className={SEC}>
         <p className={SEC_TITLE}>Hermes Ajanları</p>
         <div className="space-y-2">
@@ -1922,6 +2155,8 @@ function SummaryView({
           Kalıcı hata kuyruğu mevcut değil — retry geçmişi oturum belleğinde tutulmuyor.
         </p>
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -2197,7 +2432,7 @@ function DetailView({ card }: { card: AutomationCard }) {
       <div className={SEC}>
         <p className={SEC_TITLE}>İletişim Bul</p>
         <Btn
-          label="Çalıştır — Contact Finder"
+          label="Çalıştır — İletişim Bul"
           loading={cfState.loading}
           disabled={!canContactFinder}
           onClick={runContactFinder}
@@ -2217,7 +2452,7 @@ function DetailView({ card }: { card: AutomationCard }) {
       <div className={SEC}>
         <p className={SEC_TITLE}>Yeniden Zenginleştir</p>
         <Btn
-          label="Çalıştır — Re-Enrich"
+          label="Çalıştır — Yeniden Zenginleştir"
           variant="primary"
           loading={reEnrich.loading}
           disabled={!canReEnrich}
@@ -2346,6 +2581,8 @@ function DetailView({ card }: { card: AutomationCard }) {
 /* ── Export ─────────────────────────────────────────────────────── */
 
 type Props = {
+  /** v8.4 — lifted from V2Shell's single `useDeveloperMode` flag; OFF hides every technical runtime section in this panel. */
+  developerMode: boolean;
   selectedCard: AutomationCard | null;
   summary: AutomationSummary;
   hermesSummary: HermesMonitorSummary;
@@ -2386,6 +2623,7 @@ type Props = {
 };
 
 export default function AutomationCenterContextPanel({
+  developerMode,
   selectedCard,
   summary,
   hermesSummary,
@@ -2428,6 +2666,7 @@ export default function AutomationCenterContextPanel({
     return (
       <MissionDecisionCenter
         key={selectedHermesMission.missionId}
+        developerMode={developerMode}
         mission={selectedHermesMission}
         momentum={selectedHermesMomentum}
         pipeline={pipeline}
@@ -2465,7 +2704,14 @@ export default function AutomationCenterContextPanel({
     );
   }
   if (!selectedCard) {
-    return <SummaryView summary={summary} hermesSummary={hermesSummary} missionCount={missionCount} />;
+    return (
+      <SummaryView
+        developerMode={developerMode}
+        summary={summary}
+        hermesSummary={hermesSummary}
+        missionCount={missionCount}
+      />
+    );
   }
   return <DetailView key={selectedCard.id} card={selectedCard} />;
 }

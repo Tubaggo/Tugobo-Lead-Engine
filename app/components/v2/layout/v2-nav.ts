@@ -20,6 +20,12 @@ export type V2NavLeaf = {
   label: string;
   screen: V2Screen;
   icon: string;
+  /**
+   * v8.4 — Developer Panel Organization: the logical group a Developer
+   * screen belongs to. Rendered as a small section header in the sidebar's
+   * Developer group; purely presentational, founder never sees it.
+   */
+  section?: string;
 };
 
 export type V2NavEntryId = "hermes" | "developer";
@@ -54,20 +60,23 @@ export const V2_NAV: V2NavEntry[] = [
     label: "Developer",
     icon: "integration",
     muted: true,
+    // v8.4 — Developer Panel Organization: the same 13 screens, now grouped
+    // logically instead of listed in accretion order. Nothing added, nothing
+    // removed — only `section` headers and ordering changed.
     items: [
-      { label: "Gelir Pipeline", screen: "revenue-pipeline", icon: "funnel" },
-      { label: "Gelir Tahmini", screen: "revenue-forecast", icon: "forecast" },
-      { label: "Gelir Risk", screen: "revenue-risk", icon: "risk" },
-      { label: "Gelir Recovery", screen: "revenue-recovery", icon: "refresh" },
-      { label: "Gelir Analizi", screen: "revenue-analytics", icon: "bar-chart" },
-      { label: "Veri Kaynakları", screen: "data-sources", icon: "database" },
-      { label: "Lead Import", screen: "lead-import", icon: "import" },
-      { label: "Günlük Operasyon", screen: "command-center", icon: "command" },
-      { label: "Fırsat Kuyruğu", screen: "revenue-queue", icon: "queue" },
-      { label: "Takip Edilecekler", screen: "follow-ups", icon: "clock" },
-      { label: "Lead Listesi", screen: "lead-list", icon: "users" },
-      { label: "ICP Analizi", screen: "icp-analysis", icon: "target" },
-      { label: "İletişim Zekası", screen: "communication-intelligence", icon: "message" },
+      { label: "Gelir Pipeline", screen: "revenue-pipeline", icon: "funnel", section: "Gelir" },
+      { label: "Gelir Tahmini", screen: "revenue-forecast", icon: "forecast", section: "Gelir" },
+      { label: "Gelir Risk", screen: "revenue-risk", icon: "risk", section: "Gelir" },
+      { label: "Gelir Recovery", screen: "revenue-recovery", icon: "refresh", section: "Gelir" },
+      { label: "Gelir Analizi", screen: "revenue-analytics", icon: "bar-chart", section: "Gelir" },
+      { label: "Günlük Operasyon", screen: "command-center", icon: "command", section: "Operasyon" },
+      { label: "Fırsat Kuyruğu", screen: "revenue-queue", icon: "queue", section: "Operasyon" },
+      { label: "Takip Edilecekler", screen: "follow-ups", icon: "clock", section: "Operasyon" },
+      { label: "Lead Listesi", screen: "lead-list", icon: "users", section: "Lead" },
+      { label: "ICP Analizi", screen: "icp-analysis", icon: "target", section: "Lead" },
+      { label: "İletişim Zekası", screen: "communication-intelligence", icon: "message", section: "Lead" },
+      { label: "Lead Import", screen: "lead-import", icon: "import", section: "Veri" },
+      { label: "Veri Kaynakları", screen: "data-sources", icon: "database", section: "Veri" },
     ],
   },
 ];
