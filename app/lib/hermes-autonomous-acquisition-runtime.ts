@@ -90,6 +90,8 @@ export type RunAcquisitionResult = {
   status: AcquisitionRunStatus;
   runId: string | null;
   dryRun: boolean;
+  /** City names only — safe for the founder/developer panel, no query text, no key. */
+  selectedRegionsSafe: string[];
   blockingReasons: string[];
   summaryTr: string;
   evaluatedCount: number;
@@ -98,6 +100,7 @@ export type RunAcquisitionResult = {
   qualifiedCount: number;
   missionCandidateCount: number;
   missionCreatedCount: number;
+  /** Real (non-dry) runs: requests actually made. Dry runs: requests that WOULD have been made — never a real call. */
   externalRequestCount: number;
 };
 
@@ -121,6 +124,7 @@ function toResult(run: HermesAcquisitionRun): RunAcquisitionResult {
     status: run.status,
     runId: run.id,
     dryRun: run.dryRun,
+    selectedRegionsSafe: run.selectedRegionsSafe,
     blockingReasons: run.blockingReasons,
     summaryTr: run.summaryTr,
     evaluatedCount: run.evaluatedCount,
@@ -242,6 +246,14 @@ export async function runHermesAutonomousAcquisition(
       budget.remainingLeadBudget,
       plannedEvaluations,
     );
+    // Planned, not real: 1 text search per region + 1 detail fetch per
+    // planned evaluation, capped at today's remaining request budget so a
+    // preview can never claim more than a real run would be allowed to
+    // spend. Zero external calls are made to produce this number.
+    const plannedExternalRequestCount = Math.min(
+      selectedRegions.length + plannedEvaluations,
+      budget.remainingRequestBudget,
+    );
     const summaryTr = summarizeAcquisitionRun({
       status: "completed",
       dryRun: true,
@@ -259,6 +271,7 @@ export async function runHermesAutonomousAcquisition(
         status: "completed",
         evaluatedCount: plannedEvaluations,
         missionCandidateCount: plannedCandidates,
+        externalRequestCount: plannedExternalRequestCount,
         summaryTr,
         auditEvents: [
           ...audit,

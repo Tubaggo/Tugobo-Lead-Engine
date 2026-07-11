@@ -129,6 +129,22 @@ test("dry run produces a plan without invoking the adapter or registering candid
   assert.ok(result.evaluatedCount > 0); // planned evaluations
   assert.equal(getPendingAcquisitionCandidates(NOW).length, 0);
   assert.ok(result.summaryTr.includes("Hiçbir kayıt yapılmadı."));
+  // C1.0.1 — the dry-run result must carry the region + a planned request
+  // count so the Developer panel can show them without a second call.
+  assert.deepEqual(result.selectedRegionsSafe, ["Antalya"]);
+  assert.ok(result.externalRequestCount > 0);
+});
+
+test("dry run's planned external request count never exceeds the remaining daily request budget", async () => {
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "developer",
+    config: config({ dryRun: true, dailyExternalRequestLimit: 2, maxResultsPerRegion: 20 }),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.equal(result.status, "completed");
+  assert.ok(result.externalRequestCount <= 2);
 });
 
 test("forceDryRun overrides a live policy into a dry run", async () => {
@@ -170,6 +186,7 @@ test("safe run calls the import adapter and hands off qualified leads as capped 
   assert.equal(result.importedCount, 2);
   assert.equal(result.externalRequestCount, 5);
   assert.equal(result.status, "completed");
+  assert.deepEqual(result.selectedRegionsSafe, ["Antalya"]);
 
   const batches = getPendingAcquisitionCandidates(NOW);
   assert.equal(batches.length, 1);

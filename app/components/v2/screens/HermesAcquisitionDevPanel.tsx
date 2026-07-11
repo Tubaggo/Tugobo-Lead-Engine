@@ -1,9 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ACQUISITION_NETWORK_ERROR_TR,
+  acquisitionResultFieldLabelsTr,
+  acquisitionRunStatusLabelTr,
+  buildAcquisitionRunRequestBody,
+  resolveAcquisitionRunResponse,
+  type AcquisitionRunResultLike,
+  type AcquisitionRunTriggerKind,
+} from "@/app/components/v2/adapters/hermes-acquisition-dev-panel-adapter";
 
 /**
- * Hermes Autonomous Acquisition — Developer panel (Sprint C1 — Scope 7).
+ * Hermes Autonomous Acquisition — Developer panel (Sprint C1 — Scope 7;
+ * fixed in Hotfix C1.0.1).
  *
  * Lives at the top of the Developer-only Lead Import screen. Exposes exactly
  * the two safe triggers the sprint allows — "Dry-run Önizle" and "Güvenli
@@ -14,27 +24,18 @@ import { useCallback, useEffect, useState } from "react";
  * Both buttons call the same POST /api/hermes/acquisition/run the external
  * scheduler uses (trigger "developer"; no secret needed — the server-side
  * policy gates are the barrier, and a disabled policy returns a blocked
- * result with zero external calls). The client body carries nothing but
- * `trigger` + `dryRun: true` for previews — the route structurally ignores
- * everything else.
+ * result with zero external calls). `buildAcquisitionRunRequestBody`
+ * (adapter) is the only place the request body is constructed — it can
+ * structurally emit nothing but `trigger` + an ON-only `dryRun`.
+ *
+ * C1.0.1 root cause: the result/error UI used to live entirely inside the
+ * `{status && (...)}` block, gated on the UNRELATED config-status GET
+ * request. If that fetch was merely slow or failed, a click on either
+ * button produced a real request and a real response, but the founder/
+ * developer saw nothing — not the result, not the error. The result panel
+ * and error line below are now rendered unconditionally on `lastResult` /
+ * `runError`, independent of whether `/status` has resolved.
  */
-
-type AcquisitionRunLike = {
-  id: string;
-  status: string;
-  dryRun: boolean;
-  trigger: string;
-  startedAt: number;
-  completedAt: number | null;
-  summaryTr: string;
-  blockingReasons: string[];
-  safeErrors: string[];
-  evaluatedCount: number;
-  importedCount: number;
-  duplicateCount: number;
-  missionCandidateCount: number;
-  externalRequestCount: number;
-};
 
 type AcquisitionStatusPayload = {
   configOk: boolean;
@@ -62,17 +63,6 @@ type AcquisitionStatusPayload = {
     duplicatesToday: number;
     missionCandidatesToday: number;
   };
-  recentRuns: AcquisitionRunLike[];
-};
-
-type RunResultLike = {
-  status: string;
-  dryRun: boolean;
-  summaryTr: string;
-  blockingReasons: string[];
-  evaluatedCount: number;
-  missionCandidateCount: number;
-  externalRequestCount: number;
 };
 
 function fmtTime(at: number | null): string {
@@ -92,6 +82,11 @@ const BTN =
 const BTN_PRIMARY =
   "flex h-8 items-center gap-2 rounded-lg bg-indigo-500 px-3 text-[11px] font-semibold text-white transition-colors hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50";
 
+const BUSY_LABELS: Record<AcquisitionRunTriggerKind, string> = {
+  dry: "Dry-run hazırlanıyor…",
+  safe: "Tarama başlatılıyor…",
+};
+
 export default function HermesAcquisitionDevPanel({
   onAcquisitionChanged,
 }: {
@@ -100,11 +95,16 @@ export default function HermesAcquisitionDevPanel({
 }) {
   const [status, setStatus] = useState<AcquisitionStatusPayload | null>(null);
   const [statusError, setStatusError] = useState(false);
-  const [busy, setBusy] = useState<"dry" | "safe" | null>(null);
-  const [lastResult, setLastResult] = useState<RunResultLike | null>(null);
+  const [busy, setBusy] = useState<AcquisitionRunTriggerKind | null>(null);
+  const [lastResult, setLastResult] = useState<AcquisitionRunResultLike | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   // Bumped after each run so the status re-fetch effect below re-runs.
   const [statusTick, setStatusTick] = useState(0);
+  // Synchronous double-click guard: React state updates from setBusy are not
+  // guaranteed to have committed before a second click handler fires in the
+  // same tick, so the `disabled` attribute alone cannot be trusted as the
+  // only defense. This ref is read-then-set before any `await`.
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,26 +127,37 @@ export default function HermesAcquisitionDevPanel({
   }, [statusTick]);
 
   const triggerRun = useCallback(
-    async (kind: "dry" | "safe") => {
+    async (kind: AcquisitionRunTriggerKind) => {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
       setBusy(kind);
       setRunError(null);
+
       try {
         const res = await fetch("/api/hermes/acquisition/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            kind === "dry" ? { trigger: "developer", dryRun: true } : { trigger: "developer" },
-          ),
+          body: JSON.stringify(buildAcquisitionRunRequestBody(kind)),
         });
-        const data = (await res.json()) as RunResultLike & { error?: string };
-        if (!res.ok) {
-          setRunError(data.error ?? "Çalıştırma başarısız oldu.");
+        let data: unknown;
+        try {
+          data = await res.json();
+        } catch {
+          data = undefined;
+        }
+        const outcome = resolveAcquisitionRunResponse({ ok: res.ok, data });
+        if (outcome.kind === "error") {
+          setRunError(outcome.messageTr);
+          setLastResult(null);
         } else {
-          setLastResult(data);
+          setLastResult(outcome.result);
+          setRunError(null);
         }
       } catch {
-        setRunError("Çalıştırma isteği tamamlanamadı.");
+        setRunError(ACQUISITION_NETWORK_ERROR_TR);
+        setLastResult(null);
       } finally {
+        inFlightRef.current = false;
         setBusy(null);
         setStatusTick((t) => t + 1);
         onAcquisitionChanged?.();
@@ -155,7 +166,7 @@ export default function HermesAcquisitionDevPanel({
     [onAcquisitionChanged],
   );
 
-  const lastRun = status?.recentRuns?.[0] ?? null;
+  const fieldLabels = lastResult ? acquisitionResultFieldLabelsTr(lastResult.dryRun) : null;
 
   return (
     <div className={CARD}>
@@ -173,7 +184,7 @@ export default function HermesAcquisitionDevPanel({
             disabled={busy !== null}
             onClick={() => void triggerRun("dry")}
           >
-            {busy === "dry" ? "Önizleniyor…" : "Dry-run Önizle"}
+            {busy === "dry" ? BUSY_LABELS.dry : "Dry-run Önizle"}
           </button>
           <button
             type="button"
@@ -181,7 +192,7 @@ export default function HermesAcquisitionDevPanel({
             disabled={busy !== null || !status?.enabled}
             onClick={() => void triggerRun("safe")}
           >
-            {busy === "safe" ? "Taranıyor…" : "Güvenli Tarama Çalıştır"}
+            {busy === "safe" ? BUSY_LABELS.safe : "Güvenli Tarama Çalıştır"}
           </button>
         </div>
       </div>
@@ -220,7 +231,7 @@ export default function HermesAcquisitionDevPanel({
             </div>
           </div>
 
-          {/* Config notes / blocking reasons */}
+          {/* Config notes — founder-safe: never a raw env name or secret value */}
           {!status.configOk && status.configNotes.length > 0 && (
             <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2">
               <p className="text-[10px] font-semibold text-amber-400">Yapılandırma notları</p>
@@ -233,34 +244,62 @@ export default function HermesAcquisitionDevPanel({
               </ul>
             </div>
           )}
+        </>
+      )}
 
-          {/* Last run summary */}
-          {(lastResult || lastRun) && (
-            <div className="mt-3 rounded-lg bg-white/[0.02] px-3 py-2">
-              <p className={LABEL}>Son Çalıştırma</p>
-              <p className="mt-1 text-[11px] text-zinc-300">
-                {(lastResult ?? lastRun)?.summaryTr || "—"}
-              </p>
-              {(lastResult ?? lastRun) && (lastResult ?? lastRun)!.blockingReasons.length > 0 && (
-                <ul className="mt-1 space-y-0.5">
-                  {(lastResult ?? lastRun)!.blockingReasons.map((reason, i) => (
-                    <li key={i} className="text-[10.5px] text-amber-300/90">
-                      {reason}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="mt-1 text-[10px] tabular-nums text-zinc-600">
-                Değerlendirilen {(lastResult ?? lastRun)?.evaluatedCount ?? 0} · Satış işi adayı{" "}
-                {(lastResult ?? lastRun)?.missionCandidateCount ?? 0} · Dış istek{" "}
-                {(lastResult ?? lastRun)?.externalRequestCount ?? 0}
-              </p>
+      {/*
+        C1.0.1 fix: result panel + error line are rendered unconditionally
+        on lastResult/runError — NOT gated on `status` (the unrelated config
+        fetch above). A click always produces visible feedback, even if the
+        config-status GET is slow, failed, or never resolves.
+      */}
+      {lastResult && fieldLabels && (
+        <div className="mt-3 rounded-lg bg-white/[0.02] px-3 py-2">
+          <p className={LABEL}>Son Çalıştırma</p>
+          <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3">
+            <ResultField label="Durum" value={acquisitionRunStatusLabelTr(lastResult.status)} />
+            <ResultField
+              label="Seçilen Bölge"
+              value={lastResult.selectedRegionsSafe.length > 0 ? lastResult.selectedRegionsSafe.join(", ") : "—"}
+            />
+            <ResultField label={fieldLabels.evaluated} value={String(lastResult.evaluatedCount)} />
+            <ResultField label={fieldLabels.externalRequests} value={String(lastResult.externalRequestCount)} />
+            <ResultField label={fieldLabels.missionCandidates} value={String(lastResult.missionCandidateCount)} />
+          </div>
+
+          {lastResult.blockingReasons.length > 0 && (
+            <div className="mt-2">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.1em] text-amber-500">Blok Nedenleri</p>
+              <ul className="mt-0.5 space-y-0.5">
+                {lastResult.blockingReasons.map((reason, i) => (
+                  <li key={i} className="text-[10.5px] text-amber-300/90">
+                    {reason}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 
-          {runError && <p className="mt-2 text-[11px] text-rose-400">{runError}</p>}
-        </>
+          <p className="mt-2 border-t border-white/[0.06] pt-1.5 text-[10.5px] leading-relaxed text-zinc-300">
+            {lastResult.summaryTr}
+          </p>
+        </div>
       )}
+
+      {runError && (
+        <p className="mt-3 rounded-lg border border-rose-500/20 bg-rose-500/[0.06] px-3 py-2 text-[11px] text-rose-300">
+          {runError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ResultField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-[9px] font-semibold uppercase tracking-[0.1em] text-zinc-600">{label}</p>
+      <p className="mt-0.5 truncate text-[11px] text-zinc-200">{value}</p>
     </div>
   );
 }
