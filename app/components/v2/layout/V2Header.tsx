@@ -63,6 +63,9 @@ export default function V2Header({
   hermes?: V2HeaderHermesProps;
 }) {
   const isRunning = hermes?.status.mode === "running";
+  // Sprint C1 — "Kontrol Gerekli": the acquisition configuration needs a
+  // human look. Amber, never a technical error string.
+  const isAttention = hermes?.status.mode === "attention";
 
   return (
     <header className="flex shrink-0 items-center justify-between gap-4 border-b border-white/[0.06] bg-[var(--background-elev)] px-6 py-3.5">
@@ -89,10 +92,14 @@ export default function V2Header({
                 <span className="mt-0.5 flex items-center gap-1.5">
                   <span
                     className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                      isRunning ? "animate-pulse bg-emerald-400" : "bg-zinc-500"
+                      isRunning ? "animate-pulse bg-emerald-400" : isAttention ? "bg-amber-400" : "bg-zinc-500"
                     }`}
                   />
-                  <span className={`text-[11px] font-semibold ${isRunning ? "text-emerald-300" : "text-zinc-300"}`}>
+                  <span
+                    className={`text-[11px] font-semibold ${
+                      isRunning ? "text-emerald-300" : isAttention ? "text-amber-300" : "text-zinc-300"
+                    }`}
+                  >
                     {hermes.status.modeLabel}
                   </span>
                 </span>

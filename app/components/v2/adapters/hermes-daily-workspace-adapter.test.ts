@@ -53,6 +53,49 @@ test("v8.6 header status: null timestamps stay null (no hardcoded fallback date)
   assert.equal(status.lastActivityAt, null);
 });
 
+test("C1 header status: a server-side acquisition run means running", () => {
+  const status = computeHermesHeaderStatus({ ...baseInput, acquisitionRunning: true });
+  assert.equal(status.mode, "running");
+  assert.equal(status.modeLabel, "Çalışıyor");
+});
+
+test("C1 header status: broken acquisition config shows Kontrol Gerekli when idle", () => {
+  const status = computeHermesHeaderStatus({ ...baseInput, acquisitionNeedsAttention: true });
+  assert.equal(status.mode, "attention");
+  assert.equal(status.modeLabel, "Kontrol Gerekli");
+});
+
+test("C1 header status: running wins over attention", () => {
+  const status = computeHermesHeaderStatus({
+    ...baseInput,
+    importInProgress: true,
+    acquisitionNeedsAttention: true,
+  });
+  assert.equal(status.mode, "running");
+});
+
+test("C1 header status: last scan is the newest of import history and acquisition runs", () => {
+  const newer = computeHermesHeaderStatus({
+    ...baseInput,
+    lastScanAt: 1_000,
+    acquisitionLastScanAt: 2_000,
+  });
+  assert.equal(newer.lastScanAt, 2_000);
+
+  const older = computeHermesHeaderStatus({
+    ...baseInput,
+    lastScanAt: 3_000,
+    acquisitionLastScanAt: 2_000,
+  });
+  assert.equal(older.lastScanAt, 3_000);
+
+  const acquisitionOnly = computeHermesHeaderStatus({ ...baseInput, acquisitionLastScanAt: 2_000 });
+  assert.equal(acquisitionOnly.lastScanAt, 2_000);
+
+  const noneAtAll = computeHermesHeaderStatus({ ...baseInput, acquisitionLastScanAt: null });
+  assert.equal(noneAtAll.lastScanAt, null);
+});
+
 /* ── computeFounderDaySummary ─────────────────────────────────────── */
 
 test("v8.6 day summary: greeting follows the hour of day", () => {

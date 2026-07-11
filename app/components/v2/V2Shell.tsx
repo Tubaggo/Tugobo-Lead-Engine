@@ -15,6 +15,7 @@ import {
   computeFounderDaySummary,
   computeHermesHeaderStatus,
 } from "@/app/components/v2/adapters/hermes-daily-workspace-adapter";
+import type { AcquisitionStatusLike } from "@/app/components/v2/adapters/hermes-acquisition-founder-adapter";
 import RevenueQueueScreen from "@/app/components/v2/screens/RevenueQueueScreen";
 import RevenueQueueContextPanel from "@/app/components/v2/screens/RevenueQueueContextPanel";
 import LeadListScreen from "@/app/components/v2/screens/LeadListScreen";
@@ -120,6 +121,26 @@ import type { ForecastCard } from "@/app/components/v2/adapters/revenue-forecast
 import type { RiskCard } from "@/app/components/v2/adapters/revenue-risk-adapter";
 import type { RecoveryCard } from "@/app/components/v2/adapters/revenue-recovery-adapter";
 import type { AnalyticsCard } from "@/app/components/v2/adapters/revenue-analytics-adapter";
+
+/**
+ * Sprint C1 — which acquisition runs' candidate batches were already merged
+ * into the local pool. A pure replay guard: even without it, the import
+ * merge dedupe would skip every re-ingested lead.
+ */
+const ACQUISITION_INGESTED_RUNS_KEY = "tugobo-lead-engine:acquisition-ingested-runs-v1";
+
+/** Sanitized `/api/hermes/acquisition/status` payload — the founder subset plus candidate/run extras. */
+type AcquisitionStatusPayload = AcquisitionStatusLike & {
+  pendingCandidates?: Array<{ runId: string; storedAt: number; leads: ScoredLead[] }>;
+  recentRuns?: Array<{
+    id: string;
+    status: string;
+    dryRun: boolean;
+    summaryTr: string;
+    blockingReasons: string[];
+    completedAt: number | null;
+  }>;
+};
 
 export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> = {
   "revenue-queue": {
@@ -324,6 +345,81 @@ export default function V2Shell({ scoredLeads }: Props) {
 
   const leadImportState = useLeadImport();
   const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
+  const { ingestExternalLeads } = leadImportState;
+
+  // Sprint C1 — Hermes Autonomous Acquisition: one read-only status fetch on
+  // mount and on every header refresh bump. The server does the scanning on
+  // its own schedule; the client only reads sanitized summaries and picks up
+  // pending mission candidates.
+  const [acquisitionStatus, setAcquisitionStatus] = useState<AcquisitionStatusPayload | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/hermes/acquisition/status", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as AcquisitionStatusPayload;
+        if (!cancelled) setAcquisitionStatus(data);
+      } catch {
+        // Unreachable status is a non-event — the founder view falls back to
+        // its own empty state; never a raw error.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hermesRefreshSignal]);
+
+  // Candidate pickup: every pending batch is merged through the EXISTING
+  // import dedupe path (`ingestExternalLeads` → `mergeImportBatch`) exactly
+  // once per run id — the localStorage guard makes refresh cycles no-ops,
+  // and the merge dedupe makes even a lost guard harmless. Missions then
+  // form via the existing monitor and still require founder approval.
+  useEffect(() => {
+    const batches = acquisitionStatus?.pendingCandidates;
+    if (!batches || batches.length === 0) return;
+
+    let ingestedRunIds: string[] = [];
+    try {
+      const raw = window.localStorage.getItem(ACQUISITION_INGESTED_RUNS_KEY);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+      ingestedRunIds = Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      ingestedRunIds = [];
+    }
+    const ingestedSet = new Set(ingestedRunIds);
+
+    let changed = false;
+    for (const batch of batches) {
+      if (ingestedSet.has(batch.runId)) continue;
+      ingestExternalLeads(batch.leads, { label: "Hermes Otonom Tarama" });
+      ingestedSet.add(batch.runId);
+      changed = true;
+    }
+
+    if (changed) {
+      try {
+        window.localStorage.setItem(
+          ACQUISITION_INGESTED_RUNS_KEY,
+          JSON.stringify(Array.from(ingestedSet).slice(-50)),
+        );
+      } catch {
+        // Guard persistence is best-effort — the merge dedupe still protects.
+      }
+    }
+  }, [acquisitionStatus, ingestExternalLeads]);
+
+  // Founder projection input: the newest run's summary/blocking copy rides
+  // along so Hermes Home can show a blocked state in founder language.
+  const acquisitionForFounder = useMemo<AcquisitionStatusLike | null>(() => {
+    if (!acquisitionStatus) return null;
+    const lastRun = acquisitionStatus.recentRuns?.[0];
+    return {
+      ...acquisitionStatus,
+      lastRunSummaryTr: lastRun?.summaryTr ?? null,
+      lastRunBlockingReasons: lastRun?.status === "blocked" ? lastRun.blockingReasons : [],
+    };
+  }, [acquisitionStatus]);
 
   // v8.1.1: lifted from AutomationCenterScreen so the same flag gates both
   // the sidebar's Developer group and Hermes Home's own Developer runtime
@@ -923,6 +1019,12 @@ export default function V2Shell({ scoredLeads }: Props) {
     lastScanAt: leadImportState.importHistory[0]?.importedAt ?? null,
     lastActivityAt: hermesLastActivityAt,
     pendingDecisionCount: pendingHermesDecisionCount,
+    // Sprint C1 — the header merges autonomous acquisition state: a
+    // server-side run shows "Çalışıyor", the newest completed scan feeds
+    // "Son Tarama", and a broken config shows "Kontrol Gerekli".
+    acquisitionRunning: acquisitionStatus?.running === true,
+    acquisitionLastScanAt: acquisitionStatus?.lastScanAt ?? null,
+    acquisitionNeedsAttention: acquisitionStatus ? !acquisitionStatus.configOk : false,
   });
   const headerSubtitle = isHermes
     ? computeFounderDaySummary({
@@ -1114,7 +1216,7 @@ export default function V2Shell({ scoredLeads }: Props) {
             </>
           ) : isLeadImport ? (
             <>
-              <LeadImportScreen importState={leadImportState} />
+              <LeadImportScreen importState={leadImportState} onAcquisitionChanged={bumpHermesRefresh} />
               <LeadImportContextPanel importState={leadImportState} />
             </>
           ) : isDataSources ? (
@@ -1160,6 +1262,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                 developerMode={developerMode}
                 onToggleDeveloperMode={toggleDeveloperMode}
                 refreshSignal={hermesRefreshSignal}
+                acquisition={acquisitionForFounder}
               />
               <AutomationCenterContextPanel
                 developerMode={developerMode}

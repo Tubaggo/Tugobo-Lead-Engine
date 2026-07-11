@@ -10,6 +10,7 @@ import {
 } from "@/app/components/ImportPanel";
 import type { UseLeadImportReturn } from "@/app/components/v2/hooks/useLeadImport";
 import type { ScoredLead } from "@/app/lib/leads";
+import HermesAcquisitionDevPanel from "@/app/components/v2/screens/HermesAcquisitionDevPanel";
 
 /* ── icons ──────────────────────────────────────────────────── */
 
@@ -82,7 +83,8 @@ function fmtTime(ts: number): string {
   });
 }
 
-function sourceLabel(source: "cached" | "google"): string {
+function sourceLabel(source: "cached" | "google" | "hermes"): string {
+  if (source === "hermes") return "Hermes Taramasından";
   return source === "cached" ? "Önbellekten" : "Google&apos;dan";
 }
 
@@ -155,9 +157,11 @@ function EmptyState() {
 
 type Props = {
   importState: UseLeadImportReturn;
+  /** Sprint C1 — bumped after a Developer acquisition run so V2Shell refetches status + ingests candidates. */
+  onAcquisitionChanged?: () => void;
 };
 
-export default function LeadImportScreen({ importState }: Props) {
+export default function LeadImportScreen({ importState, onAcquisitionChanged }: Props) {
   const {
     lastBatch,
     lastNewIds,
@@ -219,6 +223,11 @@ export default function LeadImportScreen({ importState }: Props) {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.06] bg-[var(--background-elev)]">
+
+      {/* Sprint C1 — Hermes autonomous acquisition controls (Developer-only screen already) */}
+      <div className="shrink-0 border-b border-white/[0.06] px-4 py-3.5">
+        <HermesAcquisitionDevPanel onAcquisitionChanged={onAcquisitionChanged} />
+      </div>
 
       {/* Command panel */}
       <div className="shrink-0 border-b border-white/[0.06] px-4 py-3.5">

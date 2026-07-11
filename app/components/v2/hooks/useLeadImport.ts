@@ -12,6 +12,12 @@ import {
 } from "@/app/lib/leads";
 import { leadDedupeKey } from "@/app/lib/generate";
 import {
+  buildDedupeKeySet,
+  isDuplicateAgainstKeySet,
+  normalizePhoneForDedupe,
+  normalizeWebsiteForDedupe,
+} from "@/app/lib/lead-dedupe";
+import {
   makePlacesImportSessionKey,
   PLACES_RATE_LIMIT_USER_MESSAGE,
 } from "@/app/lib/places-import-session";
@@ -55,8 +61,15 @@ export type ImportHistoryEntry = {
   updated: number;
   skipped: number;
   hot: number;
-  source: "cached" | "google";
+  /** "hermes" = Sprint C1 autonomous acquisition handoff — merged through the exact same dedupe path. */
+  source: "cached" | "google" | "hermes";
   importedAt: number;
+};
+
+export type IngestExternalLeadsResult = {
+  added: number;
+  updated: number;
+  skipped: number;
 };
 
 export type UseLeadImportReturn = {
@@ -71,52 +84,14 @@ export type UseLeadImportReturn = {
   showCacheChoice: boolean;
   handleImport: (req: ImportRequest) => Promise<ImportResult>;
   hasCachedImportResults: (req: Omit<ImportRequest, "forceGoogleRefresh">) => boolean;
+  /** Sprint C1 — merges an autonomous acquisition candidate batch through the exact same dedupe/persistence path a manual import uses. */
+  ingestExternalLeads: (batch: ScoredLead[], meta: { label: string }) => IngestExternalLeadsResult;
 };
 
-/* ── pure dedupe helpers (mirror of Dashboard.tsx) ─────────── */
+/* ── pure dedupe helpers — canonical versions live in app/lib/lead-dedupe.ts (Sprint C1) ── */
 
-function normalizePhoneDedupe(phone: string): string | null {
-  let d = phone.replace(/\D/g, "");
-  if (!d) return null;
-  while (d.startsWith("00") && d.length > 2) d = d.slice(2);
-  if (d.startsWith("90") && d.length > 2) d = d.slice(2);
-  return d.length >= 10 ? d : null;
-}
-
-function normalizeWebDedupe(web?: string): string | null {
-  if (!web?.trim()) return null;
-  const h = web
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .split("/")[0];
-  return h || null;
-}
-
-function dedupeKeysForLead(lead: ScoredLead): string[] {
-  const keys: string[] = [leadDedupeKey(lead.name, lead.city)];
-  const pk = normalizePhoneDedupe(lead.phone);
-  if (pk) keys.push(`phone:${pk}`);
-  const wk = normalizeWebDedupe(lead.website);
-  if (wk) keys.push(`web:${wk}`);
-  return keys;
-}
-
-function buildDedupeKeySet(base: ScoredLead[]): Set<string> {
-  const s = new Set<string>();
-  for (const l of base) {
-    for (const k of dedupeKeysForLead(l)) s.add(k);
-  }
-  return s;
-}
-
-function isDuplicateAgainstSet(lead: ScoredLead, keys: Set<string>): boolean {
-  for (const k of dedupeKeysForLead(lead)) {
-    if (keys.has(k)) return true;
-  }
-  return false;
-}
+const normalizePhoneDedupe = normalizePhoneForDedupe;
+const normalizeWebDedupe = normalizeWebsiteForDedupe;
 
 type ImportMatch =
   | { kind: "imported"; index: number; lead: ScoredLead }
@@ -257,7 +232,7 @@ function mergeImportBatch(
       pushSessionLead(merged);
     } else {
       const keySet = buildDedupeKeySet(imported);
-      if (isDuplicateAgainstSet(inc, keySet)) continue;
+      if (isDuplicateAgainstKeySet(inc, keySet)) continue;
       pushNew(inc);
     }
   }
@@ -584,6 +559,64 @@ export function useLeadImport(): UseLeadImportReturn {
     }
   }, []);
 
+  /**
+   * Sprint C1 — Hermes'in otonom taramada bulduğu aday lead'leri havuza
+   * alır. Deliberately reuses `mergeImportBatch` (the exact same duplicate
+   * control a manual import goes through) + the same localStorage
+   * persistence, and records a "hermes"-sourced history entry. It never
+   * touches the manual-import UX state (`lastBatch`/`lastResult`/
+   * `lastRequest`) — the Lead Import screen's "last results" view stays
+   * whatever the operator last did manually. Fully idempotent: re-ingesting
+   * the same batch adds nothing (dedupe) and records no history entry.
+   */
+  const ingestExternalLeads = useCallback(
+    (batch: ScoredLead[], meta: { label: string }): IngestExternalLeadsResult => {
+      if (batch.length === 0) return { added: 0, updated: 0, skipped: 0 };
+
+      const importTs = Date.now();
+      const importSessionId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `hermes-${importTs}`;
+
+      const prev = importedLeadsRef.current;
+      const prepared = ensureLeadsCreatedAt(batch, importTs);
+      const { nextImported, lastSessionBatch, updatedIds, freshNewLeads } = mergeImportBatch(
+        prev,
+        prepared,
+        importTs,
+        importSessionId,
+      );
+
+      const skipped = batch.length - lastSessionBatch.length;
+      if (freshNewLeads.length === 0 && updatedIds.length === 0) {
+        return { added: 0, updated: 0, skipped };
+      }
+
+      setImportedLeads(nextImported);
+      importedLeadsRef.current = nextImported;
+      saveImportedLeadsV2(nextImported);
+      saveImportMeta({ hasRun: true });
+
+      const cities = Array.from(new Set(freshNewLeads.map((l) => l.city))).slice(0, 3);
+      const entry: ImportHistoryEntry = {
+        id: importSessionId,
+        city: cities.join(", ") || batch[0]?.city || "—",
+        type: meta.label,
+        added: freshNewLeads.length,
+        updated: updatedIds.length,
+        skipped,
+        hot: freshNewLeads.filter((l) => l.hotScore >= 70).length,
+        source: "hermes",
+        importedAt: importTs,
+      };
+      setImportHistory((prevHistory) => [entry, ...prevHistory].slice(0, 10));
+
+      return { added: freshNewLeads.length, updated: updatedIds.length, skipped };
+    },
+    [],
+  );
+
   return {
     importedLeads,
     lastBatch,
@@ -596,5 +629,6 @@ export function useLeadImport(): UseLeadImportReturn {
     showCacheChoice,
     handleImport,
     hasCachedImportResults,
+    ingestExternalLeads,
   };
 }

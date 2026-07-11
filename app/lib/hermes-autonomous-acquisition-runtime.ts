@@ -1,0 +1,532 @@
+import {
+  ACQUISITION_BLOCKING_REASONS,
+  buildAcquisitionAuditEvent,
+  enforceAcquisitionBudget,
+  evaluateAutonomousAcquisitionEligibility,
+  evaluateMissionCandidateEligibility,
+  selectNextAcquisitionRegions,
+  summarizeAcquisitionRun,
+  type AcquisitionAuditEvent,
+  type AcquisitionRegion,
+  type AcquisitionRunStatus,
+  type AcquisitionTrigger,
+} from "./hermes-autonomous-acquisition-policy.ts";
+import type { AcquisitionConfig } from "./hermes-acquisition-config.ts";
+import {
+  finishAcquisitionRun,
+  getAcquisitionTodayCounters,
+  getActiveAcquisitionRun,
+  getRegionLastRunAt,
+  hasSeenAcquisitionDedupeKey,
+  markRegionsScanned,
+  recordBlockedAcquisitionRun,
+  registerAcquisitionCandidates,
+  rememberAcquisitionDedupeKeys,
+  startAcquisitionRun,
+  type HermesAcquisitionRun,
+} from "./hermes-acquisition-run-registry.ts";
+import { leadDedupeKeysFor } from "./lead-dedupe.ts";
+
+/**
+ * Hermes Autonomous Acquisition Runtime (Sprint C1 — Scope 4).
+ *
+ * The orchestrator that turns policy decisions into one controlled
+ * acquisition pass:
+ *
+ *   policy/config → eligibility → lock/idempotency → budget → region
+ *   selection → EXISTING import path (injected adapter around
+ *   `discoverGooglePlacesLeads` + `enrichLeadsWithHomepageSignalsBatched`)
+ *   → EXISTING dedupe keys (`lead-dedupe.ts`) → EXISTING scoring
+ *   (`verifiedOpportunityScore`, already on the enriched leads) → capped
+ *   mission-candidate handoff → run summary + audit events.
+ *
+ * What this module can NEVER do, structurally:
+ *  - send a WhatsApp message (no messaging import exists here);
+ *  - approve anything (candidates enter the pool exactly like a manual
+ *    import; missions then form through the existing client-side monitor
+ *    and still require the founder's decision in Karar Merkezi);
+ *  - call a provider directly (all external I/O lives behind the injected
+ *    `importAdapter`, and a dry run never invokes it).
+ *
+ * The import adapter is dependency-injected so this module stays
+ * node-testable; the production wiring is
+ * `hermes-acquisition-server-adapter.ts`, used only by the run route.
+ */
+
+/** Structural subset of ScoredLead the orchestrator reads — the full object flows through untouched. */
+export type AcquisitionDiscoveredLead = {
+  id: string;
+  name: string;
+  city: string;
+  phone?: string;
+  website?: string;
+  leadScore?: number;
+  opportunityScore?: number;
+  verifiedOpportunityScore?: number;
+} & Record<string, unknown>;
+
+export type AcquisitionImportAdapterResult =
+  | { ok: true; leads: AcquisitionDiscoveredLead[]; externalRequestCount: number }
+  | { ok: false; kind: "rate_limit" | "provider_error"; externalRequestCount: number };
+
+export type AcquisitionImportAdapter = (input: {
+  region: AcquisitionRegion;
+  maxResults: number;
+}) => Promise<AcquisitionImportAdapterResult>;
+
+export type RunAcquisitionInput = {
+  trigger: AcquisitionTrigger;
+  config: AcquisitionConfig;
+  /** Production: `hermesAcquisitionServerImportAdapter`. Tests: a fake. Never invoked on a dry run. */
+  importAdapter?: AcquisitionImportAdapter;
+  /** A client may only ever force dry-run ON — never off. */
+  forceDryRun?: boolean;
+  /** Cron/webhook retry protection; derived from trigger + time window when absent. */
+  idempotencyKey?: string;
+  now?: number;
+};
+
+export type RunAcquisitionResult = {
+  status: AcquisitionRunStatus;
+  runId: string | null;
+  dryRun: boolean;
+  blockingReasons: string[];
+  summaryTr: string;
+  evaluatedCount: number;
+  importedCount: number;
+  duplicateCount: number;
+  qualifiedCount: number;
+  missionCandidateCount: number;
+  missionCreatedCount: number;
+  externalRequestCount: number;
+};
+
+function hourWindow(now: number): string {
+  const d = new Date(now);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}-${d.getHours()}`;
+}
+
+function defaultIdempotencyKey(trigger: AcquisitionTrigger, now: number): string {
+  if (trigger === "scheduled") return `scheduled|${hourWindow(now)}`;
+  // Manual/developer double-click protection: one real run per 2-minute window.
+  return `${trigger}|${Math.floor(now / (2 * 60 * 1000))}`;
+}
+
+function opportunityScoreOf(lead: AcquisitionDiscoveredLead): number {
+  return lead.verifiedOpportunityScore ?? lead.opportunityScore ?? lead.leadScore ?? 0;
+}
+
+function toResult(run: HermesAcquisitionRun): RunAcquisitionResult {
+  return {
+    status: run.status,
+    runId: run.id,
+    dryRun: run.dryRun,
+    blockingReasons: run.blockingReasons,
+    summaryTr: run.summaryTr,
+    evaluatedCount: run.evaluatedCount,
+    importedCount: run.importedCount,
+    duplicateCount: run.duplicateCount,
+    qualifiedCount: run.qualifiedCount,
+    missionCandidateCount: run.missionCandidateCount,
+    missionCreatedCount: run.missionCreatedCount,
+    externalRequestCount: run.externalRequestCount,
+  };
+}
+
+export async function runHermesAutonomousAcquisition(
+  input: RunAcquisitionInput,
+): Promise<RunAcquisitionResult> {
+  const now = input.now ?? Date.now();
+  const { policy, configErrors } = input.config;
+  const dryRun = policy.dryRun || input.forceDryRun === true;
+
+  const audit: AcquisitionAuditEvent[] = [
+    buildAcquisitionAuditEvent({
+      type: "hermes_acquisition_run_requested",
+      at: now,
+      detailTr: `Tarama isteği alındı (${input.trigger}).`,
+    }),
+  ];
+
+  // Regions carry their real last-run moments from the registry.
+  const regions = input.config.regions.map((r) => ({
+    ...r,
+    lastRunAt: getRegionLastRunAt(r.id),
+  }));
+
+  const counters = getAcquisitionTodayCounters(now);
+  const eligibility = evaluateAutonomousAcquisitionEligibility({
+    policy,
+    configErrors,
+    trigger: input.trigger,
+    hasActiveRun: getActiveAcquisitionRun(now) !== null,
+    counters,
+    enabledRegionCount: regions.filter((r) => r.enabled).length,
+  });
+
+  const blockRun = (reasons: string[]): RunAcquisitionResult => {
+    const summaryTr = summarizeAcquisitionRun({
+      status: "blocked",
+      dryRun,
+      regionCities: [],
+      evaluatedCount: 0,
+      importedCount: 0,
+      duplicateCount: 0,
+      qualifiedCount: 0,
+      missionCandidateCount: 0,
+      blockingReasons: reasons,
+    });
+    const run = recordBlockedAcquisitionRun({
+      trigger: input.trigger,
+      mode: policy.mode,
+      dryRun,
+      blockingReasons: reasons,
+      summaryTr,
+      auditEvents: [
+        ...audit,
+        buildAcquisitionAuditEvent({
+          type: "hermes_acquisition_run_blocked",
+          at: now,
+          detailTr: reasons.join(" "),
+        }),
+      ],
+      now,
+    });
+    return toResult(run);
+  };
+
+  if (!eligibility.eligible) {
+    return blockRun(eligibility.blockingReasons);
+  }
+
+  const selectedRegions = selectNextAcquisitionRegions({ policy, regions, now });
+  if (selectedRegions.length === 0) {
+    return blockRun([ACQUISITION_BLOCKING_REASONS.noEligibleRegion]);
+  }
+
+  const budget = enforceAcquisitionBudget({
+    policy,
+    counters,
+    selectedRegionCount: selectedRegions.length,
+  });
+  if (!budget.allowed) {
+    return blockRun(budget.blockingReasons);
+  }
+
+  const started = startAcquisitionRun({
+    trigger: input.trigger,
+    mode: policy.mode,
+    dryRun,
+    selectedRegionsSafe: selectedRegions.map((r) => r.city),
+    idempotencyKey: input.idempotencyKey ?? defaultIdempotencyKey(input.trigger, now),
+    now,
+  });
+  if (!started.ok) {
+    const reason =
+      started.reason === "active_run"
+        ? ACQUISITION_BLOCKING_REASONS.activeRun
+        : ACQUISITION_BLOCKING_REASONS.duplicateRun;
+    return blockRun([reason]);
+  }
+  const run = started.run;
+  const regionCities = selectedRegions.map((r) => r.city);
+
+  /* ── dry run: plan only, zero external calls, zero mutation ── */
+  if (dryRun) {
+    const plannedPerRegion = selectedRegions.map((r) =>
+      Math.min(r.maxResultsPerRun, budget.maxResultsPerRegion),
+    );
+    const plannedEvaluations = plannedPerRegion.reduce((s, n) => s + n, 0);
+    const plannedCandidates = Math.min(
+      budget.maxMissionCandidates,
+      budget.remainingLeadBudget,
+      plannedEvaluations,
+    );
+    const summaryTr = summarizeAcquisitionRun({
+      status: "completed",
+      dryRun: true,
+      regionCities,
+      evaluatedCount: plannedEvaluations,
+      importedCount: 0,
+      duplicateCount: 0,
+      qualifiedCount: 0,
+      missionCandidateCount: plannedCandidates,
+      blockingReasons: [],
+    });
+    const finished = finishAcquisitionRun(
+      run.id,
+      {
+        status: "completed",
+        evaluatedCount: plannedEvaluations,
+        missionCandidateCount: plannedCandidates,
+        summaryTr,
+        auditEvents: [
+          ...audit,
+          buildAcquisitionAuditEvent({
+            type: "hermes_acquisition_dry_run_completed",
+            at: now,
+            detailTr: `Önizleme tamamlandı: ${regionCities.join(", ")} için en fazla ${plannedEvaluations} işletme, ${plannedCandidates} satış işi adayı planlandı.`,
+          }),
+        ],
+      },
+      now,
+    );
+    return toResult(finished!);
+  }
+
+  /* ── real safe run ──────────────────────────────────────────── */
+  if (!input.importAdapter) {
+    const finished = finishAcquisitionRun(
+      run.id,
+      {
+        status: "failed",
+        safeErrors: ["Tarama bağlantısı hazır değil."],
+        summaryTr: summarizeAcquisitionRun({
+          status: "failed",
+          dryRun: false,
+          regionCities,
+          evaluatedCount: 0,
+          importedCount: 0,
+          duplicateCount: 0,
+          qualifiedCount: 0,
+          missionCandidateCount: 0,
+          blockingReasons: [],
+        }),
+        auditEvents: [
+          ...audit,
+          buildAcquisitionAuditEvent({
+            type: "hermes_acquisition_run_failed",
+            at: now,
+            detailTr: "Tarama bağlantısı hazır olmadığı için çalıştırma durduruldu.",
+          }),
+        ],
+      },
+      now,
+    );
+    return toResult(finished!);
+  }
+
+  audit.push(
+    buildAcquisitionAuditEvent({
+      type: "hermes_acquisition_run_started",
+      at: now,
+      detailTr: `Tarama başladı: ${regionCities.join(", ")}.`,
+    }),
+  );
+
+  let evaluatedCount = 0;
+  let importedCount = 0;
+  let duplicateCount = 0;
+  let enrichedCount = 0;
+  let qualifiedCount = 0;
+  let missionCandidateCount = 0;
+  let externalRequestCount = 0;
+  const safeErrors: string[] = [];
+  let hitProviderTrouble = false;
+  let stoppedEarly = false;
+
+  let remainingRequestBudget = budget.remainingRequestBudget;
+  let remainingLeadBudget = budget.remainingLeadBudget;
+  let remainingCandidateBudget = budget.maxMissionCandidates;
+  const seenThisRun = new Set<string>();
+
+  try {
+    for (const region of selectedRegions) {
+      // A region scan costs at least 1 text search + 1 detail request per
+      // result — never start a region the remaining budget can't cover.
+      const maxResults = Math.min(
+        region.maxResultsPerRun,
+        budget.maxResultsPerRegion,
+        Math.max(0, remainingRequestBudget - 1),
+      );
+      if (maxResults <= 0 || remainingLeadBudget <= 0 || remainingCandidateBudget <= 0) {
+        stoppedEarly = true;
+        break;
+      }
+
+      audit.push(
+        buildAcquisitionAuditEvent({
+          type: "hermes_acquisition_region_selected",
+          at: now,
+          detailTr: `Bölge seçildi: ${region.city} (${region.leadType}).`,
+        }),
+      );
+
+      const result = await input.importAdapter({ region, maxResults });
+      externalRequestCount += result.externalRequestCount;
+      remainingRequestBudget = Math.max(0, remainingRequestBudget - result.externalRequestCount);
+      markRegionsScanned([region.id], now);
+
+      if (!result.ok) {
+        hitProviderTrouble = true;
+        safeErrors.push(
+          result.kind === "rate_limit"
+            ? `${region.city}: dış kaynak kısa süreli limit bildirdi, tarama duraklatıldı.`
+            : `${region.city}: dış kaynak yanıt vermedi, bölge atlandı.`,
+        );
+        if (result.kind === "rate_limit") break;
+        continue;
+      }
+
+      evaluatedCount += result.leads.length;
+      enrichedCount += result.leads.length;
+      audit.push(
+        buildAcquisitionAuditEvent({
+          type: "hermes_acquisition_leads_discovered",
+          at: now,
+          detailTr: `${region.city}: ${result.leads.length} işletme değerlendirildi.`,
+        }),
+      );
+
+      const fresh: AcquisitionDiscoveredLead[] = [];
+      let regionDuplicates = 0;
+      for (const lead of result.leads) {
+        const keys = leadDedupeKeysFor(lead);
+        const intraRunDuplicate = keys.some((k) => seenThisRun.has(k));
+        if (intraRunDuplicate || hasSeenAcquisitionDedupeKey(keys)) {
+          regionDuplicates += 1;
+          continue;
+        }
+        for (const k of keys) seenThisRun.add(k);
+        fresh.push(lead);
+      }
+      duplicateCount += regionDuplicates;
+      if (regionDuplicates > 0) {
+        audit.push(
+          buildAcquisitionAuditEvent({
+            type: "hermes_acquisition_duplicates_skipped",
+            at: now,
+            detailTr: `${region.city}: ${regionDuplicates} işletme zaten bilindiği için atlandı.`,
+          }),
+        );
+      }
+
+      const qualified = fresh.filter(
+        (lead) =>
+          evaluateMissionCandidateEligibility({
+            opportunityScore: opportunityScoreOf(lead),
+            hasPhone: Boolean(lead.phone?.trim()),
+            hasWebsite: Boolean(lead.website?.trim()),
+            policy,
+          }).eligible,
+      );
+      qualifiedCount += qualified.length;
+      if (qualified.length > 0) {
+        audit.push(
+          buildAcquisitionAuditEvent({
+            type: "hermes_acquisition_candidates_qualified",
+            at: now,
+            detailTr: `${region.city}: ${qualified.length} işletme fırsat kriterlerini karşıladı.`,
+          }),
+        );
+      }
+
+      const handoffCap = Math.min(remainingCandidateBudget, remainingLeadBudget);
+      const candidates = qualified.slice(0, Math.max(0, handoffCap));
+      if (candidates.length > 0) {
+        registerAcquisitionCandidates(run.id, candidates, now);
+        for (const c of candidates) rememberAcquisitionDedupeKeys(leadDedupeKeysFor(c));
+        importedCount += candidates.length;
+        missionCandidateCount += candidates.length;
+        remainingLeadBudget -= candidates.length;
+        remainingCandidateBudget -= candidates.length;
+        audit.push(
+          buildAcquisitionAuditEvent({
+            type: "hermes_acquisition_missions_created",
+            at: now,
+            detailTr: `${region.city}: ${candidates.length} satış işi adayı oluşturuldu — founder onayı bekliyor.`,
+          }),
+        );
+      }
+      if (qualified.length > candidates.length) stoppedEarly = true;
+    }
+  } catch {
+    // A crash inside the loop must never leave the lock held or the run
+    // half-open — the run is finalized as failed with a safe error only.
+    const finished = finishAcquisitionRun(
+      run.id,
+      {
+        status: "failed",
+        evaluatedCount,
+        importedCount,
+        duplicateCount,
+        enrichedCount,
+        qualifiedCount,
+        missionCandidateCount,
+        missionCreatedCount: missionCandidateCount,
+        externalRequestCount,
+        safeErrors: [...safeErrors, "Tarama sırasında beklenmeyen bir sorun oluştu."],
+        summaryTr: summarizeAcquisitionRun({
+          status: "failed",
+          dryRun: false,
+          regionCities,
+          evaluatedCount,
+          importedCount,
+          duplicateCount,
+          qualifiedCount,
+          missionCandidateCount,
+          blockingReasons: [],
+        }),
+        auditEvents: [
+          ...audit,
+          buildAcquisitionAuditEvent({
+            type: "hermes_acquisition_run_failed",
+            at: now,
+            detailTr: "Tarama beklenmeyen bir sorunla karşılaştı ve güvenli şekilde durduruldu.",
+          }),
+        ],
+      },
+      now,
+    );
+    return toResult(finished!);
+  }
+
+  const status: AcquisitionRunStatus =
+    hitProviderTrouble || stoppedEarly ? "partial" : "completed";
+  const skippedCount = Math.max(0, evaluatedCount - importedCount - duplicateCount);
+
+  audit.push(
+    buildAcquisitionAuditEvent({
+      type: status === "partial" ? "hermes_acquisition_run_partial" : "hermes_acquisition_run_completed",
+      at: now,
+      detailTr:
+        status === "partial"
+          ? "Tarama limitler veya dış kaynak nedeniyle kısmen tamamlandı."
+          : "Tarama tamamlandı.",
+    }),
+  );
+
+  const finished = finishAcquisitionRun(
+    run.id,
+    {
+      status,
+      evaluatedCount,
+      importedCount,
+      duplicateCount,
+      enrichedCount,
+      qualifiedCount,
+      missionCandidateCount,
+      // Candidates become missions through the existing client-side mission
+      // path and each still requires the founder's approval — this counter
+      // reports how many were handed to that path, never an auto-approval.
+      missionCreatedCount: missionCandidateCount,
+      skippedCount,
+      externalRequestCount,
+      safeErrors,
+      summaryTr: summarizeAcquisitionRun({
+        status,
+        dryRun: false,
+        regionCities,
+        evaluatedCount,
+        importedCount,
+        duplicateCount,
+        qualifiedCount,
+        missionCandidateCount,
+        blockingReasons: [],
+      }),
+      auditEvents: audit,
+    },
+    now,
+  );
+  return toResult(finished!);
+}

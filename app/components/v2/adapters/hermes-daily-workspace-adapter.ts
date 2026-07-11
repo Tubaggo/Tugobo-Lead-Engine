@@ -23,13 +23,14 @@
  * adapter follows.
  */
 
-export type HermesRuntimeMode = "running" | "idle";
+export type HermesRuntimeMode = "running" | "idle" | "attention";
 
 /** Founder-facing vocabulary for the daily-workspace header + Karar Merkezi all-clear state. Audited by the release tests. */
 export const HERMES_DAILY_WORKSPACE_LABELS = {
   statusTitle: "Hermes",
   running: "Çalışıyor",
   idle: "Beklemede",
+  attention: "Kontrol Gerekli",
   lastScan: "Son Tarama",
   lastActivity: "Son Aktivite",
   pendingDecisions: "Bekleyen Karar",
@@ -61,19 +62,40 @@ export type ComputeHermesHeaderStatusInput = {
   lastActivityAt: number | null;
   /** The shell's existing pending-founder-decision count — the same number the sidebar badge shows. */
   pendingDecisionCount: number;
+  /** Sprint C1 — an autonomous acquisition run is in flight on the server right now. */
+  acquisitionRunning?: boolean;
+  /** Sprint C1 — newest completed autonomous scan moment; merged with `lastScanAt` (newest wins). */
+  acquisitionLastScanAt?: number | null;
+  /** Sprint C1 — the acquisition config needs a human look (founder-safe "Kontrol Gerekli"). */
+  acquisitionNeedsAttention?: boolean;
 };
 
 /**
- * "Running" means work is genuinely in flight (a scan or an executing job) —
- * a mission merely existing keeps Hermes watchful, not running. This is what
- * gates the header's "Hermes'i Çalıştır" action to idle only.
+ * "Running" means work is genuinely in flight (a scan, an executing job, or
+ * a server-side acquisition run) — a mission merely existing keeps Hermes
+ * watchful, not running. This is what gates the header's "Hermes'i Çalıştır"
+ * action to idle only. A broken acquisition configuration surfaces as the
+ * founder-safe "Kontrol Gerekli" state — never a technical error string.
  */
 export function computeHermesHeaderStatus(input: ComputeHermesHeaderStatusInput): HermesHeaderStatus {
-  const running = input.importInProgress || input.runningJobCount > 0;
+  const running =
+    input.importInProgress || input.runningJobCount > 0 || input.acquisitionRunning === true;
+  const mode: HermesRuntimeMode = running
+    ? "running"
+    : input.acquisitionNeedsAttention === true
+      ? "attention"
+      : "idle";
+
+  const acquisitionScanAt = input.acquisitionLastScanAt ?? null;
+  const lastScanAt =
+    input.lastScanAt === null && acquisitionScanAt === null
+      ? null
+      : Math.max(input.lastScanAt ?? 0, acquisitionScanAt ?? 0);
+
   return {
-    mode: running ? "running" : "idle",
-    modeLabel: running ? HERMES_DAILY_WORKSPACE_LABELS.running : HERMES_DAILY_WORKSPACE_LABELS.idle,
-    lastScanAt: input.lastScanAt,
+    mode,
+    modeLabel: HERMES_DAILY_WORKSPACE_LABELS[mode],
+    lastScanAt,
     lastActivityAt: input.lastActivityAt,
     pendingDecisionCount: input.pendingDecisionCount,
   };

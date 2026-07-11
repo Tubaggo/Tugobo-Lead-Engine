@@ -28,6 +28,11 @@ import {
   HERMES_DAILY_WORKSPACE_LABELS,
   computeTodayStatusSentence,
 } from "@/app/components/v2/adapters/hermes-daily-workspace-adapter";
+import {
+  HERMES_ACQUISITION_FOUNDER_LABELS,
+  computeHermesAcquisitionFounderView,
+  type AcquisitionStatusLike,
+} from "@/app/components/v2/adapters/hermes-acquisition-founder-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -158,6 +163,8 @@ type Props = {
   developerMode: boolean;
   /** v8.6 — bumped by the header's "Hermes'i Çalıştır"/"Durumu Yenile" actions; re-runs the same seven read-only fetches "Tekrar Dene" already re-runs. */
   refreshSignal: number;
+  /** Sprint C1 — sanitized autonomous acquisition status; the Hermes Fırsat Keşfi section reads real run data from it. */
+  acquisition: AcquisitionStatusLike | null;
 };
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
@@ -208,6 +215,7 @@ export default function FounderRevenueWorkspace({
   onNavigateToLeadImport,
   developerMode,
   refreshSignal,
+  acquisition,
 }: Props) {
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
@@ -470,6 +478,9 @@ export default function FounderRevenueWorkspace({
     importInProgress,
     importError,
   });
+  // Sprint C1 — real autonomous acquisition run data for the Hermes Fırsat
+  // Keşfi section. Pure projection; null status renders the safe empty state.
+  const acquisitionView = computeHermesAcquisitionFounderView(acquisition);
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
   const opportunityFocus = computeHermesOpportunityFocus({
@@ -770,20 +781,41 @@ export default function FounderRevenueWorkspace({
         </div>
       </div>
 
-      {/* Section 4 — Hermes Fırsat Keşfi: what Hermes's intake side has done, operational summary only (v8.1) */}
+      {/* Section 4 — Hermes Fırsat Keşfi: what Hermes's intake side has done, operational summary only (v8.1).
+          Sprint C1: leads with REAL autonomous acquisition run data (statusLine + today's counters), the
+          intake adapter's pool-level summary stays as supporting copy below it. */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>{FOUNDER_HOME_LABELS.leadIntakeSection}</p>
-        <p className="mb-2.5 text-[11px] leading-relaxed text-zinc-400">{intake.founderSummary}</p>
+        <p className="mb-1 text-[11px] font-medium leading-relaxed text-zinc-200">
+          {acquisitionView.statusLineTr}
+        </p>
+        {acquisitionView.detailLinesTr.length > 0 && (
+          <ul className="mb-1.5 space-y-0.5">
+            {acquisitionView.detailLinesTr.map((line, i) => (
+              <li key={i} className="text-[10.5px] text-zinc-400">
+                {line}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mb-2.5 text-[11px] leading-relaxed text-zinc-500">{intake.founderSummary}</p>
         <div className={kpiStripCls}>
-          <SummaryTile label="Değerlendirilen İşletme" value={intake.evaluatedLeadCount} />
+          <SummaryTile
+            label={HERMES_ACQUISITION_FOUNDER_LABELS.sectionCounters.evaluated}
+            value={acquisitionView.counters.evaluatedToday}
+          />
           <SummaryTile label="Yeni Fırsat" value={intake.newOpportunityCount} accent="text-emerald-400" />
           <SummaryTile label={FOUNDER_HOME_LABELS.activeJobsTile} value={intake.activeMissionCount} />
           <SummaryTile label="Onay Bekleyen" value={intake.approvalRequiredCount} accent="text-amber-400" />
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2.5">
           <div className="min-w-0">
-            <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">Son Tarama</p>
-            <p className="mt-0.5 text-[11px] text-zinc-300">{formatTime(intake.lastImportAt ?? 0)}</p>
+            <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+              {HERMES_ACQUISITION_FOUNDER_LABELS.lastScan}
+            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-300">
+              {formatTime(Math.max(acquisitionView.lastScanAt ?? 0, intake.lastImportAt ?? 0))}
+            </p>
           </div>
           <p className="min-w-0 flex-1 truncate text-right text-[10px] font-medium text-indigo-300">
             {intake.suggestedAction}

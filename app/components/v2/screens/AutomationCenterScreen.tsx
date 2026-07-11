@@ -29,6 +29,7 @@ import {
   type MissionBucket,
 } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import { resolveDeveloperLeadImportNavigation } from "@/app/components/v2/adapters/hermes-lead-intake-adapter";
+import type { AcquisitionStatusLike } from "@/app/components/v2/adapters/hermes-acquisition-founder-adapter";
 import type { ScoredLead } from "@/app/lib/leads";
 import type { V2Screen } from "@/app/components/v2/types";
 import type { ImportHistoryEntry } from "@/app/components/v2/hooks/useLeadImport";
@@ -165,6 +166,8 @@ type Props = {
   onToggleDeveloperMode: () => void;
   /** v8.6 — bumped by the header's "Hermes'i Çalıştır"/"Durumu Yenile" actions; re-runs the workspace's existing read-only data pass. */
   refreshSignal: number;
+  /** Sprint C1 — sanitized autonomous acquisition status for the Hermes Fırsat Keşfi section; null when unread. */
+  acquisition: AcquisitionStatusLike | null;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -2041,6 +2044,7 @@ export default function AutomationCenterScreen({
   developerMode,
   onToggleDeveloperMode,
   refreshSignal,
+  acquisition,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -2089,6 +2093,7 @@ export default function AutomationCenterScreen({
           onNavigateToLeadImport={onNavigateToLeadImport}
           developerMode={developerMode}
           refreshSignal={refreshSignal}
+          acquisition={acquisition}
         />
 
         {developerMode && (
