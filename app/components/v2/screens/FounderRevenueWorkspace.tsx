@@ -33,6 +33,12 @@ import {
   computeHermesAcquisitionFounderView,
   type AcquisitionStatusLike,
 } from "@/app/components/v2/adapters/hermes-acquisition-founder-adapter";
+import {
+  HERMES_ACQUISITION_EXPLAINABILITY_LABELS,
+  computeAcquisitionExplainability,
+  type AcquisitionAttentionLevel,
+  type FounderOpportunityExplanation,
+} from "@/app/components/v2/adapters/hermes-acquisition-explainability-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -165,6 +171,10 @@ type Props = {
   refreshSignal: number;
   /** Sprint C1 — sanitized autonomous acquisition status; the Hermes Fırsat Keşfi section reads real run data from it. */
   acquisition: AcquisitionStatusLike | null;
+  /** Sprint C1.5 — the shell's acquisition status fetch state; decides the "Hermes Bugün Bunları Buldu" loading/error rendering when no cards exist. */
+  acquisitionFetchState: "loading" | "ready" | "error";
+  /** Sprint C1.5 — re-runs the shell's acquisition status fetch (the section's "Tekrar Dene"). */
+  onRetryAcquisition: () => void;
 };
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
@@ -216,6 +226,8 @@ export default function FounderRevenueWorkspace({
   developerMode,
   refreshSignal,
   acquisition,
+  acquisitionFetchState,
+  onRetryAcquisition,
 }: Props) {
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
@@ -481,6 +493,13 @@ export default function FounderRevenueWorkspace({
   // Sprint C1 — real autonomous acquisition run data for the Hermes Fırsat
   // Keşfi section. Pure projection; null status renders the safe empty state.
   const acquisitionView = computeHermesAcquisitionFounderView(acquisition);
+  // Sprint C1.5 — today's discovery explanations ("Hermes Bugün Bunları
+  // Buldu"): a pure read over the same scored lead pool every other section
+  // already receives; cards always win over a failed status fetch.
+  const explainability = computeAcquisitionExplainability({
+    leads,
+    fetchState: acquisitionFetchState,
+  });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
   const opportunityFocus = computeHermesOpportunityFocus({
@@ -831,6 +850,57 @@ export default function FounderRevenueWorkspace({
         </div>
       </div>
 
+      {/* Section 4b — Hermes Bugün Bunları Buldu (Sprint C1.5): today's
+          acquisition explanations. Why each business was picked (reasons read
+          from existing verification/ICP/homepage signals), why others were set
+          aside, and what Hermes plans next — all founder language, no
+          technical vocabulary, no red unless the data really failed to load. */}
+      <div className="border-b border-white/[0.06] px-5 py-3">
+        <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_ACQUISITION_EXPLAINABILITY_LABELS.sectionTitle}</p>
+        <p className="mb-2.5 text-[11px] text-zinc-500">
+          {HERMES_ACQUISITION_EXPLAINABILITY_LABELS.sectionSubtitle}
+        </p>
+
+        {explainability.mode === "loading" && (
+          <p className="text-[11px] text-zinc-600">{HERMES_ACQUISITION_EXPLAINABILITY_LABELS.loading}</p>
+        )}
+
+        {explainability.mode === "error" && (
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-rose-500/[0.06] px-4 py-3 ring-1 ring-inset ring-rose-500/15">
+            <p className="text-[11px] text-rose-300">{HERMES_ACQUISITION_EXPLAINABILITY_LABELS.error}</p>
+            <button
+              type="button"
+              onClick={onRetryAcquisition}
+              className="shrink-0 text-[11px] font-semibold text-rose-200 hover:text-rose-100"
+            >
+              {HERMES_ACQUISITION_EXPLAINABILITY_LABELS.retry}
+            </button>
+          </div>
+        )}
+
+        {explainability.mode === "empty" && (
+          <div className="rounded-lg bg-white/[0.02] px-4 py-3.5">
+            <p className="text-[12px] font-medium text-zinc-300">
+              {HERMES_ACQUISITION_EXPLAINABILITY_LABELS.emptyTitle}
+            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">
+              {HERMES_ACQUISITION_EXPLAINABILITY_LABELS.emptySubtitle}
+            </p>
+          </div>
+        )}
+
+        {explainability.mode === "ready" && (
+          <div className="space-y-1.5">
+            {explainability.found.map((card) => (
+              <OpportunityExplanationCard key={card.title} card={card} />
+            ))}
+            {explainability.revisit.map((card) => (
+              <OpportunityExplanationCard key={card.title} card={card} />
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Section 5 — Gelir Nabzı: won / lost / estimated MRR */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
@@ -913,6 +983,65 @@ function HealthTile({ label, value }: { label: string; value: string }) {
       <div className="mt-1 flex items-center gap-1.5">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${healthy ? "bg-emerald-400" : "bg-zinc-500"}`} />
         <span className="text-[11px] font-medium text-zinc-200">{value}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Sprint C1.5 — green ready / amber watching / gray waiting. The section's whole palette; red belongs to the error state alone. */
+const EXPLANATION_ATTENTION_CLS: Record<
+  AcquisitionAttentionLevel,
+  { badge: string; dot: string }
+> = {
+  ready: { badge: "bg-emerald-500/[0.10] text-emerald-300 ring-emerald-500/20", dot: "text-emerald-400" },
+  watching: { badge: "bg-amber-500/[0.10] text-amber-300 ring-amber-500/20", dot: "text-amber-400" },
+  waiting: { badge: "bg-white/[0.04] text-zinc-400 ring-white/[0.06]", dot: "text-zinc-500" },
+};
+
+/**
+ * Sprint C1.5 — one compact explanation card: business name + status badge,
+ * the reason list ("Hermes bunu seçti çünkü" / "Neden?"), and the next step.
+ * Pure rendering of a `FounderOpportunityExplanation` — no action buttons,
+ * no mutation; decisions still live in Karar Merkezi alone.
+ */
+function OpportunityExplanationCard({ card }: { card: FounderOpportunityExplanation }) {
+  const cls = EXPLANATION_ATTENTION_CLS[card.attentionLevel];
+  const isWaiting = card.attentionLevel === "waiting";
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-[11px] font-semibold text-zinc-200">{card.title}</p>
+        <span
+          className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${cls.badge}`}
+        >
+          {card.scoreLabel ?? card.status}
+        </span>
+      </div>
+      {!isWaiting && <p className="mt-1 text-[10px] font-medium text-zinc-300">{card.status}</p>}
+      <p className="mt-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+        {isWaiting
+          ? HERMES_ACQUISITION_EXPLAINABILITY_LABELS.revisitWhy
+          : HERMES_ACQUISITION_EXPLAINABILITY_LABELS.pickedIntro}
+      </p>
+      <ul className="mt-1 space-y-0.5">
+        {card.reasons.map((reason) => (
+          <li key={reason} className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+            <span className={`shrink-0 ${cls.dot}`} aria-hidden>
+              {isWaiting ? "•" : "✓"}
+            </span>
+            {reason}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-2 border-t border-white/[0.06] pt-1.5">
+        {!isWaiting && (
+          <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+            {HERMES_ACQUISITION_EXPLAINABILITY_LABELS.nextStep}
+          </p>
+        )}
+        <p className={`mt-0.5 text-[10px] font-medium ${isWaiting ? "text-zinc-500" : "text-indigo-300"}`}>
+          {card.nextAction}
+        </p>
       </div>
     </div>
   );

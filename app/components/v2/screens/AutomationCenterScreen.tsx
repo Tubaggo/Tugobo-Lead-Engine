@@ -168,6 +168,10 @@ type Props = {
   refreshSignal: number;
   /** Sprint C1 — sanitized autonomous acquisition status for the Hermes Fırsat Keşfi section; null when unread. */
   acquisition: AcquisitionStatusLike | null;
+  /** Sprint C1.5 — the shell's acquisition status fetch state; passed through to the "Hermes Bugün Bunları Buldu" section. */
+  acquisitionFetchState: "loading" | "ready" | "error";
+  /** Sprint C1.5 — re-runs the shell's acquisition status fetch ("Tekrar Dene"). */
+  onRetryAcquisition: () => void;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -2045,6 +2049,8 @@ export default function AutomationCenterScreen({
   onToggleDeveloperMode,
   refreshSignal,
   acquisition,
+  acquisitionFetchState,
+  onRetryAcquisition,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -2094,6 +2100,8 @@ export default function AutomationCenterScreen({
           developerMode={developerMode}
           refreshSignal={refreshSignal}
           acquisition={acquisition}
+          acquisitionFetchState={acquisitionFetchState}
+          onRetryAcquisition={onRetryAcquisition}
         />
 
         {developerMode && (

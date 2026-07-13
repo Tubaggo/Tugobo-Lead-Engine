@@ -352,17 +352,29 @@ export default function V2Shell({ scoredLeads }: Props) {
   // its own schedule; the client only reads sanitized summaries and picks up
   // pending mission candidates.
   const [acquisitionStatus, setAcquisitionStatus] = useState<AcquisitionStatusPayload | null>(null);
+  // Sprint C1.5 — the fetch's own lifecycle, so "Hermes Bugün Bunları Buldu"
+  // can tell "still preparing" apart from "couldn't load" without ever
+  // reading a raw error. The status payload itself stays nullable as before.
+  const [acquisitionFetchState, setAcquisitionFetchState] = useState<"loading" | "ready" | "error">("loading");
   useEffect(() => {
     let cancelled = false;
+    setAcquisitionFetchState("loading");
     (async () => {
       try {
         const res = await fetch("/api/hermes/acquisition/status", { cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setAcquisitionFetchState("error");
+          return;
+        }
         const data = (await res.json()) as AcquisitionStatusPayload;
-        if (!cancelled) setAcquisitionStatus(data);
+        if (!cancelled) {
+          setAcquisitionStatus(data);
+          setAcquisitionFetchState("ready");
+        }
       } catch {
         // Unreachable status is a non-event — the founder view falls back to
         // its own empty state; never a raw error.
+        if (!cancelled) setAcquisitionFetchState("error");
       }
     })();
     return () => {
@@ -1263,6 +1275,8 @@ export default function V2Shell({ scoredLeads }: Props) {
                 onToggleDeveloperMode={toggleDeveloperMode}
                 refreshSignal={hermesRefreshSignal}
                 acquisition={acquisitionForFounder}
+                acquisitionFetchState={acquisitionFetchState}
+                onRetryAcquisition={bumpHermesRefresh}
               />
               <AutomationCenterContextPanel
                 developerMode={developerMode}
