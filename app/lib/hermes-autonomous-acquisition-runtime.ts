@@ -35,6 +35,12 @@ import {
 } from "./hermes-autonomous-qualification-runtime.ts";
 import { deriveQualificationPolicy } from "./hermes-qualification-policy.ts";
 import { recordQualificationResult } from "./hermes-qualification-registry.ts";
+import {
+  evaluateAutonomousOutreach,
+  type OutreachLeadLike,
+} from "./hermes-autonomous-outreach-runtime.ts";
+import { deriveOutreachPolicy } from "./hermes-outreach-policy.ts";
+import { recordOutreachDecision } from "./hermes-outreach-registry.ts";
 
 /**
  * Hermes Autonomous Acquisition Runtime (Sprint C1 — Scope 4).
@@ -437,6 +443,10 @@ export async function runHermesAutonomousAcquisition(
   // Sprint C2 — qualification aşaması: tek bir lead'in değerlendirme hatası
   // tüm taramayı asla düşürmez (partial sonuç).
   const qualPolicy = deriveQualificationPolicy(policy);
+  // Sprint C3 — Autonomous Outreach: sales_ready + güvenilir kanal olan her
+  // aday için mesaj HAZIRLIĞI (gönderim değil) üretilir ve outreach registry'ye
+  // yazılır. Founder onayı zorunludur; bu modül hiçbir mesaj göndermez.
+  const outreachPolicy = deriveOutreachPolicy(policy);
   const qualCounters = emptyQualificationCounters();
   const qualPreviewInputs: { result: QualificationResult; businessName: string }[] = [];
   let qualificationTrouble = false;
@@ -535,6 +545,24 @@ export async function runHermesAutonomousAcquisition(
           recordQualificationResult({ result, businessName: lead.name, now });
           qualPreviewInputs.push({ result, businessName: lead.name });
           if (result.eligibleForMission) qualified.push(lead);
+          // Sprint C3 — outreach hazırlığı: yalnız taslağa uygun (sales_ready +
+          // güvenilir kanal) adaylar için. Hata bir lead'i düşürür, run'ı asla.
+          if (result.eligibleForOutreachDraft) {
+            try {
+              const outreach = evaluateAutonomousOutreach({
+                qualification: result,
+                lead: lead as OutreachLeadLike,
+                mission: null,
+                existingDraft: false,
+                acquisitionRunId: run.id,
+                policy: outreachPolicy,
+                currentTime: now,
+              });
+              recordOutreachDecision({ decision: outreach, businessName: lead.name, now });
+            } catch {
+              qualificationTrouble = true;
+            }
+          }
         } catch {
           qualCounters.evaluated += 1;
           qualCounters.blocked += 1;

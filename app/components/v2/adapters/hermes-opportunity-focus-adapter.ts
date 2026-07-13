@@ -71,6 +71,28 @@ export type HermesOpportunityFocus = {
   salesReadinessSummary: string | null;
   /** Sprint C2 — "Mesaj Hazırlamaya Uygun" | "Founder İncelemesi Gerekli"; değerlendirme yoksa null. */
   draftEligibilityLabel: string | null;
+  /** Sprint C3 — Outreach hazırlık durumu ("Founder Onayı Bekliyor" vb.); hazırlık yoksa null. */
+  outreachStatusLabel: string | null;
+  /** Sprint C3 — önerilen kanal; hazırlık yoksa null. */
+  outreachChannelLabel: string | null;
+  /** Sprint C3 — seçilen şablon; hazırlık yoksa null. */
+  outreachTemplateLabel: string | null;
+  /** Sprint C3 — önerilen dil; hazırlık yoksa null. */
+  outreachLanguageLabel: string | null;
+  /** Sprint C3 — personalization sinyallerinin tek satır özeti; hazırlık yoksa null. */
+  outreachPersonalizationSummary: string | null;
+  /** Sprint C3 — founder'ın atacağı sonraki adım (mesajı incele/onayla); hazırlık yoksa null. */
+  outreachFounderAction: string | null;
+};
+
+/** Sprint C3 — seçili lead'in outreach hazırlık özetinin bu panelin okuduğu alt kümesi. */
+export type OpportunityFocusOutreachLike = {
+  statusLabelTr: string;
+  channelLabelTr?: string;
+  templateLabelTr?: string;
+  languageLabelTr?: string;
+  personalizationSignalsTr?: string[];
+  nextActionLabelTr?: string;
 };
 
 /** Sprint C2 — seçili lead'in qualification özetinin bu panelin okuduğu alt kümesi. */
@@ -102,6 +124,8 @@ export type ComputeHermesOpportunityFocusInput = {
   recentSalesOutcomes?: SalesOutcomeItem[];
   /** Sprint C2 — seçili mission'ın lead'i için kayıtlı qualification özeti (varsa). */
   qualificationForLead?: OpportunityFocusQualificationLike | null;
+  /** Sprint C3 — seçili mission'ın lead'i için kayıtlı outreach hazırlık özeti (varsa). */
+  outreachForLead?: OpportunityFocusOutreachLike | null;
 };
 
 const EMPTY_STATE_MESSAGE = "Bir fırsat seçtiğinde Hermes bu otel için önerilen sonraki adımı gösterecek.";
@@ -133,6 +157,45 @@ function emptyFocus(): HermesOpportunityFocus {
     salesReadinessLabel: null,
     salesReadinessSummary: null,
     draftEligibilityLabel: null,
+    outreachStatusLabel: null,
+    outreachChannelLabel: null,
+    outreachTemplateLabel: null,
+    outreachLanguageLabel: null,
+    outreachPersonalizationSummary: null,
+    outreachFounderAction: null,
+  };
+}
+
+/**
+ * Sprint C3 — outreach hazırlık özetini panelin outreach satırlarına çevirir.
+ * Saf seçim; ham mesaj metni, template içeriği veya teknik terim üretmez.
+ */
+function outreachReadinessOf(o: OpportunityFocusOutreachLike | null | undefined): {
+  statusLabel: string | null;
+  channelLabel: string | null;
+  templateLabel: string | null;
+  languageLabel: string | null;
+  personalizationSummary: string | null;
+  founderAction: string | null;
+} {
+  if (!o) {
+    return {
+      statusLabel: null,
+      channelLabel: null,
+      templateLabel: null,
+      languageLabel: null,
+      personalizationSummary: null,
+      founderAction: null,
+    };
+  }
+  const signals = (o.personalizationSignalsTr ?? []).slice(0, 3);
+  return {
+    statusLabel: o.statusLabelTr,
+    channelLabel: o.channelLabelTr ?? null,
+    templateLabel: o.templateLabelTr ?? null,
+    languageLabel: o.languageLabelTr ?? null,
+    personalizationSummary: signals.length > 0 ? signals.join(" · ") : null,
+    founderAction: o.nextActionLabelTr ?? null,
   };
 }
 
@@ -386,6 +449,7 @@ export function computeHermesOpportunityFocus(input: ComputeHermesOpportunityFoc
 
   const copy = STATE_COPY[stage];
   const readiness = salesReadinessOf(input.qualificationForLead);
+  const outreach = outreachReadinessOf(input.outreachForLead);
 
   return {
     id: `opportunity-focus:${mission.missionId}`,
@@ -417,5 +481,11 @@ export function computeHermesOpportunityFocus(input: ComputeHermesOpportunityFoc
     salesReadinessLabel: readiness.label,
     salesReadinessSummary: readiness.summary,
     draftEligibilityLabel: readiness.draftLabel,
+    outreachStatusLabel: outreach.statusLabel,
+    outreachChannelLabel: outreach.channelLabel,
+    outreachTemplateLabel: outreach.templateLabel,
+    outreachLanguageLabel: outreach.languageLabel,
+    outreachPersonalizationSummary: outreach.personalizationSummary,
+    outreachFounderAction: outreach.founderAction,
   };
 }

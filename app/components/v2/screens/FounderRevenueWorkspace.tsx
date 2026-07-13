@@ -47,6 +47,14 @@ import {
   type QualificationApiSummaryLike,
   type QualificationFounderCard,
 } from "@/app/components/v2/adapters/hermes-qualification-founder-adapter";
+import {
+  HERMES_OUTREACH_FOUNDER_LABELS,
+  computeOutreachFounderView,
+  selectOutreachForLead,
+  type OutreachApiResultLike,
+  type OutreachApiSummaryLike,
+  type OutreachFounderCard,
+} from "@/app/components/v2/adapters/hermes-outreach-founder-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -187,11 +195,18 @@ type Props = {
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
 const QUALIFICATION_ANCHOR_ID = "hermes-home-satisa-hazir";
+const OUTREACH_ANCHOR_ID = "hermes-home-hazir-mesajlar";
 
 /** Sprint C2 — /api/hermes/qualification payload'ının bu ekranın okuduğu biçimi. */
 type QualificationApiPayload = {
   results?: QualificationApiResultLike[];
   summary?: QualificationApiSummaryLike;
+};
+
+/** Sprint C3 — /api/hermes/outreach payload'ının bu ekranın okuduğu biçimi. */
+type OutreachApiPayload = {
+  results?: OutreachApiResultLike[];
+  summary?: OutreachApiSummaryLike;
 };
 
 /** v8.2 — Decision Queue cards are styled by priority, not by the underlying (now-hidden) runtime stage. */
@@ -266,6 +281,9 @@ export default function FounderRevenueWorkspace({
   // Sprint C2 — qualification okuması: aynı read-only fetch kalıbı, mutation yok.
   const [qualificationPayload, setQualificationPayload] = useState<QualificationApiPayload | null>(null);
   const [qualificationReachable, setQualificationReachable] = useState<boolean | null>(null);
+  // Sprint C3 — outreach hazırlık okuması: aynı read-only fetch kalıbı, mutation yok.
+  const [outreachPayload, setOutreachPayload] = useState<OutreachApiPayload | null>(null);
+  const [outreachReachable, setOutreachReachable] = useState<boolean | null>(null);
 
   // v8.5 (Release Candidate Polish, Scope 4/5) — a single "Tekrar Dene" re-runs
   // every one of the seven read-only fetches below; `initialLoadDone` gates
@@ -464,6 +482,29 @@ export default function FounderRevenueWorkspace({
     let cancelled = false;
     void (async () => {
       try {
+        const res = await fetch("/api/hermes/outreach");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as OutreachApiPayload;
+        if (!cancelled) {
+          setOutreachPayload(data);
+          setOutreachReachable(true);
+        }
+      } catch {
+        // boş bırak — bölüm kendi güvenli hata durumunu gösterir
+        if (!cancelled) setOutreachReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [retryTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
         const res = await fetch("/api/hermes/providers/whatsapp/status");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { readinessStatus?: WhatsAppReadinessStatus };
@@ -560,6 +601,14 @@ export default function FounderRevenueWorkspace({
     fetchState:
       qualificationReachable === null ? "loading" : qualificationReachable ? "ready" : "error",
   });
+  // Sprint C3 — "Hermes Hazırladığı Mesajlar": outreach hazırlık kararlarının
+  // saf founder projeksiyonu. Gönderim butonu YOK — yalnız incele/gör.
+  const outreachResults = outreachPayload?.results ?? null;
+  const outreachView = computeOutreachFounderView({
+    results: outreachResults,
+    summary: outreachPayload?.summary ?? null,
+    fetchState: outreachReachable === null ? "loading" : outreachReachable ? "ready" : "error",
+  });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
   const opportunityFocus = computeHermesOpportunityFocus({
@@ -575,6 +624,11 @@ export default function FounderRevenueWorkspace({
     // neden henüz değil" sorusunu Fırsat Odağı içinde cevaplar.
     qualificationForLead: selectedMission
       ? (qualificationResults?.find((r) => r.leadId === selectedMission.leadId) ?? null)
+      : null,
+    // Sprint C3 — seçili otelin outreach hazırlık özeti: önerilen kanal/şablon/
+    // dil + personalization + founder aksiyonu Fırsat Odağı içinde görünür.
+    outreachForLead: selectedMission
+      ? selectOutreachForLead(outreachResults, selectedMission.leadId)
       : null,
   });
 
@@ -795,6 +849,41 @@ export default function FounderRevenueWorkspace({
                 {opportunityFocus.salesReadinessSummary && (
                   <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
                     {opportunityFocus.salesReadinessSummary}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Sprint C3 — Mesaj hazırlığı: önerilen kanal/şablon/dil + personalization + founder aksiyonu. Gönderim yok. */}
+            {opportunityFocus.outreachStatusLabel && (
+              <div className="rounded-lg bg-white/[0.02] px-2.5 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+                    Mesaj Hazırlığı
+                  </span>
+                  <span className="text-[10px] font-medium text-amber-300">
+                    {opportunityFocus.outreachStatusLabel}
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500">
+                  {opportunityFocus.outreachChannelLabel && (
+                    <span>Kanal: <span className="text-zinc-300">{opportunityFocus.outreachChannelLabel}</span></span>
+                  )}
+                  {opportunityFocus.outreachTemplateLabel && (
+                    <span>Şablon: <span className="text-zinc-300">{opportunityFocus.outreachTemplateLabel}</span></span>
+                  )}
+                  {opportunityFocus.outreachLanguageLabel && (
+                    <span>Dil: <span className="text-zinc-300">{opportunityFocus.outreachLanguageLabel}</span></span>
+                  )}
+                </div>
+                {opportunityFocus.outreachPersonalizationSummary && (
+                  <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+                    {opportunityFocus.outreachPersonalizationSummary}
+                  </p>
+                )}
+                {opportunityFocus.outreachFounderAction && (
+                  <p className="mt-1 text-[10px] font-medium text-indigo-300">
+                    {opportunityFocus.outreachFounderAction}
                   </p>
                 )}
               </div>
@@ -1071,6 +1160,80 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
+      {/* Section 4d — Hermes Hazırladığı Mesajlar (Sprint C3): satışa hazır
+          fırsatlar için hazırlanan mesaj taslakları. Founder yalnız inceler /
+          taslağı görür — GÖNDERİM BUTONU YOK. Gönderim mevcut Founder Approval
+          zincirinin arkasındadır; Hermes hiçbir mesaj göndermez. */}
+      <div id={OUTREACH_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+        <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_OUTREACH_FOUNDER_LABELS.sectionTitle}</p>
+        <p className="mb-2.5 text-[11px] text-zinc-500">
+          {HERMES_OUTREACH_FOUNDER_LABELS.sectionSubtitle}
+        </p>
+
+        {outreachView.mode === "loading" && (
+          <p className="text-[11px] text-zinc-600">{HERMES_OUTREACH_FOUNDER_LABELS.loading}</p>
+        )}
+
+        {outreachView.mode === "error" && (
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-rose-500/[0.06] px-4 py-3 ring-1 ring-inset ring-rose-500/15">
+            <p className="text-[11px] text-rose-300">{HERMES_OUTREACH_FOUNDER_LABELS.error}</p>
+            <button
+              type="button"
+              onClick={retryDataFetches}
+              className="shrink-0 text-[11px] font-semibold text-rose-200 hover:text-rose-100"
+            >
+              {HERMES_OUTREACH_FOUNDER_LABELS.retry}
+            </button>
+          </div>
+        )}
+
+        {outreachView.mode === "empty" && (
+          <div className="rounded-lg bg-white/[0.02] px-4 py-3.5">
+            <p className="text-[12px] font-medium text-zinc-300">
+              {HERMES_OUTREACH_FOUNDER_LABELS.emptyTitle}
+            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">
+              {HERMES_OUTREACH_FOUNDER_LABELS.emptySubtitle}
+            </p>
+          </div>
+        )}
+
+        {outreachView.mode === "ready" && (
+          <>
+            <div className="mb-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+              <QualificationCounter
+                label={HERMES_OUTREACH_FOUNDER_LABELS.counterAwaiting}
+                value={outreachView.counters.awaitingFounder}
+                accent="text-amber-400"
+              />
+              <QualificationCounter
+                label={HERMES_OUTREACH_FOUNDER_LABELS.counterApprovalRequired}
+                value={outreachView.counters.approvalRequired}
+                accent="text-emerald-400"
+              />
+              <QualificationCounter
+                label={HERMES_OUTREACH_FOUNDER_LABELS.counterDraftReady}
+                value={outreachView.counters.draftReady}
+                accent="text-sky-400"
+              />
+              <QualificationCounter
+                label={HERMES_OUTREACH_FOUNDER_LABELS.counterWaiting}
+                value={outreachView.counters.waiting}
+                accent="text-zinc-400"
+              />
+            </div>
+            {outreachView.cards.length > 0 && (
+              <div className="space-y-1.5">
+                {outreachView.cards.map((card) => (
+                  <OutreachPreparedCard key={card.leadId ?? card.title} card={card} />
+                ))}
+              </div>
+            )}
+            <p className="mt-2 text-[10px] text-zinc-600">{HERMES_OUTREACH_FOUNDER_LABELS.noSendNote}</p>
+          </>
+        )}
+      </div>
+
       {/* Section 5 — Gelir Nabzı: won / lost / estimated MRR */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
@@ -1232,6 +1395,81 @@ function QualificationReadyCard({ card }: { card: QualificationFounderCard }) {
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * Sprint C3 — hazırlanan mesaj kartı: otel adı, hazırlık durumu, önerilen
+ * kanal/şablon/dil/ton, Hermes'in neden hazırladığı (personalization) ve
+ * founder aksiyonu. GÖNDERİM BUTONU YOK — yalnız "Mesajı İncele" / "Taslağı
+ * Gör". Bu butonlar mevcut mesaj onayı akışına yönlendirir; hiçbir mesaj
+ * göndermez.
+ */
+function OutreachPreparedCard({ card }: { card: OutreachFounderCard }) {
+  const badgeCls = card.approvalNeeded
+    ? "bg-amber-500/[0.10] text-amber-300 ring-amber-500/20"
+    : "bg-sky-500/[0.10] text-sky-300 ring-sky-500/20";
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-[11px] font-semibold text-zinc-200">{card.title}</p>
+        <span
+          className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${badgeCls}`}
+        >
+          {card.statusLabelTr}
+        </span>
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        <OutreachChip label={HERMES_OUTREACH_FOUNDER_LABELS.channel} value={card.channelLabelTr} />
+        <OutreachChip label={HERMES_OUTREACH_FOUNDER_LABELS.template} value={card.templateLabelTr} />
+        <OutreachChip label={HERMES_OUTREACH_FOUNDER_LABELS.language} value={card.languageLabelTr} />
+        <OutreachChip label={HERMES_OUTREACH_FOUNDER_LABELS.tone} value={card.toneLabelTr} />
+      </div>
+      {card.whyPreparedTr.length > 0 && (
+        <>
+          <p className="mt-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+            {HERMES_OUTREACH_FOUNDER_LABELS.whyPrepared}
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {card.whyPreparedTr.map((reason) => (
+              <li key={reason} className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                <span className="shrink-0 text-emerald-400" aria-hidden>
+                  ✓
+                </span>
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-1.5">
+        <p className="min-w-0 flex-1 text-[10px] font-medium text-indigo-300">
+          <span className="font-semibold uppercase tracking-[0.1em] text-zinc-600">
+            {HERMES_OUTREACH_FOUNDER_LABELS.nextStep}:
+          </span>{" "}
+          {card.nextStepTr}
+        </p>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={scrollToKararKuyrugu}
+            className="rounded-md bg-white/[0.04] px-2 py-1 text-[10px] font-semibold text-zinc-200 hover:bg-white/[0.08]"
+          >
+            {HERMES_OUTREACH_FOUNDER_LABELS.reviewMessage}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Sprint C3 — hazırlanan mesajın tek özelliğini gösteren küçük etiket çipi. */
+function OutreachChip({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.03] px-1.5 py-[2px] text-[9px] text-zinc-400">
+      <span className="font-semibold uppercase tracking-[0.08em] text-zinc-600">{label}</span>
+      <span className="text-zinc-300">{value}</span>
+    </span>
   );
 }
 
