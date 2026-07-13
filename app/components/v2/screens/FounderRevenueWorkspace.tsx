@@ -39,6 +39,14 @@ import {
   type AcquisitionAttentionLevel,
   type FounderOpportunityExplanation,
 } from "@/app/components/v2/adapters/hermes-acquisition-explainability-adapter";
+import {
+  HERMES_QUALIFICATION_FOUNDER_LABELS,
+  computeQualificationFounderView,
+  selectQualificationReviewItems,
+  type QualificationApiResultLike,
+  type QualificationApiSummaryLike,
+  type QualificationFounderCard,
+} from "@/app/components/v2/adapters/hermes-qualification-founder-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -178,6 +186,13 @@ type Props = {
 };
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
+const QUALIFICATION_ANCHOR_ID = "hermes-home-satisa-hazir";
+
+/** Sprint C2 — /api/hermes/qualification payload'ının bu ekranın okuduğu biçimi. */
+type QualificationApiPayload = {
+  results?: QualificationApiResultLike[];
+  summary?: QualificationApiSummaryLike;
+};
 
 /** v8.2 — Decision Queue cards are styled by priority, not by the underlying (now-hidden) runtime stage. */
 const DECISION_PRIORITY_BADGE_CLS: Record<HermesDecisionPriority, string> = {
@@ -212,6 +227,11 @@ function scrollToKararKuyrugu() {
   document.getElementById(KARAR_KUYRUGU_ANCHOR_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+/** Sprint C2 — review_qualification kartının "İncele" aksiyonu: mutation yok, yalnız odak. */
+function scrollToQualificationSection() {
+  document.getElementById(QUALIFICATION_ANCHOR_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 export default function FounderRevenueWorkspace({
   missions,
   selectedHermesMissionId,
@@ -243,6 +263,9 @@ export default function FounderRevenueWorkspace({
   const [followUpsReachable, setFollowUpsReachable] = useState<boolean | null>(null);
   const [recentSalesOutcomes, setRecentSalesOutcomes] = useState<SalesOutcomeItem[]>([]);
   const [outcomesReachable, setOutcomesReachable] = useState<boolean | null>(null);
+  // Sprint C2 — qualification okuması: aynı read-only fetch kalıbı, mutation yok.
+  const [qualificationPayload, setQualificationPayload] = useState<QualificationApiPayload | null>(null);
+  const [qualificationReachable, setQualificationReachable] = useState<boolean | null>(null);
 
   // v8.5 (Release Candidate Polish, Scope 4/5) — a single "Tekrar Dene" re-runs
   // every one of the seven read-only fetches below; `initialLoadDone` gates
@@ -251,7 +274,7 @@ export default function FounderRevenueWorkspace({
   const [retryTick, setRetryTick] = useState(0);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
   const pendingFetchesRef = useRef(0);
-  const FETCH_COUNT = 7;
+  const FETCH_COUNT = 8;
 
   useEffect(() => {
     pendingFetchesRef.current = FETCH_COUNT;
@@ -418,6 +441,29 @@ export default function FounderRevenueWorkspace({
     let cancelled = false;
     void (async () => {
       try {
+        const res = await fetch("/api/hermes/qualification");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as QualificationApiPayload;
+        if (!cancelled) {
+          setQualificationPayload(data);
+          setQualificationReachable(true);
+        }
+      } catch {
+        // boş bırak — bölüm kendi güvenli hata durumunu gösterir
+        if (!cancelled) setQualificationReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [retryTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
         const res = await fetch("/api/hermes/providers/whatsapp/status");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { readinessStatus?: WhatsAppReadinessStatus };
@@ -468,6 +514,11 @@ export default function FounderRevenueWorkspace({
     recentFollowUps,
     recentSalesOutcomes,
   );
+  // Sprint C2 — Karar Merkezi'ne YALNIZ gerçek founder incelemesi gerektiren
+  // qualification sonuçları girer (review_required); sales_ready doğrudan
+  // karar öğesi olmaz — outreach taslağı hazır olduğunda zaten mevcut mesaj
+  // onayı akışına düşer.
+  const qualificationResults = qualificationPayload?.results ?? null;
   const decisionItems = computeHermesDecisionQueue({
     actionQueue: queue,
     missions,
@@ -476,6 +527,7 @@ export default function FounderRevenueWorkspace({
     recentDemoItems,
     recentFollowUps,
     recentSalesOutcomes,
+    qualificationReviews: selectQualificationReviewItems(qualificationResults),
   });
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
@@ -500,6 +552,14 @@ export default function FounderRevenueWorkspace({
     leads,
     fetchState: acquisitionFetchState,
   });
+  // Sprint C2 — "Hermes Satışa Hazır Fırsatlar": qualification sonuçlarının
+  // saf founder projeksiyonu. Teknik terim, ham enum veya skor formülü yok.
+  const qualificationView = computeQualificationFounderView({
+    results: qualificationResults,
+    summary: qualificationPayload?.summary ?? null,
+    fetchState:
+      qualificationReachable === null ? "loading" : qualificationReachable ? "ready" : "error",
+  });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
   const opportunityFocus = computeHermesOpportunityFocus({
@@ -511,6 +571,11 @@ export default function FounderRevenueWorkspace({
     recentDemoItems,
     recentFollowUps,
     recentSalesOutcomes,
+    // Sprint C2 — seçili otelin qualification özeti: "neden satışa hazır /
+    // neden henüz değil" sorusunu Fırsat Odağı içinde cevaplar.
+    qualificationForLead: selectedMission
+      ? (qualificationResults?.find((r) => r.leadId === selectedMission.leadId) ?? null)
+      : null,
   });
 
   // v8.2 — Karar Merkezi interactions. Selecting a card (or its primary
@@ -531,6 +596,12 @@ export default function FounderRevenueWorkspace({
     const mission = missionForDecisionItem(item);
     if (mission && item.decisionType === "approve_message") {
       onApproveMission(mission);
+      return;
+    }
+    // Sprint C2 — qualification incelemesinin "İncele" aksiyonu: mutation
+    // yok, yalnız Satışa Hazır Fırsatlar bölümüne odaklanır.
+    if (item.decisionType === "review_qualification") {
+      scrollToQualificationSection();
       return;
     }
     focusDecisionItem(item);
@@ -702,6 +773,32 @@ export default function FounderRevenueWorkspace({
             <p className="text-[10px] text-zinc-500">{opportunityFocus.whyThisMatters}</p>
             <p className="text-[10px] font-medium text-indigo-300">{opportunityFocus.hermesRecommendation}</p>
             <p className="text-[10px] font-semibold text-zinc-300">{opportunityFocus.founderNextAction}</p>
+
+            {/* Sprint C2 — Satış hazırlığı: "Bu işletme neden satışa hazır veya neden henüz değil?" */}
+            {opportunityFocus.salesReadinessLabel && (
+              <div className="rounded-lg bg-white/[0.02] px-2.5 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+                    Satış Hazırlığı
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    <span className="text-[10px] font-medium text-zinc-200">
+                      {opportunityFocus.salesReadinessLabel}
+                    </span>
+                    {opportunityFocus.draftEligibilityLabel && (
+                      <span className="inline-flex items-center rounded-full bg-emerald-500/[0.08] px-2 py-[2px] text-[9px] font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/15">
+                        {opportunityFocus.draftEligibilityLabel}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                {opportunityFocus.salesReadinessSummary && (
+                  <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+                    {opportunityFocus.salesReadinessSummary}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.02] px-2.5 py-2">
               <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">Gelir Sinyali</span>
@@ -901,6 +998,79 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
+      {/* Section 4c — Hermes Satışa Hazır Fırsatlar (Sprint C2): tek ve
+          açıklanabilir ticari hazırlık kararı. Founder yalnız dört durumu
+          okur (Satışa Hazır / İnceleme Gerekiyor / Daha Fazla Veri / İzleniyor);
+          hiçbir kart mesaj göndermez — outreach hâlâ founder onayının arkasında. */}
+      <div id={QUALIFICATION_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+        <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_QUALIFICATION_FOUNDER_LABELS.sectionTitle}</p>
+        <p className="mb-2.5 text-[11px] text-zinc-500">
+          {HERMES_QUALIFICATION_FOUNDER_LABELS.sectionSubtitle}
+        </p>
+
+        {qualificationView.mode === "loading" && (
+          <p className="text-[11px] text-zinc-600">{HERMES_QUALIFICATION_FOUNDER_LABELS.loading}</p>
+        )}
+
+        {qualificationView.mode === "error" && (
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-rose-500/[0.06] px-4 py-3 ring-1 ring-inset ring-rose-500/15">
+            <p className="text-[11px] text-rose-300">{HERMES_QUALIFICATION_FOUNDER_LABELS.error}</p>
+            <button
+              type="button"
+              onClick={retryDataFetches}
+              className="shrink-0 text-[11px] font-semibold text-rose-200 hover:text-rose-100"
+            >
+              {HERMES_QUALIFICATION_FOUNDER_LABELS.retry}
+            </button>
+          </div>
+        )}
+
+        {qualificationView.mode === "empty" && (
+          <div className="rounded-lg bg-white/[0.02] px-4 py-3.5">
+            <p className="text-[12px] font-medium text-zinc-300">
+              {HERMES_QUALIFICATION_FOUNDER_LABELS.emptyTitle}
+            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">
+              {HERMES_QUALIFICATION_FOUNDER_LABELS.emptySubtitle}
+            </p>
+          </div>
+        )}
+
+        {qualificationView.mode === "ready" && (
+          <>
+            <div className="mb-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+              <QualificationCounter
+                label={HERMES_QUALIFICATION_FOUNDER_LABELS.counterSalesReady}
+                value={qualificationView.counters.salesReady}
+                accent="text-emerald-400"
+              />
+              <QualificationCounter
+                label={HERMES_QUALIFICATION_FOUNDER_LABELS.counterReviewRequired}
+                value={qualificationView.counters.reviewRequired}
+                accent="text-amber-400"
+              />
+              <QualificationCounter
+                label={HERMES_QUALIFICATION_FOUNDER_LABELS.counterDataNeeded}
+                value={qualificationView.counters.dataNeeded}
+                accent="text-sky-400"
+              />
+              <QualificationCounter
+                label={HERMES_QUALIFICATION_FOUNDER_LABELS.counterWatch}
+                value={qualificationView.counters.watch}
+                accent="text-zinc-400"
+              />
+            </div>
+            {qualificationView.cards.length > 0 && (
+              <div className="space-y-1.5">
+                {qualificationView.cards.map((card) => (
+                  <QualificationReadyCard key={card.leadId ?? card.title} card={card} />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {/* Section 5 — Gelir Nabzı: won / lost / estimated MRR */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
@@ -983,6 +1153,83 @@ function HealthTile({ label, value }: { label: string; value: string }) {
       <div className="mt-1 flex items-center gap-1.5">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${healthy ? "bg-emerald-400" : "bg-zinc-500"}`} />
         <span className="text-[11px] font-medium text-zinc-200">{value}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Sprint C2 — Satışa Hazır Fırsatlar sayaç kutusu: etiket önde, sayı ikincil. */
+function QualificationCounter({ label, value, accent }: { label: string; value: number; accent: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.02] px-3 py-2">
+      <p className="min-w-0 truncate text-[9px] font-semibold uppercase tracking-[0.1em] text-zinc-600">{label}</p>
+      <p className={`text-[12px] font-semibold tabular-nums ${accent}`}>{value}</p>
+    </div>
+  );
+}
+
+/**
+ * Sprint C2 — satışa hazır / inceleme kartı: otel adı, hazırlık durumu,
+ * Hermes'in gerekçesi, varsa dikkat noktası, önerilen sonraki adım ve taslak
+ * uygunluk rozeti. Aksiyon butonu YOK — mesaj hazırlama/gönderme bu bölümden
+ * asla tetiklenemez; karar akışı Karar Merkezi'nde kalır.
+ */
+function QualificationReadyCard({ card }: { card: QualificationFounderCard }) {
+  const badgeCls = card.isSalesReady
+    ? "bg-emerald-500/[0.10] text-emerald-300 ring-emerald-500/20"
+    : "bg-amber-500/[0.10] text-amber-300 ring-amber-500/20";
+  const draftBadgeCls =
+    card.draftBadgeTr === HERMES_QUALIFICATION_FOUNDER_LABELS.draftEligible
+      ? "bg-emerald-500/[0.08] text-emerald-300 ring-emerald-500/15"
+      : "bg-amber-500/[0.08] text-amber-300 ring-amber-500/15";
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="truncate text-[11px] font-semibold text-zinc-200">{card.title}</p>
+          {card.scoreLabel && <span className="shrink-0 text-[9px] text-zinc-500">{card.scoreLabel}</span>}
+        </div>
+        <span
+          className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${badgeCls}`}
+        >
+          {card.statusLabelTr}
+        </span>
+      </div>
+      {card.whyReadyTr.length > 0 && (
+        <>
+          <p className="mt-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+            {HERMES_QUALIFICATION_FOUNDER_LABELS.whyReady}
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {card.whyReadyTr.map((reason) => (
+              <li key={reason} className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                <span className="shrink-0 text-emerald-400" aria-hidden>
+                  ✓
+                </span>
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {card.attentionTr && (
+        <p className="mt-1.5 text-[10px] text-amber-300/90">
+          <span className="font-semibold">{HERMES_QUALIFICATION_FOUNDER_LABELS.attention}:</span>{" "}
+          {card.attentionTr}
+        </p>
+      )}
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-1.5">
+        <p className="min-w-0 flex-1 text-[10px] font-medium text-indigo-300">
+          <span className="font-semibold uppercase tracking-[0.1em] text-zinc-600">
+            {HERMES_QUALIFICATION_FOUNDER_LABELS.nextStep}:
+          </span>{" "}
+          {card.nextStepTr}
+        </p>
+        <span
+          className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${draftBadgeCls}`}
+        >
+          {card.draftBadgeTr}
+        </span>
       </div>
     </div>
   );

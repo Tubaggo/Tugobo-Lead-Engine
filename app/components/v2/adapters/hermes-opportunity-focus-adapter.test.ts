@@ -429,3 +429,44 @@ test("selected decision updates focus: a different selected mission/decisionItem
   assert.equal(first.currentStateLabel, "Teslimat sorunu var");
   assert.equal(second.currentStateLabel, "Demo planlanmalı");
 });
+
+/* ── Sprint C2 — satış hazırlığı özeti ──────────────────────── */
+
+test("qualificationForLead verilince satış hazırlığı alanları dolar", () => {
+  const focus = computeHermesOpportunityFocus({
+    selectedMission: buildMission(),
+    qualificationForLead: {
+      status: "sales_ready",
+      statusLabelTr: "Satışa Hazır",
+      founderSummaryTr: "Hermes bu işletmeyi satışa hazır gördü.",
+      positiveReasonsTr: ["Fırsat puanı satış eşiğinin üzerinde", "Doğrudan iletişim kanalı hazır"],
+      cautionReasonsTr: ["Veriler eski — yenileme gerekiyor"],
+      eligibleForOutreachDraft: true,
+    },
+  });
+  assert.equal(focus.salesReadinessLabel, "Satışa Hazır");
+  assert.ok(focus.salesReadinessSummary);
+  assert.ok(focus.salesReadinessSummary!.includes("Güçlü sinyaller"));
+  assert.ok(focus.salesReadinessSummary!.includes("Dikkat"));
+  assert.equal(focus.draftEligibilityLabel, "Mesaj Hazırlamaya Uygun");
+});
+
+test("qualification özeti yoksa satış hazırlığı alanları null kalır", () => {
+  const focus = computeHermesOpportunityFocus({ selectedMission: buildMission() });
+  assert.equal(focus.salesReadinessLabel, null);
+  assert.equal(focus.salesReadinessSummary, null);
+  assert.equal(focus.draftEligibilityLabel, null);
+});
+
+test("sales_ready olmayan durumda taslak rozeti üretilmez", () => {
+  const focus = computeHermesOpportunityFocus({
+    selectedMission: buildMission(),
+    qualificationForLead: {
+      status: "data_needed",
+      statusLabelTr: "Daha Fazla Veri Gerekli",
+      founderSummaryTr: "Hermes bu işletme için daha fazla veri bekliyor.",
+    },
+  });
+  assert.equal(focus.salesReadinessLabel, "Daha Fazla Veri Gerekli");
+  assert.equal(focus.draftEligibilityLabel, null);
+});

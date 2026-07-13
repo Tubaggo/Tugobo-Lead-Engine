@@ -65,6 +65,22 @@ export type HermesOpportunityFocus = {
   estimatedMrrLabel: string | null;
   timeline: HermesOpportunityTimelineEntry[];
   emptyState: string | null;
+  /** Sprint C2 — "Satışa Hazır" vb. hazırlık etiketi; değerlendirme yoksa null. */
+  salesReadinessLabel: string | null;
+  /** Sprint C2 — güçlü sinyaller + dikkat noktası tek paragrafta; değerlendirme yoksa null. */
+  salesReadinessSummary: string | null;
+  /** Sprint C2 — "Mesaj Hazırlamaya Uygun" | "Founder İncelemesi Gerekli"; değerlendirme yoksa null. */
+  draftEligibilityLabel: string | null;
+};
+
+/** Sprint C2 — seçili lead'in qualification özetinin bu panelin okuduğu alt kümesi. */
+export type OpportunityFocusQualificationLike = {
+  statusLabelTr: string;
+  founderSummaryTr?: string;
+  positiveReasonsTr?: string[];
+  cautionReasonsTr?: string[];
+  eligibleForOutreachDraft?: boolean;
+  status?: string;
 };
 
 /** Structural superset of `MissionLike` — the extra fields Opportunity Focus needs that Karar Merkezi's `MissionLike` doesn't carry. Any real `HermesMission` satisfies this automatically. */
@@ -84,6 +100,8 @@ export type ComputeHermesOpportunityFocusInput = {
   recentDemoItems?: DemoScheduleItem[];
   recentFollowUps?: FollowUpCandidate[];
   recentSalesOutcomes?: SalesOutcomeItem[];
+  /** Sprint C2 — seçili mission'ın lead'i için kayıtlı qualification özeti (varsa). */
+  qualificationForLead?: OpportunityFocusQualificationLike | null;
 };
 
 const EMPTY_STATE_MESSAGE = "Bir fırsat seçtiğinde Hermes bu otel için önerilen sonraki adımı gösterecek.";
@@ -112,6 +130,38 @@ function emptyFocus(): HermesOpportunityFocus {
     estimatedMrrLabel: null,
     timeline: [],
     emptyState: EMPTY_STATE_MESSAGE,
+    salesReadinessLabel: null,
+    salesReadinessSummary: null,
+    draftEligibilityLabel: null,
+  };
+}
+
+/**
+ * Sprint C2 — qualification özetini panelin iki satırına çevirir: hazırlık
+ * etiketi + "neden hazır / neden henüz değil" paragrafı. Saf seçim; skor
+ * formülü, iç enum veya teknik terim üretmez.
+ */
+function salesReadinessOf(q: OpportunityFocusQualificationLike | null | undefined): {
+  label: string | null;
+  summary: string | null;
+  draftLabel: string | null;
+} {
+  if (!q) return { label: null, summary: null, draftLabel: null };
+  const parts: string[] = [];
+  if (q.founderSummaryTr?.trim()) parts.push(q.founderSummaryTr.trim());
+  const positives = (q.positiveReasonsTr ?? []).slice(0, 3);
+  if (positives.length > 0) parts.push(`Güçlü sinyaller: ${positives.join(", ").toLowerCase()}.`);
+  const caution = (q.cautionReasonsTr ?? [])[0];
+  if (caution) parts.push(`Dikkat: ${caution.toLowerCase()}.`);
+  return {
+    label: q.statusLabelTr,
+    summary: parts.join(" ") || null,
+    draftLabel:
+      q.status === "sales_ready"
+        ? q.eligibleForOutreachDraft === true
+          ? "Mesaj Hazırlamaya Uygun"
+          : "Founder İncelemesi Gerekli"
+        : null,
   };
 }
 
@@ -335,6 +385,7 @@ export function computeHermesOpportunityFocus(input: ComputeHermesOpportunityFoc
   const intelligence = recentIntelligence.find((i) => isSameMission(i.missionId, mission.missionId)) ?? null;
 
   const copy = STATE_COPY[stage];
+  const readiness = salesReadinessOf(input.qualificationForLead);
 
   return {
     id: `opportunity-focus:${mission.missionId}`,
@@ -363,5 +414,8 @@ export function computeHermesOpportunityFocus(input: ComputeHermesOpportunityFoc
     estimatedMrrLabel: missionFocus.outcomeEstimatedMrrLabel,
     timeline: buildTimeline(mission, input),
     emptyState: null,
+    salesReadinessLabel: readiness.label,
+    salesReadinessSummary: readiness.summary,
+    draftEligibilityLabel: readiness.draftLabel,
   };
 }

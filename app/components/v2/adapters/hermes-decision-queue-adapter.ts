@@ -30,7 +30,9 @@ export type HermesDecisionType =
   | "decide_follow_up"
   | "mark_outcome"
   | "resolve_failed_delivery"
-  | "review_unknown";
+  | "review_unknown"
+  /** Sprint C2 — yalnız gerçek founder incelemesi gerektiren qualification sonuçları. */
+  | "review_qualification";
 
 export type HermesDecisionPriority = "critical" | "high" | "medium" | "low";
 export type HermesDecisionConfidence = "high" | "medium" | "low";
@@ -107,6 +109,15 @@ export type DecisionQueueSalesOutcomeLike = {
   updatedAt: number;
 };
 
+/** Sprint C2 — review_required qualification sonucunun karar öğesine giren alt kümesi. */
+export type DecisionQueueQualificationReviewLike = {
+  leadId: string | null;
+  businessName: string;
+  founderSummaryTr?: string;
+  hermesRecommendationTr?: string;
+  evaluatedAt?: number;
+};
+
 export type ComputeHermesDecisionQueueInput = {
   /** Already-computed by `computeActionQueue` — this module never re-derives a mission's stage. */
   actionQueue: ActionQueueItem[];
@@ -116,6 +127,13 @@ export type ComputeHermesDecisionQueueInput = {
   recentDemoItems?: DecisionQueueDemoItemLike[];
   recentFollowUps?: DecisionQueueFollowUpLike[];
   recentSalesOutcomes?: DecisionQueueSalesOutcomeLike[];
+  /**
+   * Sprint C2 — çağıran YALNIZ gerçek founder incelemesi gerektiren
+   * (review_required) qualification sonuçlarını verir
+   * (`selectQualificationReviewItems`); sales_ready/watch/data_needed asla
+   * karar öğesi olmaz — kuyruk dashboard'a dönüşmez.
+   */
+  qualificationReviews?: DecisionQueueQualificationReviewLike[];
 };
 
 /** Stages that are mere information, never a single-touch decision — never become a `HermesDecisionItem`. */
@@ -305,10 +323,54 @@ function buildDecisionItem(item: ActionQueueItem, input: ComputeHermesDecisionQu
  * Sorted critical → high → medium → low, then newest `lastActivityAt`
  * first within the same priority (a `null` lastActivityAt sorts last).
  */
+/**
+ * Sprint C2 — review_required qualification sonucunu tek dokunuşluk karar
+ * öğesine çevirir. Mission yok (henüz satış işi açılmadı — konu tam olarak
+ * bu karar); primary action UI'da qualification bölümüne odaklanır, hiçbir
+ * mutation tetiklemez.
+ */
+function buildQualificationReviewItem(
+  review: DecisionQueueQualificationReviewLike,
+): HermesDecisionItem {
+  return {
+    id: `decision:qualification:${review.leadId ?? review.businessName}`,
+    missionId: null,
+    leadId: review.leadId,
+    title: review.businessName?.trim() || "İsimsiz işletme",
+    decisionType: "review_qualification",
+    priority: "high",
+    statusLabel: "Fırsatı İncele",
+    whatHappened:
+      "Hermes bu işletmede güçlü fırsat sinyalleri buldu ancak bir nokta doğrulama gerektiriyor.",
+    whyItMatters:
+      review.founderSummaryTr?.trim() ||
+      "Doğrulama yapılmadan satış hazırlığı başlatılmayacak.",
+    hermesRecommendation:
+      review.hermesRecommendationTr?.trim() ||
+      "Hermes önce senin incelemeni istiyor — karar sana ait.",
+    founderDecisionLabel: "Bu fırsatın satışa uygun olup olmadığına karar ver.",
+    primaryActionLabel: "İncele",
+    secondaryActionLabel: null,
+    lastActivityAt: review.evaluatedAt ?? null,
+    sourceStage: "unknown",
+    mapped: false,
+    confidence: null,
+    urgency: null,
+  };
+}
+
 export function computeHermesDecisionQueue(input: ComputeHermesDecisionQueueInput): HermesDecisionItem[] {
   const items = input.actionQueue
     .map((item) => buildDecisionItem(item, input))
     .filter((item): item is HermesDecisionItem => item !== null);
+
+  // Sprint C2 — qualification incelemeleri: zaten bir mission karar öğesi
+  // taşıyan lead için ikinci kart üretilmez (tek varlık, tek karar).
+  const leadIdsWithItems = new Set(items.map((i) => i.leadId).filter(Boolean));
+  for (const review of input.qualificationReviews ?? []) {
+    if (review.leadId && leadIdsWithItems.has(review.leadId)) continue;
+    items.push(buildQualificationReviewItem(review));
+  }
 
   return items.sort((a, b) => {
     const rankDiff = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];

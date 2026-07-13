@@ -17,11 +17,16 @@ import {
   type AcquisitionRegion,
 } from "./hermes-autonomous-acquisition-policy.ts";
 import type { AcquisitionConfig } from "./hermes-acquisition-config.ts";
+import {
+  __resetQualificationRegistryForTests,
+  getRecentQualificationResults,
+} from "./hermes-qualification-registry.ts";
 
 const NOW = Date.UTC(2026, 6, 10, 9, 0, 0);
 
 beforeEach(() => {
   __resetAcquisitionRunRegistryForTests();
+  __resetQualificationRegistryForTests();
 });
 
 function region(overrides: Partial<AcquisitionRegion> = {}): AcquisitionRegion {
@@ -65,6 +70,12 @@ function lead(overrides: Partial<AcquisitionDiscoveredLead> = {}): AcquisitionDi
     phone: "+90 532 111 22 33",
     website: "oteldeniz.com",
     verifiedOpportunityScore: 85,
+    // Sprint C2 — the production adapter's output is always enriched
+    // (`enrichLeadsWithHomepageSignalsBatched` → `enrichScoredLeadIntelligence`
+    // sets signalVerification + icpFitScore); the fakes mirror that so the
+    // qualification stage reads them the same way it reads real leads.
+    icpFitScore: 70,
+    signalVerification: { websiteVerification: "verified", whatsappVerification: "likely" },
     ...overrides,
   };
 }
@@ -434,4 +445,145 @@ test("region cooldown prevents rescanning the same region", async () => {
   assert.equal(second.status, "blocked");
   assert.equal(calls.length, 0);
   assert.ok(second.blockingReasons.includes("Şu anda taranmaya uygun bölge yok."));
+});
+
+/* ── Sprint C2 — qualification entegrasyonu ─────────────────── */
+
+test("safe run qualification sonuçlarını kaydeder ve yalnız sales_ready adayları teslim eder", async () => {
+  const leads = [
+    lead({ id: "gmaps-q1", name: "Hazır Otel", phone: "+90 532 200 00 01", website: "q1.com", verifiedOpportunityScore: 90 }),
+    // İnceleme gerektiren: chain işletme, skor güçlü.
+    lead({ id: "gmaps-q2", name: "Zincir Otel", phone: "+90 532 200 00 02", website: "q2.com", verifiedOpportunityScore: 85, businessOwnershipType: "chain" }),
+    // Veri bekleyen: enrichment kanıtı yok.
+    lead({ id: "gmaps-q3", name: "Veri Bekleyen Otel", phone: "+90 532 200 00 03", website: "q3.com", verifiedOpportunityScore: 80, signalVerification: undefined, icpFitScore: undefined }),
+    // İzlenen: orta skor, kanal sıcaklığı yok.
+    lead({ id: "gmaps-q4", name: "İzlenen Otel", phone: "+90 532 200 00 04", website: "q4.com", verifiedOpportunityScore: 55 }),
+    // Uygun olmayan: düşük skor + zayıf ICP.
+    lead({ id: "gmaps-q5", name: "Zayıf Otel", phone: "+90 532 200 00 05", website: "q5.com", verifiedOpportunityScore: 20, icpFitScore: 15 }),
+  ];
+  const { adapter } = trackingAdapter(leads);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config(),
+    importAdapter: adapter,
+    now: NOW,
+  });
+
+  assert.equal(result.qualificationEvaluatedCount, 5);
+  assert.equal(result.salesReadyCount, 1);
+  assert.equal(result.reviewRequiredCount, 1);
+  assert.equal(result.dataNeededCount, 1);
+  assert.equal(result.watchCount, 1);
+  assert.equal(result.notQualifiedCount, 1);
+  assert.equal(result.qualificationBlockedCount, 0);
+
+  // Yalnız sales_ready mission yoluna girer.
+  assert.equal(result.missionCandidateCount, 1);
+  const pending = getPendingAcquisitionCandidates(NOW);
+  assert.deepEqual(pending.flatMap((b) => b.leads.map((l) => l.id)), ["gmaps-q1"]);
+
+  // Sonuçlar registry'de — founder görünümleri buradan okur.
+  const stored = getRecentQualificationResults(10, NOW);
+  assert.equal(stored.length, 5);
+
+  // Preview founder-safe: ilk sales_ready + review_required kartları.
+  assert.ok(result.qualificationPreview);
+  assert.equal(result.qualificationPreview!.summary.salesReady, 1);
+  assert.equal(result.qualificationPreview!.summary.reviewRequired, 1);
+  const first = result.qualificationPreview!.items[0];
+  assert.equal(first.businessName, "Hazır Otel");
+  assert.equal(first.statusLabelTr, "Satışa Hazır");
+  assert.equal(first.eligibleForMission, true);
+});
+
+test("review_required asla otomatik mission adayı olmaz", async () => {
+  const { adapter } = trackingAdapter([
+    lead({ id: "gmaps-r1", name: "Zincir Otel", verifiedOpportunityScore: 90, businessOwnershipType: "chain" }),
+  ]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config(),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.equal(result.reviewRequiredCount, 1);
+  assert.equal(result.missionCandidateCount, 0);
+  assert.equal(getPendingAcquisitionCandidates(NOW).length, 0);
+});
+
+test("dry-run bekleyen adaylar üzerinden qualification önizler, hiçbir mutation yapmaz", async () => {
+  // Önce gerçek bir run bekleyen aday üretsin.
+  const { adapter } = trackingAdapter([
+    lead({ id: "gmaps-d1", name: "Hazır Otel", verifiedOpportunityScore: 90 }),
+  ]);
+  await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config(),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  const storedBefore = getRecentQualificationResults(10, NOW).length;
+
+  // Dry-run: adapter çağrılmaz, registry değişmez, preview dolu döner.
+  const { adapter: dryAdapter, calls } = trackingAdapter([lead({ id: "gmaps-d2" })]);
+  const dry = await runHermesAutonomousAcquisition({
+    trigger: "developer",
+    config: config({ dryRun: true }, [region({ id: "mersin-hotel", city: "Mersin", lastRunAt: null })]),
+    importAdapter: dryAdapter,
+    now: NOW + 60_000,
+  });
+  assert.equal(calls.length, 0);
+  assert.equal(dry.dryRun, true);
+  assert.ok(dry.qualificationPreview);
+  assert.equal(dry.qualificationPreview!.summary.salesReady, 1);
+  assert.equal(dry.qualificationEvaluatedCount, 1);
+  // Sıfır mutation: qualification registry'de yeni kayıt yok, aday havuzu aynı.
+  assert.equal(getRecentQualificationResults(10, NOW + 60_000).length, storedBefore);
+  assert.equal(getPendingAcquisitionCandidates(NOW + 60_000).flatMap((b) => b.leads).length, 1);
+});
+
+test("retry qualification veya mission'ı duplicate etmez", async () => {
+  const { adapter } = trackingAdapter([
+    lead({ id: "gmaps-x1", name: "Hazır Otel", verifiedOpportunityScore: 90 }),
+  ]);
+  await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config(),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  // Cooldown'u aşmış ikinci run — aynı işletme dedupe ile atlanır.
+  const second = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({}, [region({ lastRunAt: null, cooldownHours: 0 })]),
+    importAdapter: adapter,
+    now: NOW + 25 * 60 * 60 * 1000,
+  });
+  assert.equal(second.duplicateCount, 1);
+  assert.equal(second.missionCandidateCount, 0);
+  assert.equal(second.qualificationEvaluatedCount, 0);
+  assert.equal(getRecentQualificationResults(10, NOW + 25 * 60 * 60 * 1000).length, 1);
+});
+
+test("run özeti sayaçları qualification aşamasını yansıtır (mission cap korunur)", async () => {
+  const leads = Array.from({ length: 8 }, (_, i) =>
+    lead({
+      id: `gmaps-c${i}`,
+      name: `Hazır Otel ${i}`,
+      phone: `+90 532 300 00 1${i}`,
+      website: `cap${i}.com`,
+      verifiedOpportunityScore: 90,
+    }),
+  );
+  const { adapter } = trackingAdapter(leads, 9);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxMissionCandidatesPerRun: 3, maxResultsPerRegion: 10, dailyLeadLimit: 20 }),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.equal(result.salesReadyCount, 8);
+  // Cap: 8 sales_ready bulunsa da yalnız 3 aday teslim edilir.
+  assert.equal(result.missionCandidateCount, 3);
+  assert.equal(result.status, "partial");
 });

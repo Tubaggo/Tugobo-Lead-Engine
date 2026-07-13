@@ -53,6 +53,14 @@ export type HermesAcquisitionRun = {
   missionCreatedCount: number;
   skippedCount: number;
   externalRequestCount: number;
+  /** Sprint C2 — qualification aşamasının run düzeyi sayaçları. */
+  qualificationEvaluatedCount: number;
+  salesReadyCount: number;
+  reviewRequiredCount: number;
+  dataNeededCount: number;
+  watchCount: number;
+  notQualifiedCount: number;
+  qualificationBlockedCount: number;
   blockingReasons: string[];
   /** Sanitized, operator-safe error notes — never a raw provider error body. */
   safeErrors: string[];
@@ -183,6 +191,13 @@ export function startAcquisitionRun(input: StartAcquisitionRunInput): StartAcqui
     missionCreatedCount: 0,
     skippedCount: 0,
     externalRequestCount: 0,
+    qualificationEvaluatedCount: 0,
+    salesReadyCount: 0,
+    reviewRequiredCount: 0,
+    dataNeededCount: 0,
+    watchCount: 0,
+    notQualifiedCount: 0,
+    qualificationBlockedCount: 0,
     blockingReasons: [],
     safeErrors: [],
     summaryTr: "",
@@ -233,6 +248,13 @@ export function recordBlockedAcquisitionRun(input: RecordBlockedRunInput): Herme
     missionCreatedCount: 0,
     skippedCount: 0,
     externalRequestCount: 0,
+    qualificationEvaluatedCount: 0,
+    salesReadyCount: 0,
+    reviewRequiredCount: 0,
+    dataNeededCount: 0,
+    watchCount: 0,
+    notQualifiedCount: 0,
+    qualificationBlockedCount: 0,
     blockingReasons: [...input.blockingReasons],
     safeErrors: [],
     summaryTr: input.summaryTr,
@@ -257,6 +279,13 @@ export type FinishAcquisitionRunPatch = Partial<
     | "missionCreatedCount"
     | "skippedCount"
     | "externalRequestCount"
+    | "qualificationEvaluatedCount"
+    | "salesReadyCount"
+    | "reviewRequiredCount"
+    | "dataNeededCount"
+    | "watchCount"
+    | "notQualifiedCount"
+    | "qualificationBlockedCount"
     | "blockingReasons"
     | "safeErrors"
     | "summaryTr"

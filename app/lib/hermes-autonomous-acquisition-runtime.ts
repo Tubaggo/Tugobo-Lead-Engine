@@ -3,7 +3,6 @@ import {
   buildAcquisitionAuditEvent,
   enforceAcquisitionBudget,
   evaluateAutonomousAcquisitionEligibility,
-  evaluateMissionCandidateEligibility,
   selectNextAcquisitionRegions,
   summarizeAcquisitionRun,
   type AcquisitionAuditEvent,
@@ -16,6 +15,7 @@ import {
   finishAcquisitionRun,
   getAcquisitionTodayCounters,
   getActiveAcquisitionRun,
+  getPendingAcquisitionCandidates,
   getRegionLastRunAt,
   hasSeenAcquisitionDedupeKey,
   markRegionsScanned,
@@ -26,6 +26,15 @@ import {
   type HermesAcquisitionRun,
 } from "./hermes-acquisition-run-registry.ts";
 import { leadDedupeKeysFor } from "./lead-dedupe.ts";
+import {
+  buildQualificationPreview,
+  evaluateHermesQualification,
+  type QualificationLeadLike,
+  type QualificationPreview,
+  type QualificationResult,
+} from "./hermes-autonomous-qualification-runtime.ts";
+import { deriveQualificationPolicy } from "./hermes-qualification-policy.ts";
+import { recordQualificationResult } from "./hermes-qualification-registry.ts";
 
 /**
  * Hermes Autonomous Acquisition Runtime (Sprint C1 — Scope 4).
@@ -102,6 +111,20 @@ export type RunAcquisitionResult = {
   missionCreatedCount: number;
   /** Real (non-dry) runs: requests actually made. Dry runs: requests that WOULD have been made — never a real call. */
   externalRequestCount: number;
+  /** Sprint C2 — qualification aşamasının run düzeyi sayaçları. */
+  qualificationEvaluatedCount: number;
+  salesReadyCount: number;
+  reviewRequiredCount: number;
+  dataNeededCount: number;
+  watchCount: number;
+  notQualifiedCount: number;
+  qualificationBlockedCount: number;
+  /**
+   * Founder-safe qualification önizlemesi. Gerçek run'da bu run'ın
+   * değerlendirmelerinden; dry-run'da (dış çağrı yasak olduğundan) teslim
+   * bekleyen mevcut aday havuzundan üretilir — her iki yolda da sıfır mutation.
+   */
+  qualificationPreview: QualificationPreview | null;
 };
 
 function hourWindow(now: number): string {
@@ -115,11 +138,10 @@ function defaultIdempotencyKey(trigger: AcquisitionTrigger, now: number): string
   return `${trigger}|${Math.floor(now / (2 * 60 * 1000))}`;
 }
 
-function opportunityScoreOf(lead: AcquisitionDiscoveredLead): number {
-  return lead.verifiedOpportunityScore ?? lead.opportunityScore ?? lead.leadScore ?? 0;
-}
-
-function toResult(run: HermesAcquisitionRun): RunAcquisitionResult {
+function toResult(
+  run: HermesAcquisitionRun,
+  qualificationPreview: QualificationPreview | null = null,
+): RunAcquisitionResult {
   return {
     status: run.status,
     runId: run.id,
@@ -134,7 +156,47 @@ function toResult(run: HermesAcquisitionRun): RunAcquisitionResult {
     missionCandidateCount: run.missionCandidateCount,
     missionCreatedCount: run.missionCreatedCount,
     externalRequestCount: run.externalRequestCount,
+    qualificationEvaluatedCount: run.qualificationEvaluatedCount,
+    salesReadyCount: run.salesReadyCount,
+    reviewRequiredCount: run.reviewRequiredCount,
+    dataNeededCount: run.dataNeededCount,
+    watchCount: run.watchCount,
+    notQualifiedCount: run.notQualifiedCount,
+    qualificationBlockedCount: run.qualificationBlockedCount,
+    qualificationPreview,
   };
+}
+
+type QualificationStageCounters = {
+  evaluated: number;
+  salesReady: number;
+  reviewRequired: number;
+  dataNeeded: number;
+  watch: number;
+  notQualified: number;
+  blocked: number;
+};
+
+function emptyQualificationCounters(): QualificationStageCounters {
+  return {
+    evaluated: 0,
+    salesReady: 0,
+    reviewRequired: 0,
+    dataNeeded: 0,
+    watch: 0,
+    notQualified: 0,
+    blocked: 0,
+  };
+}
+
+function countQualification(counters: QualificationStageCounters, result: QualificationResult): void {
+  counters.evaluated += 1;
+  if (result.status === "sales_ready") counters.salesReady += 1;
+  else if (result.status === "review_required") counters.reviewRequired += 1;
+  else if (result.status === "data_needed") counters.dataNeeded += 1;
+  else if (result.status === "watch") counters.watch += 1;
+  else if (result.status === "not_qualified") counters.notQualified += 1;
+  else counters.blocked += 1;
 }
 
 export async function runHermesAutonomousAcquisition(
@@ -254,6 +316,34 @@ export async function runHermesAutonomousAcquisition(
       selectedRegions.length + plannedEvaluations,
       budget.remainingRequestBudget,
     );
+
+    // Sprint C2 — qualification önizlemesi: dry-run dış çağrı yapamayacağı
+    // için yeni işletme değerlendiremez; teslim bekleyen GERÇEK aday havuzu
+    // sıfır mutation ile değerlendirilir (registry'ye kayıt yok, mission yok).
+    const qualPolicy = deriveQualificationPolicy(policy);
+    const qualCounters = emptyQualificationCounters();
+    const previewInputs: { result: QualificationResult; businessName: string }[] = [];
+    for (const batch of getPendingAcquisitionCandidates(now)) {
+      for (const lead of batch.leads) {
+        try {
+          const result = evaluateHermesQualification({
+            // Gerçek ScoredLead objeleri — yapısal alt kümeye güvenli daraltma.
+            lead: lead as QualificationLeadLike,
+            existingMissionId: null,
+            acquisitionRunId: run.id,
+            policy: qualPolicy,
+            currentTime: now,
+          });
+          countQualification(qualCounters, result);
+          previewInputs.push({ result, businessName: lead.name });
+        } catch {
+          qualCounters.evaluated += 1;
+          qualCounters.blocked += 1;
+        }
+      }
+    }
+    const qualificationPreview = buildQualificationPreview(previewInputs);
+
     const summaryTr = summarizeAcquisitionRun({
       status: "completed",
       dryRun: true,
@@ -272,6 +362,13 @@ export async function runHermesAutonomousAcquisition(
         evaluatedCount: plannedEvaluations,
         missionCandidateCount: plannedCandidates,
         externalRequestCount: plannedExternalRequestCount,
+        qualificationEvaluatedCount: qualCounters.evaluated,
+        salesReadyCount: qualCounters.salesReady,
+        reviewRequiredCount: qualCounters.reviewRequired,
+        dataNeededCount: qualCounters.dataNeeded,
+        watchCount: qualCounters.watch,
+        notQualifiedCount: qualCounters.notQualified,
+        qualificationBlockedCount: qualCounters.blocked,
         summaryTr,
         auditEvents: [
           ...audit,
@@ -284,7 +381,7 @@ export async function runHermesAutonomousAcquisition(
       },
       now,
     );
-    return toResult(finished!);
+    return toResult(finished!, qualificationPreview);
   }
 
   /* ── real safe run ──────────────────────────────────────────── */
@@ -337,6 +434,12 @@ export async function runHermesAutonomousAcquisition(
   const safeErrors: string[] = [];
   let hitProviderTrouble = false;
   let stoppedEarly = false;
+  // Sprint C2 — qualification aşaması: tek bir lead'in değerlendirme hatası
+  // tüm taramayı asla düşürmez (partial sonuç).
+  const qualPolicy = deriveQualificationPolicy(policy);
+  const qualCounters = emptyQualificationCounters();
+  const qualPreviewInputs: { result: QualificationResult; businessName: string }[] = [];
+  let qualificationTrouble = false;
 
   let remainingRequestBudget = budget.remainingRequestBudget;
   let remainingLeadBudget = budget.remainingLeadBudget;
@@ -414,22 +517,40 @@ export async function runHermesAutonomousAcquisition(
         );
       }
 
-      const qualified = fresh.filter(
-        (lead) =>
-          evaluateMissionCandidateEligibility({
-            opportunityScore: opportunityScoreOf(lead),
-            hasPhone: Boolean(lead.phone?.trim()),
-            hasWebsite: Boolean(lead.website?.trim()),
-            policy,
-          }).eligible,
-      );
+      // Sprint C2 — Autonomous Qualification: mission adaylığı artık tek
+      // açıklanabilir qualification kararı üzerinden. Her sonuç registry'ye
+      // yazılır (founder görünümleri oradan okur); yalnız `eligibleForMission`
+      // olanlar mevcut capped mission yoluna devam eder.
+      const qualified: AcquisitionDiscoveredLead[] = [];
+      for (const lead of fresh) {
+        try {
+          const result = evaluateHermesQualification({
+            lead: lead as QualificationLeadLike,
+            existingMissionId: null,
+            acquisitionRunId: run.id,
+            policy: qualPolicy,
+            currentTime: now,
+          });
+          countQualification(qualCounters, result);
+          recordQualificationResult({ result, businessName: lead.name, now });
+          qualPreviewInputs.push({ result, businessName: lead.name });
+          if (result.eligibleForMission) qualified.push(lead);
+        } catch {
+          qualCounters.evaluated += 1;
+          qualCounters.blocked += 1;
+          qualificationTrouble = true;
+          if (!safeErrors.includes("Bir işletmenin ticari değerlendirmesi tamamlanamadı.")) {
+            safeErrors.push("Bir işletmenin ticari değerlendirmesi tamamlanamadı.");
+          }
+        }
+      }
       qualifiedCount += qualified.length;
       if (qualified.length > 0) {
         audit.push(
           buildAcquisitionAuditEvent({
             type: "hermes_acquisition_candidates_qualified",
             at: now,
-            detailTr: `${region.city}: ${qualified.length} işletme fırsat kriterlerini karşıladı.`,
+            detailTr: `${region.city}: ${qualified.length} işletme satışa hazır bulundu — founder onayı bekliyor.`,
           }),
         );
       }
@@ -468,6 +589,13 @@ export async function runHermesAutonomousAcquisition(
         missionCandidateCount,
         missionCreatedCount: missionCandidateCount,
         externalRequestCount,
+        qualificationEvaluatedCount: qualCounters.evaluated,
+        salesReadyCount: qualCounters.salesReady,
+        reviewRequiredCount: qualCounters.reviewRequired,
+        dataNeededCount: qualCounters.dataNeeded,
+        watchCount: qualCounters.watch,
+        notQualifiedCount: qualCounters.notQualified,
+        qualificationBlockedCount: qualCounters.blocked,
         safeErrors: [...safeErrors, "Tarama sırasında beklenmeyen bir sorun oluştu."],
         summaryTr: summarizeAcquisitionRun({
           status: "failed",
@@ -495,7 +623,7 @@ export async function runHermesAutonomousAcquisition(
   }
 
   const status: AcquisitionRunStatus =
-    hitProviderTrouble || stoppedEarly ? "partial" : "completed";
+    hitProviderTrouble || stoppedEarly || qualificationTrouble ? "partial" : "completed";
   const skippedCount = Math.max(0, evaluatedCount - importedCount - duplicateCount);
 
   audit.push(
@@ -525,6 +653,13 @@ export async function runHermesAutonomousAcquisition(
       missionCreatedCount: missionCandidateCount,
       skippedCount,
       externalRequestCount,
+      qualificationEvaluatedCount: qualCounters.evaluated,
+      salesReadyCount: qualCounters.salesReady,
+      reviewRequiredCount: qualCounters.reviewRequired,
+      dataNeededCount: qualCounters.dataNeeded,
+      watchCount: qualCounters.watch,
+      notQualifiedCount: qualCounters.notQualified,
+      qualificationBlockedCount: qualCounters.blocked,
       safeErrors,
       summaryTr: summarizeAcquisitionRun({
         status,
@@ -541,5 +676,5 @@ export async function runHermesAutonomousAcquisition(
     },
     now,
   );
-  return toResult(finished!);
+  return toResult(finished!, buildQualificationPreview(qualPreviewInputs));
 }

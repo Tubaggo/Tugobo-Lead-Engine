@@ -308,3 +308,45 @@ test("lastActivityAt of 0 (no real activity recorded) is normalized to null", ()
   );
   assert.equal(item!.lastActivityAt, null);
 });
+
+/* ── Sprint C2 — review_qualification ───────────────────────── */
+
+test("review_required qualification sonucu review_qualification karar öğesi olur", () => {
+  const items = computeHermesDecisionQueue(
+    buildInput([], {
+      qualificationReviews: [
+        {
+          leadId: "lead-q1",
+          businessName: "Zincir Otel",
+          founderSummaryTr: "Hermes Zincir Otel işletmesinde güçlü fırsat sinyalleri buldu ancak bir nokta doğrulama gerektiriyor.",
+          hermesRecommendationTr: "Hermes önce senin incelemeni istiyor — karar sana ait.",
+          evaluatedAt: 5000,
+        },
+      ],
+    }),
+  );
+  assert.equal(items.length, 1);
+  const item = items[0]!;
+  assert.equal(item.decisionType, "review_qualification");
+  assert.equal(item.statusLabel, "Fırsatı İncele");
+  assert.equal(item.primaryActionLabel, "İncele");
+  assert.equal(item.missionId, null);
+  assert.equal(item.leadId, "lead-q1");
+  assert.ok(item.whatHappened.includes("güçlü fırsat sinyalleri"));
+});
+
+test("aynı lead zaten mission karar öğesi taşıyorsa qualification kartı üretilmez", () => {
+  const items = computeHermesDecisionQueue(
+    buildInput([buildActionQueueItem({ stage: "approval_required" })], {
+      qualificationReviews: [{ leadId: "lead-1", businessName: "Otel Test" }],
+    }),
+  );
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.decisionType, "approve_message");
+});
+
+test("qualificationReviews verilmezse kuyruk davranışı değişmez", () => {
+  const before = computeHermesDecisionQueue(buildInput([buildActionQueueItem()]));
+  const after = computeHermesDecisionQueue(buildInput([buildActionQueueItem()], { qualificationReviews: [] }));
+  assert.deepEqual(after, before);
+});
