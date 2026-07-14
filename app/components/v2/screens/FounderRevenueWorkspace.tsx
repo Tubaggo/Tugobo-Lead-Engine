@@ -69,6 +69,13 @@ import {
   type FollowUpPlanApiSummaryLike,
   type FollowUpPlanCard,
 } from "@/app/components/v2/adapters/hermes-follow-up-plan-founder-adapter";
+import {
+  HERMES_REVENUE_PIPELINE_LABELS,
+  computeRevenuePipelineView,
+  type RevenuePipelineApiItemLike,
+  type RevenuePipelineApiSummaryLike,
+  type RevenuePipelineCard,
+} from "@/app/components/v2/adapters/hermes-revenue-pipeline-founder-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -237,6 +244,12 @@ type FollowUpPlanApiPayload = {
   summary?: FollowUpPlanApiSummaryLike;
 };
 
+/** Sprint C6 — /api/hermes/revenue-pipeline payload'ının bu ekranın okuduğu biçimi. */
+type RevenuePipelineApiPayload = {
+  items?: RevenuePipelineApiItemLike[];
+  summary?: RevenuePipelineApiSummaryLike;
+};
+
 /** v8.2 — Decision Queue cards are styled by priority, not by the underlying (now-hidden) runtime stage. */
 const DECISION_PRIORITY_BADGE_CLS: Record<HermesDecisionPriority, string> = {
   critical: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
@@ -318,6 +331,9 @@ export default function FounderRevenueWorkspace({
   // Sprint C5 — takip planı okuması: aynı read-only fetch kalıbı, mutation yok.
   const [followUpPlanPayload, setFollowUpPlanPayload] = useState<FollowUpPlanApiPayload | null>(null);
   const [followUpPlanReachable, setFollowUpPlanReachable] = useState<boolean | null>(null);
+  // Sprint C6 — gelir pipeline okuması: read-time aggregation, mutation yok.
+  const [revenuePipelinePayload, setRevenuePipelinePayload] = useState<RevenuePipelineApiPayload | null>(null);
+  const [revenuePipelineReachable, setRevenuePipelineReachable] = useState<boolean | null>(null);
 
   // v8.5 (Release Candidate Polish, Scope 4/5) — a single "Tekrar Dene" re-runs
   // every one of the seven read-only fetches below; `initialLoadDone` gates
@@ -583,6 +599,30 @@ export default function FounderRevenueWorkspace({
     };
   }, [retryTick]);
 
+  // Sprint C6 — gelir pipeline okuması: read-time aggregation; mutation yok.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/hermes/revenue-pipeline");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as RevenuePipelineApiPayload;
+        if (!cancelled) {
+          setRevenuePipelinePayload(data);
+          setRevenuePipelineReachable(true);
+        }
+      } catch {
+        // boş bırak — bölüm kendi güvenli hata durumunu gösterir
+        if (!cancelled) setRevenuePipelineReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [retryTick]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -714,6 +754,17 @@ export default function FounderRevenueWorkspace({
     summary: followUpPlanPayload?.summary ?? null,
     fetchState:
       followUpPlanReachable === null ? "loading" : followUpPlanReachable ? "ready" : "error",
+    leadNameById,
+  });
+  // Sprint C6 — "Gelir Nabzı" (Revenue Pipeline Intelligence): açık fırsatların
+  // satışa yakınlığı + riskleri + ayrık gelir kategorileri. Uydurma gelir yok;
+  // bilinmeyen tutar "Henüz belirlenmedi" olarak gösterilir.
+  const revenuePipelineItems = revenuePipelinePayload?.items ?? null;
+  const revenuePipelineView = computeRevenuePipelineView({
+    items: revenuePipelineItems,
+    summary: revenuePipelinePayload?.summary ?? null,
+    fetchState:
+      revenuePipelineReachable === null ? "loading" : revenuePipelineReachable ? "ready" : "error",
     leadNameById,
   });
 
@@ -1491,21 +1542,79 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
-      {/* Section 5 — Gelir Nabzı: won / lost / estimated MRR */}
+      {/* Section 5 — Gelir Nabzı (Sprint C6 — Revenue Pipeline Intelligence):
+          fırsatların satışa yakınlığı, riskleri ve AYRIK gelir kategorileri.
+          Bilinmeyen tutar "Henüz belirlenmedi" — asla sahte ₺0. Pipeline zekâsı
+          muhasebe değildir; tahmini gelir tahsil edilmiş gelir değildir. */}
       <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
-        {initialLoadDone && hasNoRevenueOutcomes ? (
-          <p className="text-[11px] text-zinc-600">{FOUNDER_HOME_EMPTY_STATE_LABELS.revenuePulse}</p>
-        ) : (
-          <div className={kpiStripCls}>
+        <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_REVENUE_PIPELINE_LABELS.sectionTitle}</p>
+        <p className="mb-2.5 text-[11px] text-zinc-500">{HERMES_REVENUE_PIPELINE_LABELS.sectionSubtitle}</p>
+
+        {revenuePipelineView.mode === "loading" && (
+          <p className="text-[11px] text-zinc-600">{HERMES_REVENUE_PIPELINE_LABELS.loading}</p>
+        )}
+
+        {revenuePipelineView.mode === "error" && (
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-rose-500/[0.06] px-4 py-3 ring-1 ring-inset ring-rose-500/15">
+            <p className="text-[11px] text-rose-300">{HERMES_REVENUE_PIPELINE_LABELS.error}</p>
+            <button type="button" onClick={retryDataFetches} className="shrink-0 text-[11px] font-semibold text-rose-200 hover:text-rose-100">
+              {HERMES_REVENUE_PIPELINE_LABELS.retry}
+            </button>
+          </div>
+        )}
+
+        {revenuePipelineView.mode === "empty" && (
+          <div className="rounded-lg bg-white/[0.02] px-4 py-3.5">
+            <p className="text-[12px] font-medium text-zinc-300">{HERMES_REVENUE_PIPELINE_LABELS.emptyTitle}</p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">{HERMES_REVENUE_PIPELINE_LABELS.emptySubtitle}</p>
+          </div>
+        )}
+
+        {revenuePipelineView.mode === "ready" && (
+          <>
+            <div className="mb-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+              <RevenueKpi label={HERMES_REVENUE_PIPELINE_LABELS.kpiActive} value={revenuePipelineView.summary.activeLabel} accent="text-zinc-200" />
+              <RevenueKpi label={HERMES_REVENUE_PIPELINE_LABELS.kpiClosest} value={revenuePipelineView.summary.closestLabel} accent="text-emerald-400" />
+              <RevenueKpi label={HERMES_REVENUE_PIPELINE_LABELS.kpiAtRisk} value={revenuePipelineView.summary.atRiskLabel} accent="text-rose-400" />
+              <RevenueKpi label={HERMES_REVENUE_PIPELINE_LABELS.kpiOutcomePending} value={revenuePipelineView.summary.outcomePendingLabel} accent="text-amber-400" />
+              <RevenueKpi label={HERMES_REVENUE_PIPELINE_LABELS.kpiRealizedMrr} value={revenuePipelineView.summary.realizedMrrLabel} accent="text-emerald-400" />
+              <RevenueKpi label={HERMES_REVENUE_PIPELINE_LABELS.kpiPotentialMrr} value={revenuePipelineView.summary.potentialMrrLabel} accent="text-sky-400" />
+              <RevenueKpi label={HERMES_REVENUE_PIPELINE_LABELS.kpiRiskedMrr} value={revenuePipelineView.summary.riskedMrrLabel} accent="text-rose-400" />
+            </div>
+
+            {revenuePipelineView.closest.length > 0 && (
+              <div className="mt-2">
+                <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">{HERMES_REVENUE_PIPELINE_LABELS.closestTitle}</p>
+                <div className="space-y-1.5">
+                  {revenuePipelineView.closest.map((card) => (
+                    <RevenuePipelineCardView key={card.leadId ?? card.title} card={card} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {revenuePipelineView.atRisk.length > 0 && (
+              <div className="mt-2">
+                <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-rose-400/80">{HERMES_REVENUE_PIPELINE_LABELS.atRiskTitle}</p>
+                <div className="space-y-1.5">
+                  {revenuePipelineView.atRisk.map((card) => (
+                    <RevenuePipelineCardView key={`risk-${card.leadId ?? card.title}`} card={card} atRisk />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="mt-2 text-[10px] text-zinc-600">{HERMES_REVENUE_PIPELINE_LABELS.notAccountingNote}</p>
+          </>
+        )}
+
+        {/* Kazanılan/kaybedilen özeti (Sales Outcome source-of-truth) — pipeline
+            fetch başarısızsa da gerçek kapanış sayıları görünür kalır. */}
+        {revenuePipelineView.mode !== "ready" && initialLoadDone && !hasNoRevenueOutcomes && (
+          <div className={`${kpiStripCls} mt-2`}>
             <SummaryTile label="Kazanıldı" value={summary.wonCount} accent="text-emerald-400" />
             <SummaryTile label="Kaybedildi" value={summary.lostCount} accent="text-rose-400" />
-            <SummaryTile
-              label="Tahmini MRR"
-              value={summary.estimatedMrrTotal}
-              accent="text-emerald-400"
-              format={(v) => `₺${v.toLocaleString("tr-TR")}`}
-            />
+            <SummaryTile label="Kazanılan MRR" value={summary.estimatedMrrTotal} accent="text-emerald-400" format={(v) => `₺${v.toLocaleString("tr-TR")}`} />
           </div>
         )}
       </div>
@@ -1736,6 +1845,67 @@ function OutreachChip({ label, value }: { label: string; value: string }) {
  * karar. GÖNDERİM BUTONU YOK — founder aksiyonu (varsa) yalnız mevcut karar
  * akışına yönlendirir; hiçbir mesaj göndermez.
  */
+/** Sprint C6 — Gelir Nabzı KPI karesi: metin değeri (₺ veya "Henüz belirlenmedi") gösterir. */
+function RevenueKpi({ label, value, accent }: { label: string; value: string; accent: string }) {
+  return (
+    <div className="rounded-lg bg-white/[0.02] px-2.5 py-2">
+      <p className="min-w-0 truncate text-[9px] font-semibold uppercase tracking-[0.1em] text-zinc-600">{label}</p>
+      <p className={`truncate text-[12px] font-semibold tabular-nums ${accent}`}>{value}</p>
+    </div>
+  );
+}
+
+/**
+ * Sprint C6 — gelir fırsat kartı: otel adı + aşama, gelir sinyali, neden
+ * önemli, Hermes önerisi, founder sonraki adım. GÖNDERİM BUTONU YOK — founder
+ * aksiyonu (varsa) yalnız mevcut karar akışına yönlendirir.
+ */
+function RevenuePipelineCardView({ card, atRisk }: { card: RevenuePipelineCard; atRisk?: boolean }) {
+  const badgeCls = atRisk
+    ? "bg-rose-500/[0.10] text-rose-300 ring-rose-500/20"
+    : "bg-emerald-500/[0.10] text-emerald-300 ring-emerald-500/20";
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-[11px] font-semibold text-zinc-200">{card.title}</p>
+        <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${badgeCls}`}>
+          {card.stageLabelTr}
+        </span>
+      </div>
+      <p className="mt-1 text-[10px] font-medium text-sky-300">{card.revenueSignalLabelTr}</p>
+      {card.riskReasonsTr.length > 0 && (
+        <ul className="mt-1 space-y-0.5">
+          {card.riskReasonsTr.map((r) => (
+            <li key={r} className="flex items-center gap-1.5 text-[10px] text-rose-300/90">
+              <span className="shrink-0" aria-hidden>⚠</span>
+              {r}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-1 text-[10px] text-zinc-400">
+        <span className="font-semibold uppercase tracking-[0.1em] text-zinc-600">{HERMES_REVENUE_PIPELINE_LABELS.hermesRecommendation}</span>{" "}
+        {card.hermesRecommendationTr}
+      </p>
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-1.5">
+        <p className="min-w-0 flex-1 text-[10px] font-medium text-indigo-300">
+          <span className="font-semibold uppercase tracking-[0.1em] text-zinc-600">{HERMES_REVENUE_PIPELINE_LABELS.founderNext}:</span>{" "}
+          {card.founderNextActionTr}
+        </p>
+        {card.founderActionLabelTr && (
+          <button
+            type="button"
+            onClick={scrollToKararKuyrugu}
+            className="shrink-0 rounded-md bg-white/[0.04] px-2 py-1 text-[10px] font-semibold text-zinc-200 hover:bg-white/[0.08]"
+          >
+            {card.founderActionLabelTr}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FollowUpPlanGroup({ title, cards }: { title: string; cards: FollowUpPlanCard[] }) {
   if (cards.length === 0) return null;
   return (
