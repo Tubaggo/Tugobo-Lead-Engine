@@ -861,7 +861,13 @@ export default function FounderRevenueWorkspace({
   const todayStatusSentence = computeTodayStatusSentence(decisionItems.length);
 
   return (
-    <div>
+    /* Sprint C7 (Founder OS v1.0) — canonical daily flow via CSS order so the
+       physical JSX stays intact: Karar Merkezi → Fırsat Odağı → Gelir Nabzı →
+       Takip Planı → Hermes Bugün Buldukları → Hermes Aktivitesi. Pipeline-detail
+       sections (Hermes Bugün / Fırsat Keşfi / Satışa Hazır / Hazırladığı Mesajlar
+       / Konuşmalar) are gated behind Developer Mode: Developer OFF = the clean
+       six-section founder experience, Developer ON = the full operational view. */
+    <div className="flex flex-col">
       {/* v8.5 (Scope 4/5) — compact loading line + safe error banner, shared across every section below. No spinner overload, no layout-shifting full-page loader. */}
       {!initialLoadDone && (
         <p className="border-b border-white/[0.06] px-5 py-2 text-[10px] text-zinc-600">{FOUNDER_ERROR_LABELS.loading}</p>
@@ -881,7 +887,7 @@ export default function FounderRevenueWorkspace({
       </div>
 
       {/* Section 1 — Karar Merkezi (v8.2, decision-first since v8.6): only single-touch founder decisions, never a status list */}
-      <div id={KARAR_KUYRUGU_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+      <div id={KARAR_KUYRUGU_ANCHOR_ID} className="order-1 border-b border-white/[0.06] px-5 py-3">
         <p className={sectionLabelCls}>Karar Merkezi</p>
         <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Hermes işi yürütür; sen yalnızca karar verirsin.</p>
         {decisionItems.length === 0 ? (
@@ -963,7 +969,7 @@ export default function FounderRevenueWorkspace({
       </div>
 
       {/* Section 2 — Fırsat Odağı (v8.3): "Bu otel için şimdi ne yapmalıyım?" — never a mission object viewer */}
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="order-2 border-b border-white/[0.06] px-5 py-3">
         <p className={sectionLabelCls}>Fırsat Odağı</p>
         <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Seçili otel için Hermes&apos;in önerdiği sonraki adım.</p>
         {opportunityFocus.emptyState ? (
@@ -1105,8 +1111,9 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
-      {/* Section 3 — Hermes Bugün (v8.6, Scope 7): numbers are secondary — compact rows instead of hero KPI tiles */}
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      {/* Section 3 — Hermes Bugün (v8.6, Scope 7): numbers are secondary — compact rows instead of hero KPI tiles.
+          Sprint C7: pipeline-detail — Developer Mode only; the founder reads the canonical six sections. */}
+      <div className={`order-6 border-b border-white/[0.06] px-5 py-3 ${developerMode ? "" : "hidden"}`}>
         <p className={`${sectionLabelCls} mb-2`}>Hermes Bugün</p>
         {initialLoadDone && hasNoTodayActivity && (
           <p className="mb-2 text-[11px] text-zinc-600">{FOUNDER_HOME_EMPTY_STATE_LABELS.hermesToday}</p>
@@ -1146,8 +1153,9 @@ export default function FounderRevenueWorkspace({
 
       {/* Section 4 — Hermes Fırsat Keşfi: what Hermes's intake side has done, operational summary only (v8.1).
           Sprint C1: leads with REAL autonomous acquisition run data (statusLine + today's counters), the
-          intake adapter's pool-level summary stays as supporting copy below it. */}
-      <div className="border-b border-white/[0.06] px-5 py-3">
+          intake adapter's pool-level summary stays as supporting copy below it.
+          Sprint C7: pipeline-detail — Developer Mode only. */}
+      <div className={`order-6 border-b border-white/[0.06] px-5 py-3 ${developerMode ? "" : "hidden"}`}>
         <p className={`${sectionLabelCls} mb-2`}>{FOUNDER_HOME_LABELS.leadIntakeSection}</p>
         <p className="mb-1 text-[11px] font-medium leading-relaxed text-zinc-200">
           {acquisitionView.statusLineTr}
@@ -1199,7 +1207,7 @@ export default function FounderRevenueWorkspace({
           from existing verification/ICP/homepage signals), why others were set
           aside, and what Hermes plans next — all founder language, no
           technical vocabulary, no red unless the data really failed to load. */}
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="order-5 border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_ACQUISITION_EXPLAINABILITY_LABELS.sectionTitle}</p>
         <p className="mb-2.5 text-[11px] text-zinc-500">
           {HERMES_ACQUISITION_EXPLAINABILITY_LABELS.sectionSubtitle}
@@ -1249,7 +1257,7 @@ export default function FounderRevenueWorkspace({
           açıklanabilir ticari hazırlık kararı. Founder yalnız dört durumu
           okur (Satışa Hazır / İnceleme Gerekiyor / Daha Fazla Veri / İzleniyor);
           hiçbir kart mesaj göndermez — outreach hâlâ founder onayının arkasında. */}
-      <div id={QUALIFICATION_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+      <div id={QUALIFICATION_ANCHOR_ID} className={`order-6 border-b border-white/[0.06] px-5 py-3 ${developerMode ? "" : "hidden"}`}>
         <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_QUALIFICATION_FOUNDER_LABELS.sectionTitle}</p>
         <p className="mb-2.5 text-[11px] text-zinc-500">
           {HERMES_QUALIFICATION_FOUNDER_LABELS.sectionSubtitle}
@@ -1322,7 +1330,7 @@ export default function FounderRevenueWorkspace({
           fırsatlar için hazırlanan mesaj taslakları. Founder yalnız inceler /
           taslağı görür — GÖNDERİM BUTONU YOK. Gönderim mevcut Founder Approval
           zincirinin arkasındadır; Hermes hiçbir mesaj göndermez. */}
-      <div id={OUTREACH_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+      <div id={OUTREACH_ANCHOR_ID} className={`order-6 border-b border-white/[0.06] px-5 py-3 ${developerMode ? "" : "hidden"}`}>
         <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_OUTREACH_FOUNDER_LABELS.sectionTitle}</p>
         <p className="mb-2.5 text-[11px] text-zinc-500">
           {HERMES_OUTREACH_FOUNDER_LABELS.sectionSubtitle}
@@ -1396,7 +1404,7 @@ export default function FounderRevenueWorkspace({
           durumda birleşmiş ticari anlamı. Founder tek ekranda görür: otel ne
           dedi, ne anlama geliyor, Hermes ne öneriyor, hangi kararı vermeli.
           GÖNDERİM BUTONU YOK — Hermes hiçbir mesaj göndermez. */}
-      <div id={CONVERSATION_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+      <div id={CONVERSATION_ANCHOR_ID} className={`order-6 border-b border-white/[0.06] px-5 py-3 ${developerMode ? "" : "hidden"}`}>
         <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_CONVERSATION_FOUNDER_LABELS.sectionTitle}</p>
         <p className="mb-2.5 text-[11px] text-zinc-500">
           {HERMES_CONVERSATION_FOUNDER_LABELS.sectionSubtitle}
@@ -1475,7 +1483,7 @@ export default function FounderRevenueWorkspace({
           onay bekliyor/kanal kontrolü. Founder yalnız inceler/planlar/vazgeçer —
           GÖNDERİM BUTONU YOK. Gönderim mevcut Founder Approval zincirinin
           arkasındadır; Hermes hiçbir takip mesajı otomatik göndermez. */}
-      <div id={FOLLOW_UP_PLAN_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+      <div id={FOLLOW_UP_PLAN_ANCHOR_ID} className="order-4 border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_FOLLOW_UP_PLAN_LABELS.sectionTitle}</p>
         <p className="mb-2.5 text-[11px] text-zinc-500">
           {HERMES_FOLLOW_UP_PLAN_LABELS.sectionSubtitle}
@@ -1546,7 +1554,7 @@ export default function FounderRevenueWorkspace({
           fırsatların satışa yakınlığı, riskleri ve AYRIK gelir kategorileri.
           Bilinmeyen tutar "Henüz belirlenmedi" — asla sahte ₺0. Pipeline zekâsı
           muhasebe değildir; tahmini gelir tahsil edilmiş gelir değildir. */}
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="order-3 border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_REVENUE_PIPELINE_LABELS.sectionTitle}</p>
         <p className="mb-2.5 text-[11px] text-zinc-500">{HERMES_REVENUE_PIPELINE_LABELS.sectionSubtitle}</p>
 
@@ -1620,7 +1628,7 @@ export default function FounderRevenueWorkspace({
       </div>
 
       {/* Section 6 — Hermes Aktivitesi: meaningful events, not technical logs */}
-      <div className="px-5 py-3">
+      <div className="order-7 px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Hermes Aktivitesi</p>
         {timeline.length === 0 ? (
           <p className="text-[11px] text-zinc-600">{FOUNDER_HOME_EMPTY_STATE_LABELS.activity}</p>
