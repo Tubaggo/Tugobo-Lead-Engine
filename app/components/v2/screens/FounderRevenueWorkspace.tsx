@@ -62,6 +62,13 @@ import {
   type ConversationApiSummaryLike,
   type ConversationFounderCard,
 } from "@/app/components/v2/adapters/hermes-conversation-founder-adapter";
+import {
+  HERMES_FOLLOW_UP_PLAN_LABELS,
+  computeFollowUpPlanView,
+  type FollowUpPlanApiResultLike,
+  type FollowUpPlanApiSummaryLike,
+  type FollowUpPlanCard,
+} from "@/app/components/v2/adapters/hermes-follow-up-plan-founder-adapter";
 import type { ProcessedWhatsAppDeliveryReceipt } from "@/app/lib/whatsapp-delivery-receipt-processor";
 import type { WhatsAppReadinessStatus } from "@/app/lib/whatsapp-provider-runtime";
 import type { StoredWhatsAppReply } from "@/app/lib/whatsapp-reply-registry";
@@ -204,6 +211,7 @@ const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
 const QUALIFICATION_ANCHOR_ID = "hermes-home-satisa-hazir";
 const OUTREACH_ANCHOR_ID = "hermes-home-hazir-mesajlar";
 const CONVERSATION_ANCHOR_ID = "hermes-home-konusmalar";
+const FOLLOW_UP_PLAN_ANCHOR_ID = "hermes-home-takip-plani";
 
 /** Sprint C2 — /api/hermes/qualification payload'ının bu ekranın okuduğu biçimi. */
 type QualificationApiPayload = {
@@ -221,6 +229,12 @@ type OutreachApiPayload = {
 type ConversationApiPayload = {
   recentConversations?: ConversationApiResultLike[];
   summary?: ConversationApiSummaryLike;
+};
+
+/** Sprint C5 — /api/hermes/follow-ups/orchestration payload'ının bu ekranın okuduğu biçimi. */
+type FollowUpPlanApiPayload = {
+  recentFollowUps?: FollowUpPlanApiResultLike[];
+  summary?: FollowUpPlanApiSummaryLike;
 };
 
 /** v8.2 — Decision Queue cards are styled by priority, not by the underlying (now-hidden) runtime stage. */
@@ -301,6 +315,9 @@ export default function FounderRevenueWorkspace({
   // Sprint C4 — konuşma okuması: aynı read-only fetch kalıbı, mutation yok.
   const [conversationPayload, setConversationPayload] = useState<ConversationApiPayload | null>(null);
   const [conversationReachable, setConversationReachable] = useState<boolean | null>(null);
+  // Sprint C5 — takip planı okuması: aynı read-only fetch kalıbı, mutation yok.
+  const [followUpPlanPayload, setFollowUpPlanPayload] = useState<FollowUpPlanApiPayload | null>(null);
+  const [followUpPlanReachable, setFollowUpPlanReachable] = useState<boolean | null>(null);
 
   // v8.5 (Release Candidate Polish, Scope 4/5) — a single "Tekrar Dene" re-runs
   // every one of the seven read-only fetches below; `initialLoadDone` gates
@@ -542,6 +559,30 @@ export default function FounderRevenueWorkspace({
     };
   }, [retryTick]);
 
+  // Sprint C5 — takip planı okuması: read/evaluate-on-fetch; mutation yok.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/hermes/follow-ups/orchestration");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as FollowUpPlanApiPayload;
+        if (!cancelled) {
+          setFollowUpPlanPayload(data);
+          setFollowUpPlanReachable(true);
+        }
+      } catch {
+        // boş bırak — bölüm kendi güvenli hata durumunu gösterir
+        if (!cancelled) setFollowUpPlanReachable(false);
+      } finally {
+        if (!cancelled) markFetchSettled();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [retryTick]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -663,6 +704,16 @@ export default function FounderRevenueWorkspace({
     summary: conversationPayload?.summary ?? null,
     fetchState:
       conversationReachable === null ? "loading" : conversationReachable ? "ready" : "error",
+    leadNameById,
+  });
+  // Sprint C5 — "Hermes Takip Planı": orchestration kararlarının saf founder
+  // projeksiyonu. Gönderim butonu YOK — yalnız incele/planla/vazgeç.
+  const followUpPlanResults = followUpPlanPayload?.recentFollowUps ?? null;
+  const followUpPlanView = computeFollowUpPlanView({
+    results: followUpPlanResults,
+    summary: followUpPlanPayload?.summary ?? null,
+    fetchState:
+      followUpPlanReachable === null ? "loading" : followUpPlanReachable ? "ready" : "error",
     leadNameById,
   });
 
@@ -1369,6 +1420,77 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
+      {/* Section 4f — Hermes Takip Planı (Sprint C5): hangi takip bugün/yaklaşan/
+          onay bekliyor/kanal kontrolü. Founder yalnız inceler/planlar/vazgeçer —
+          GÖNDERİM BUTONU YOK. Gönderim mevcut Founder Approval zincirinin
+          arkasındadır; Hermes hiçbir takip mesajı otomatik göndermez. */}
+      <div id={FOLLOW_UP_PLAN_ANCHOR_ID} className="border-b border-white/[0.06] px-5 py-3">
+        <p className={`${sectionLabelCls} mb-0.5`}>{HERMES_FOLLOW_UP_PLAN_LABELS.sectionTitle}</p>
+        <p className="mb-2.5 text-[11px] text-zinc-500">
+          {HERMES_FOLLOW_UP_PLAN_LABELS.sectionSubtitle}
+        </p>
+
+        {followUpPlanView.mode === "loading" && (
+          <p className="text-[11px] text-zinc-600">{HERMES_FOLLOW_UP_PLAN_LABELS.loading}</p>
+        )}
+
+        {followUpPlanView.mode === "error" && (
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-rose-500/[0.06] px-4 py-3 ring-1 ring-inset ring-rose-500/15">
+            <p className="text-[11px] text-rose-300">{HERMES_FOLLOW_UP_PLAN_LABELS.error}</p>
+            <button
+              type="button"
+              onClick={retryDataFetches}
+              className="shrink-0 text-[11px] font-semibold text-rose-200 hover:text-rose-100"
+            >
+              {HERMES_FOLLOW_UP_PLAN_LABELS.retry}
+            </button>
+          </div>
+        )}
+
+        {followUpPlanView.mode === "empty" && (
+          <div className="rounded-lg bg-white/[0.02] px-4 py-3.5">
+            <p className="text-[12px] font-medium text-zinc-300">
+              {HERMES_FOLLOW_UP_PLAN_LABELS.emptyTitle}
+            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">
+              {HERMES_FOLLOW_UP_PLAN_LABELS.emptySubtitle}
+            </p>
+          </div>
+        )}
+
+        {followUpPlanView.mode === "ready" && (
+          <>
+            <div className="mb-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+              <QualificationCounter
+                label={HERMES_FOLLOW_UP_PLAN_LABELS.counterDueToday}
+                value={followUpPlanView.counters.dueToday}
+                accent="text-emerald-400"
+              />
+              <QualificationCounter
+                label={HERMES_FOLLOW_UP_PLAN_LABELS.counterUpcoming}
+                value={followUpPlanView.counters.upcoming}
+                accent="text-sky-400"
+              />
+              <QualificationCounter
+                label={HERMES_FOLLOW_UP_PLAN_LABELS.counterApproval}
+                value={followUpPlanView.counters.approvalRequired}
+                accent="text-amber-400"
+              />
+              <QualificationCounter
+                label={HERMES_FOLLOW_UP_PLAN_LABELS.counterChannelReview}
+                value={followUpPlanView.counters.channelReview}
+                accent="text-rose-400"
+              />
+            </div>
+            <FollowUpPlanGroup title={HERMES_FOLLOW_UP_PLAN_LABELS.groupToday} cards={followUpPlanView.today} />
+            <FollowUpPlanGroup title={HERMES_FOLLOW_UP_PLAN_LABELS.groupApproval} cards={followUpPlanView.approval} />
+            <FollowUpPlanGroup title={HERMES_FOLLOW_UP_PLAN_LABELS.groupChannelReview} cards={followUpPlanView.channelReview} />
+            <FollowUpPlanGroup title={HERMES_FOLLOW_UP_PLAN_LABELS.groupUpcoming} cards={followUpPlanView.upcoming} />
+            <p className="mt-2 text-[10px] text-zinc-600">{HERMES_FOLLOW_UP_PLAN_LABELS.noSendNote}</p>
+          </>
+        )}
+      </div>
+
       {/* Section 5 — Gelir Nabzı: won / lost / estimated MRR */}
       <div className="border-b border-white/[0.06] px-5 py-3">
         <p className={`${sectionLabelCls} mb-2`}>Gelir Nabzı</p>
@@ -1614,6 +1736,81 @@ function OutreachChip({ label, value }: { label: string; value: string }) {
  * karar. GÖNDERİM BUTONU YOK — founder aksiyonu (varsa) yalnız mevcut karar
  * akışına yönlendirir; hiçbir mesaj göndermez.
  */
+function FollowUpPlanGroup({ title, cards }: { title: string; cards: FollowUpPlanCard[] }) {
+  if (cards.length === 0) return null;
+  return (
+    <div className="mt-2">
+      <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">{title}</p>
+      <div className="space-y-1.5">
+        {cards.map((card) => (
+          <FollowUpPlanCardView key={card.followUpCandidateId} card={card} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sprint C5 — takip kartı: otel adı + takip durumu, takip nedeni, ne oldu /
+ * Hermes önerisi / ne zaman ve founder kararı. GÖNDERİM BUTONU YOK — founder
+ * aksiyonu (varsa) yalnız mevcut karar akışına yönlendirir.
+ */
+function FollowUpPlanCardView({ card }: { card: FollowUpPlanCard }) {
+  const badgeCls = card.channelReview
+    ? "bg-rose-500/[0.10] text-rose-300 ring-rose-500/20"
+    : card.approvalRequired
+      ? "bg-amber-500/[0.10] text-amber-300 ring-amber-500/20"
+      : "bg-indigo-500/[0.10] text-indigo-300 ring-indigo-500/20";
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-[11px] font-semibold text-zinc-200">{card.title}</p>
+        <span
+          className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${badgeCls}`}
+        >
+          {card.stateLabelTr}
+        </span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px]">
+        <span className="rounded-md bg-white/[0.03] px-1.5 py-[2px] text-zinc-400">{card.reasonLabelTr}</span>
+        <span className="text-zinc-500">
+          {HERMES_FOLLOW_UP_PLAN_LABELS.timing}: {card.suggestedTimingTr}
+        </span>
+        {card.overdueByMinutes != null && card.overdueByMinutes > 0 && (
+          <span className="rounded-md bg-rose-500/[0.10] px-1.5 py-[2px] font-semibold text-rose-300">
+            {HERMES_FOLLOW_UP_PLAN_LABELS.overdue}
+          </span>
+        )}
+      </div>
+      <dl className="mt-1.5 space-y-1">
+        <div>
+          <dt className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+            {HERMES_FOLLOW_UP_PLAN_LABELS.whatHappened}
+          </dt>
+          <dd className="text-[10px] text-zinc-400">{card.whatHappenedTr}</dd>
+        </div>
+        <div>
+          <dt className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+            {HERMES_FOLLOW_UP_PLAN_LABELS.hermesRecommendation}
+          </dt>
+          <dd className="text-[10px] text-zinc-400">{card.hermesRecommendationTr}</dd>
+        </div>
+      </dl>
+      {card.founderActionLabelTr && (
+        <div className="mt-2 flex items-center justify-end border-t border-white/[0.06] pt-1.5">
+          <button
+            type="button"
+            onClick={scrollToKararKuyrugu}
+            className="shrink-0 rounded-md bg-white/[0.04] px-2 py-1 text-[10px] font-semibold text-zinc-200 hover:bg-white/[0.08]"
+          >
+            {card.founderActionLabelTr}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConversationCard({ card }: { card: ConversationFounderCard }) {
   const badgeCls = card.approvalRequired
     ? "bg-amber-500/[0.10] text-amber-300 ring-amber-500/20"
