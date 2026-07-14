@@ -1,6 +1,10 @@
 import { isHotReplyIntelligence, type ReplyIntelligenceItem, type ReplyIntent } from "./reply-intelligence-runtime.ts";
 import { getRecentDemoScheduleItems, upsertDemoScheduleItem } from "./demo-scheduling-registry.ts";
 import { upsertFollowUpCandidate } from "./follow-up-registry.ts";
+import { getSalesOutcomeByMissionId } from "./sales-outcome-registry.ts";
+import { evaluateHermesConversation } from "./hermes-autonomous-conversation-runtime.ts";
+import { recordConversationDecision } from "./hermes-conversation-registry.ts";
+import { defaultConversationPolicy } from "./hermes-conversation-policy.ts";
 
 /**
  * Reply Intelligence Registry (v6.3, feeds Demo Scheduling in v6.4, feeds
@@ -96,6 +100,63 @@ function seedFollowUpForIntelligence(item: ReplyIntelligenceItem, now: number): 
   }
 }
 
+/**
+ * Sprint C4 — Autonomous Conversation. This is the same single choke point
+ * every classified reply passes through, so it is where the parcelled reply
+ * signals (intent + the demo/sales-outcome state the two seeders above just
+ * touched) are folded into one `ConversationDecision`. It creates NO new
+ * demo/follow-up item (those are seeded above) — it only records a unified,
+ * founder-facing conversation view via `hermes-conversation-registry.ts`.
+ * Dedupe is by `providerMessageId`, so a re-processed webhook (Meta retry)
+ * upserts the same decision instead of duplicating it.
+ *
+ * Structurally send-safe: `evaluateHermesConversation` imports no messaging/
+ * provider/gateway module and produces no `sendAllowed`/`founderApproved`
+ * field. Wrapped so a conversation failure can never break reply recording.
+ */
+function seedConversationForIntelligence(item: ReplyIntelligenceItem, now: number): void {
+  const policy = defaultConversationPolicy();
+  if (!policy.enabled) return;
+
+  try {
+    const mapped = item.missionId != null;
+    const salesOutcome = item.missionId ? getSalesOutcomeByMissionId(item.missionId, now) : undefined;
+
+    const decision = evaluateHermesConversation({
+      reply: {
+        provider: item.provider,
+        providerMessageId: item.providerMessageId,
+        textPreview: item.textPreview,
+        mapped,
+        missionId: item.missionId,
+        leadId: item.leadId,
+        occurredAt: item.analyzedAt,
+      },
+      replyIntelligence: {
+        intent: item.intent,
+        confidence: item.confidence,
+        urgency: item.urgency,
+        founderActionHint: item.founderActionHint,
+      },
+      missionId: item.missionId,
+      leadId: item.leadId,
+      salesOutcome: salesOutcome ? { status: salesOutcome.status } : null,
+      currentTime: now,
+      policy,
+    });
+
+    recordConversationDecision({
+      decision,
+      // Reply intelligence carries no business name; the founder view enriches
+      // the display name from the lead the screen already holds (leadId join).
+      businessName: salesOutcome?.leadName?.trim() || "İsimsiz işletme",
+      now,
+    });
+  } catch {
+    // Conversation orchestration must never break reply intelligence recording.
+  }
+}
+
 /** Records a classification into the recent feed, newest first. */
 export function recordReplyIntelligence(item: ReplyIntelligenceItem, now: number = Date.now()): ReplyIntelligenceItem {
   pruneExpired(now);
@@ -120,6 +181,10 @@ export function recordReplyIntelligence(item: ReplyIntelligenceItem, now: number
   }
 
   seedFollowUpForIntelligence(item, now);
+
+  // Sprint C4 — fold everything into one conversation decision, last, after
+  // the demo/sales-outcome state it reads has been touched above.
+  seedConversationForIntelligence(item, now);
 
   return stripInternal(entry);
 }
