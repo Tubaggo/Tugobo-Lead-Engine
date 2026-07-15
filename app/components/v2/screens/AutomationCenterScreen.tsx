@@ -2102,6 +2102,8 @@ export default function AutomationCenterScreen({
           acquisition={acquisition}
           acquisitionFetchState={acquisitionFetchState}
           onRetryAcquisition={onRetryAcquisition}
+          hermesPipelines={hermesPipelines}
+          hermesDrafts={hermesDrafts}
         />
 
         {developerMode && (

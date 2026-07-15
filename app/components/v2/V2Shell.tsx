@@ -55,6 +55,7 @@ import { useLeadImport } from "@/app/components/v2/hooks/useLeadImport";
 import { useV2LeadPool } from "@/app/components/v2/hooks/useV2LeadPool";
 import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import { useHermesMissionStateBridgePublisher } from "@/app/components/v2/hooks/useHermesMissionStateBridgePublisher";
+import { usePersistedMissionRecord } from "@/app/components/v2/hooks/usePersistedMissionRecord";
 import {
   buildExecutionContexts,
   projectExecutionQueue,
@@ -263,15 +264,28 @@ export default function V2Shell({ scoredLeads }: Props) {
   const [selectedAutomationCard, setSelectedAutomationCard] =
     useState<AutomationCard | null>(null);
 
-  // Hermes (A3/A3.5/A3.6): founder approval loop — pure UI state, deliberately
-  // not persisted. Each decision records the founder's call and its moment
-  // (the timestamp feeds the mission timeline); nothing is executed
-  // either way (execution arrives in A4). A3.6 groups shadow tasks into
-  // missions; the founder now selects/approves a mission, not a raw task.
+  // Hermes (A3/A3.5/A3.6): founder approval loop. Each decision records the
+  // founder's call and its moment (the timestamp feeds the mission
+  // timeline); nothing is executed either way (execution arrives in A4).
+  // A3.6 groups shadow tasks into missions; the founder now selects/approves
+  // a mission, not a raw task.
+  //
+  // Founder Mission Feedback Loop fix: this and every other `hermes*`
+  // Record below used to be plain `useState` — in-memory only, wiped by a
+  // full browser refresh. `buildHermesMissions` recomputes `mission.stage`
+  // fresh from `hermesDecisions` every render, so losing this Record made
+  // an already-approved mission's card reappear in Karar Merkezi after
+  // reload (and every counter derived from `mission.stage` along with it).
+  // `usePersistedMissionRecord` is a drop-in `useState` replacement that
+  // mirrors the same Record to `localStorage` (same convention
+  // `useDeveloperMode`/`useV2PanelState` already use) — no second source of
+  // truth, no new mission/event system, just making the one existing source
+  // durable across a reload of the same browser.
   const [selectedHermesMission, setSelectedHermesMission] = useState<HermesMission | null>(null);
-  const [hermesDecisions, setHermesDecisions] = useState<
-    Record<string, { status: "approved" | "rejected"; at: number }>
-  >({});
+  const [hermesDecisions, setHermesDecisions] = usePersistedMissionRecord<{
+    status: "approved" | "rejected";
+    at: number;
+  }>("tugobo-lead-engine:hermes-decisions-v1");
   const approveHermesTask = useCallback(
     (taskId: string) =>
       setHermesDecisions((p) => ({ ...p, [taskId]: { status: "approved", at: Date.now() } })),
@@ -283,53 +297,64 @@ export default function V2Shell({ scoredLeads }: Props) {
     [],
   );
 
-  // Hermes Pipeline (A5): session-only pipeline bookkeeping, keyed by
-  // missionId — one founder click now drives all four stages autonomously.
-  // Persistence beyond this session happens only through whatever a stage
-  // itself already persists (e.g. scheduleFollowUpForLead's localStorage
-  // write) — never a new ledger. The runner itself is defined below, once
-  // `automationCards` (from `derived`) is in scope.
-  const [hermesPipelines, setHermesPipelines] = useState<Record<string, HermesPipeline>>({});
+  // Hermes Pipeline (A5): pipeline bookkeeping, keyed by missionId — one
+  // founder click now drives all four stages autonomously. The runner
+  // itself is defined below, once `automationCards` (from `derived`) is in
+  // scope. Persisted (see block comment above hermesDecisions) so a mid-
+  // pipeline refresh doesn't misrepresent an already-approved mission as
+  // "not started."
+  const [hermesPipelines, setHermesPipelines] = usePersistedMissionRecord<HermesPipeline>(
+    "tugobo-lead-engine:hermes-pipelines-v1",
+  );
 
-  // Courier Draft Runtime (v4.1.0-A): session-only draft bookkeeping, keyed by
-  // missionId — same convention as hermesPipelines. NOT a sending sprint: a
-  // draft's "approved" status only means the founder signed off on the text,
-  // it never triggers a fetch to any outbound channel.
-  const [hermesDrafts, setHermesDrafts] = useState<Record<string, HermesOutboundDraft>>({});
+  // Courier Draft Runtime (v4.1.0-A): draft bookkeeping, keyed by missionId —
+  // same convention as hermesPipelines. NOT a sending sprint: a draft's
+  // "approved" status only means the founder signed off on the text, it
+  // never triggers a fetch to any outbound channel.
+  const [hermesDrafts, setHermesDrafts] = usePersistedMissionRecord<HermesOutboundDraft>(
+    "tugobo-lead-engine:hermes-drafts-v1",
+  );
 
-  // Hermes Delivery Gateway (v4.2.0): session-only delivery bookkeeping, keyed
-  // by missionId — same convention as hermesDrafts/hermesPipelines. Reaches
+  // Hermes Delivery Gateway (v4.2.0): delivery bookkeeping, keyed by
+  // missionId — same convention as hermesDrafts/hermesPipelines. Reaches
   // "ready" (Ready For Provider) and stops there — no fetch, no provider SDK,
   // no send, ever, in this module.
-  const [hermesDeliveries, setHermesDeliveries] = useState<Record<string, HermesDeliveryRequest>>({});
+  const [hermesDeliveries, setHermesDeliveries] = usePersistedMissionRecord<HermesDeliveryRequest>(
+    "tugobo-lead-engine:hermes-deliveries-v1",
+  );
 
-  // Hermes Provider Connector Runtime (v4.4.0): session-only receipt
+  // Hermes Provider Connector Runtime (v4.4.0): receipt bookkeeping, keyed by
+  // missionId — same convention as every other Hermes Record above. Only
+  // ever reaches "shadow_sent" — a fully local simulation. No fetch, no
+  // provider SDK, no live send exists yet.
+  const [hermesProviderReceipts, setHermesProviderReceipts] = usePersistedMissionRecord<HermesProviderReceipt>(
+    "tugobo-lead-engine:hermes-provider-receipts-v1",
+  );
+
+  // Hermes Live Send Gate (v4.6.0): gate bookkeeping, keyed by missionId —
+  // same convention as every other Hermes Record above. The final supervised
+  // checkpoint before any *future* live send — this sprint never sends;
+  // confirming a gate always resolves to "confirmed_but_blocked".
+  const [hermesLiveSendGates, setHermesLiveSendGates] = usePersistedMissionRecord<HermesLiveSendGate>(
+    "tugobo-lead-engine:hermes-live-send-gates-v1",
+  );
+
+  // Hermes Provider API Integration Runtime (v4.8.0, Dry Mode): dry-response
   // bookkeeping, keyed by missionId — same convention as every other Hermes
-  // Record above. Only ever reaches "shadow_sent" — a fully local
-  // simulation. No fetch, no provider SDK, no live send exists yet.
-  const [hermesProviderReceipts, setHermesProviderReceipts] = useState<Record<string, HermesProviderReceipt>>({});
+  // Record above. Only ever reaches "dry_ready" — a fully local preview of a
+  // future provider API call. No fetch, no provider SDK, no real network
+  // call, ever, in this module.
+  const [hermesProviderApiDryResponses, setHermesProviderApiDryResponses] =
+    usePersistedMissionRecord<HermesProviderApiDryResponse>("tugobo-lead-engine:hermes-provider-api-dry-v1");
 
-  // Hermes Live Send Gate (v4.6.0): session-only gate bookkeeping, keyed by
-  // missionId — same convention as every other Hermes Record above. The
-  // final supervised checkpoint before any *future* live send — this sprint
-  // never sends; confirming a gate always resolves to "confirmed_but_blocked".
-  const [hermesLiveSendGates, setHermesLiveSendGates] = useState<Record<string, HermesLiveSendGate>>({});
-
-  // Hermes Provider API Integration Runtime (v4.8.0, Dry Mode): session-only
-  // dry-response bookkeeping, keyed by missionId — same convention as every
-  // other Hermes Record above. Only ever reaches "dry_ready" — a fully local
-  // preview of a future provider API call. No fetch, no provider SDK, no
-  // real network call, ever, in this module.
-  const [hermesProviderApiDryResponses, setHermesProviderApiDryResponses] = useState<
-    Record<string, HermesProviderApiDryResponse>
-  >({});
-
-  // Hermes Controlled Live Provider Adapter (v4.9.0): session-only result
-  // bookkeeping, keyed by missionId — same convention as every other Hermes
-  // Record above. Only ever reaches "blocked" — no messaging credential, no
-  // test-mode config, and no enabled live policy exist anywhere in this
-  // codebase. No fetch, no provider SDK, no real network call, ever.
-  const [hermesLiveSendResults, setHermesLiveSendResults] = useState<Record<string, HermesLiveSendResult>>({});
+  // Hermes Controlled Live Provider Adapter (v4.9.0): result bookkeeping,
+  // keyed by missionId — same convention as every other Hermes Record above.
+  // Only ever reaches "blocked" — no messaging credential, no test-mode
+  // config, and no enabled live policy exist anywhere in this codebase. No
+  // fetch, no provider SDK, no real network call, ever.
+  const [hermesLiveSendResults, setHermesLiveSendResults] = usePersistedMissionRecord<HermesLiveSendResult>(
+    "tugobo-lead-engine:hermes-live-send-results-v1",
+  );
 
   // Incremented by FollowUpsContextPanel after each mutation so followUpCards recomputes
   // from the latest localStorage state without requiring a full server re-fetch.

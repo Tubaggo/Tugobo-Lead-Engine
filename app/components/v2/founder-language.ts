@@ -101,6 +101,8 @@ export const FOUNDER_DECISION_PANEL_LABELS = {
   execution: "Hermes Yürütme",
   executionStatus: "Durum",
   executionNotStarted: "Henüz başlatılmadı",
+  executionStep: "Şu Anki Adım",
+  executionAgent: "Şu An Çalışan",
   executionLastResult: "Son Sonuç",
   executionNoResult: "Henüz sonuç yok",
   startButton: "Hermes Çalıştır",

@@ -290,6 +290,34 @@ test("passive read/delivered state says no action needed", () => {
   assert.equal(sent.founderNextAction, "Şimdilik aksiyon gerekmiyor");
 });
 
+test("Mission Execution Experience: 'ready' stage keeps the generic passive copy when pipelineRunning is omitted/false", () => {
+  const idle = computeHermesOpportunityFocus(
+    buildInput({ selectedMission: buildMission({ stage: "execution-ready" }) }),
+  );
+  assert.equal(idle.currentStateLabel, "Hermes takipte");
+
+  const explicitlyFalse = computeHermesOpportunityFocus(
+    buildInput({ selectedMission: buildMission({ stage: "execution-ready" }), pipelineRunning: false }),
+  );
+  assert.equal(explicitlyFalse.currentStateLabel, "Hermes takipte");
+});
+
+test("Mission Execution Experience: pipelineRunning=true swaps 'ready' stage's passive copy for an honest 'working now' headline", () => {
+  const running = computeHermesOpportunityFocus(
+    buildInput({ selectedMission: buildMission({ stage: "execution-ready" }), pipelineRunning: true }),
+  );
+  assert.equal(running.currentStateLabel, "Hermes şu anda çalışıyor");
+  assert.equal(running.founderNextAction, "Şimdilik aksiyon gerekmiyor");
+  assert.equal(running.urgency, "none");
+});
+
+test("Mission Execution Experience: pipelineRunning=true never overrides a stage other than 'ready'", () => {
+  const approvalStage = computeHermesOpportunityFocus(
+    buildInput({ selectedMission: buildMission({ stage: "approval" }), pipelineRunning: true }),
+  );
+  assert.equal(approvalStage.currentStateLabel, "Mesaj onayı bekliyor");
+});
+
 test("urgency derivation across every stage matches the spec's rules", () => {
   const cases: Array<{ input: ComputeHermesOpportunityFocusInput; expected: string }> = [
     { input: buildInput({ recentReceipts: [buildReceipt({ status: "failed" })] }), expected: "critical" },
@@ -342,7 +370,7 @@ test("status strip labels are all null when nothing is selected", () => {
   assert.equal(focus.estimatedMrrLabel, null);
 });
 
-test("timeline never exceeds 5 items even with many signals", () => {
+test("timeline never exceeds 8 items even with many signals", () => {
   const focus = computeHermesOpportunityFocus(
     buildInput({
       selectedMission: buildMission({
@@ -357,9 +385,39 @@ test("timeline never exceeds 5 items even with many signals", () => {
       recentDemoItems: [buildDemoItem({ updatedAt: 5000 })],
       recentFollowUps: [buildFollowUp({ updatedAt: 6000 })],
       recentSalesOutcomes: [buildSalesOutcome({ status: "won", closedAt: 7000 })],
+      extraTimelineEntries: [{ at: 8000, text: "Doğrula başlatıldı", tone: "info" }],
     }),
   );
-  assert.ok(focus.timeline.length <= 5);
+  assert.equal(focus.timeline.length, 8);
+  // newest-first: the extra entry (8000) must win over the oldest mission.timeline entry (1000), which gets truncated away
+  assert.ok(focus.timeline.every((e) => e.occurredAt !== 1000));
+});
+
+test("extraTimelineEntries: real pipeline/draft events merge into the timeline, newest first, with their given tone", () => {
+  const focus = computeHermesOpportunityFocus(
+    buildInput({
+      selectedMission: buildMission({ timeline: [{ at: 1000, text: "Hazırlık başladı" }] }),
+      extraTimelineEntries: [
+        { at: 2000, text: "Scout — Doğrula başlatıldı", tone: "info" },
+        { at: 5000, text: "Courier — Taslağı onayladı — gönderilmedi", tone: "success" },
+      ],
+    }),
+  );
+  assert.equal(focus.timeline.length, 3);
+  assert.equal(focus.timeline[0]!.label, "Courier — Taslağı onayladı — gönderilmedi");
+  assert.equal(focus.timeline[0]!.tone, "success");
+  assert.equal(focus.timeline[1]!.label, "Scout — Doğrula başlatıldı");
+  assert.equal(focus.timeline[1]!.tone, "info");
+});
+
+test("extraTimelineEntries omitted (undefined) reproduces the exact pre-existing timeline — additive, not a behavior change", () => {
+  const input = buildInput({
+    selectedMission: buildMission({ timeline: [{ at: 1000, text: "Hazırlık başladı" }] }),
+    recentReceipts: [buildReceipt({ status: "delivered", occurredAt: 9000 })],
+  });
+  const withoutField = computeHermesOpportunityFocus(input);
+  const withEmptyArray = computeHermesOpportunityFocus({ ...input, extraTimelineEntries: [] });
+  assert.deepEqual(withoutField.timeline, withEmptyArray.timeline);
 });
 
 test("timeline contains meaningful Turkish labels, newest first", () => {

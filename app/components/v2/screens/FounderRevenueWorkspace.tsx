@@ -23,11 +23,16 @@ import {
   computeHermesOpportunityFocus,
   type HermesOpportunityTimelineTone,
   type HermesOpportunityUrgency,
+  type OpportunityFocusExtraTimelineEntryLike,
 } from "@/app/components/v2/adapters/hermes-opportunity-focus-adapter";
+import { buildPipelineTimelineEntries } from "@/app/components/v2/hermes-pipeline-engine";
+import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
+import { buildDraftTimelineEntries } from "@/app/components/v2/hermes-courier";
+import type { HermesOutboundDraft } from "@/app/components/v2/hermes-courier";
 import {
   HERMES_DAILY_WORKSPACE_LABELS,
-  computeTodayStatusSentence,
 } from "@/app/components/v2/adapters/hermes-daily-workspace-adapter";
+import { computeFounderNarrative } from "@/app/components/v2/adapters/hermes-founder-narrative-adapter";
 import {
   HERMES_ACQUISITION_FOUNDER_LABELS,
   computeHermesAcquisitionFounderView,
@@ -185,6 +190,13 @@ import { btnCls, btnPrimaryCls, kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls
  * all-clear state, never a warning box. `refreshSignal` lets the header's
  * operational actions re-run the same seven read-only fetches "Tekrar Dene"
  * always re-ran — no new runtime, no new API.
+ *
+ * Founder Narrative Layer (v1.0): the one-line `computeTodayStatusSentence`
+ * that used to sit above everything is now `computeFounderNarrative`'s
+ * four-part briefing (status / work completed / findings / required
+ * action) — same slot, same "read before anything else" role, still zero
+ * new runtime state (every number is `summary`/`intake`/`decisionItems`/
+ * `hermesPipelines`/`hermesDrafts`, all pre-existing).
  */
 
 type Props = {
@@ -212,6 +224,10 @@ type Props = {
   acquisitionFetchState: "loading" | "ready" | "error";
   /** Sprint C1.5 — re-runs the shell's acquisition status fetch (the section's "Tekrar Dene"). */
   onRetryAcquisition: () => void;
+  /** Founder Mission Feedback Loop fix — same Record V2Shell already passes to AutomationCenterScreen; only the selected mission's pipeline feeds the Mission Timeline. */
+  hermesPipelines?: Record<string, HermesPipeline>;
+  /** Founder Mission Feedback Loop fix — same Record V2Shell already passes to AutomationCenterScreen; only the selected mission's draft feeds the Mission Timeline. */
+  hermesDrafts?: Record<string, HermesOutboundDraft>;
 };
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
@@ -275,6 +291,19 @@ const OPPORTUNITY_TIMELINE_DOT_CLS: Record<HermesOpportunityTimelineTone, string
   neutral: "bg-zinc-500",
 };
 
+/**
+ * Founder Mission Feedback Loop fix — `buildPipelineTimelineEntries`/
+ * `buildDraftTimelineEntries` already color-code their own entries via
+ * `actorCls` (a Tailwind text-color class); this reads that same signal
+ * instead of re-guessing tone from the Turkish text a second time.
+ */
+function toneFromActorCls(actorCls: string): HermesOpportunityTimelineTone {
+  if (actorCls.includes("rose")) return "danger";
+  if (actorCls.includes("emerald") || actorCls.includes("indigo")) return "success";
+  if (actorCls.includes("amber")) return "warning";
+  return "info";
+}
+
 function formatTime(at: number): string {
   return at > 0 ? new Date(at).toLocaleString("tr-TR") : "—";
 }
@@ -304,6 +333,8 @@ export default function FounderRevenueWorkspace({
   acquisition,
   acquisitionFetchState,
   onRetryAcquisition,
+  hermesPipelines,
+  hermesDrafts,
 }: Props) {
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
@@ -355,6 +386,14 @@ export default function FounderRevenueWorkspace({
   }
 
   const retryDataFetches = () => setRetryTick((t) => t + 1);
+
+  // Founder Mission Feedback Loop fix — guards a Karar Merkezi
+  // approve_message card's two buttons against a duplicate click while the
+  // founder's decision is still being recorded. `hermesDecisions` itself
+  // updates synchronously, so an id lands here and clears again within the
+  // same render pass for a normal single click; it only matters for two
+  // clicks close enough to land before the first re-render removes the card.
+  const [pendingDecisionIds, setPendingDecisionIds] = useState<Set<string>>(new Set());
 
   // v8.6 — the header's "Hermes'i Çalıştır"/"Durumu Yenile" actions bump
   // `refreshSignal` in V2Shell; each bump re-runs the exact same seven
@@ -692,6 +731,20 @@ export default function FounderRevenueWorkspace({
     recentSalesOutcomes,
     qualificationReviews: selectQualificationReviewItems(qualificationResults),
   });
+
+  // Founder Mission Feedback Loop fix — once a pending decision's id no
+  // longer appears in decisionItems, the founder's approve/reject already
+  // took effect (mission.stage moved on) and the guard can release it. Bails
+  // out (same Set reference) when nothing changed, so this never causes an
+  // extra render on its own.
+  useEffect(() => {
+    setPendingDecisionIds((prev) => {
+      if (prev.size === 0) return prev;
+      const stillPending = new Set(Array.from(prev).filter((id) => decisionItems.some((d) => d.id === id)));
+      return stillPending.size === prev.size ? prev : stillPending;
+    });
+  }, [decisionItems]);
+
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
@@ -769,6 +822,19 @@ export default function FounderRevenueWorkspace({
   });
 
   const selectedMission = missions.find((m) => m.missionId === selectedHermesMissionId) ?? null;
+
+  // Founder Mission Feedback Loop fix — the selected mission's real pipeline
+  // steps (Scout/Enricher/Appraiser/Shepherd) and courier draft events,
+  // converted to the adapter's plain timeline-entry shape. Both builders
+  // only ever emit an entry for a stage/status that actually happened
+  // (queued/never-started steps produce nothing) — no fake progress.
+  const selectedPipeline = selectedMission ? hermesPipelines?.[selectedMission.missionId] : undefined;
+  const selectedDraft = selectedMission ? hermesDrafts?.[selectedMission.missionId] : undefined;
+  const extraTimelineEntries: OpportunityFocusExtraTimelineEntryLike[] = [
+    ...buildPipelineTimelineEntries(selectedPipeline),
+    ...buildDraftTimelineEntries(selectedDraft),
+  ].map((entry) => ({ at: entry.at, text: `${entry.actorLabel} — ${entry.text}`, tone: toneFromActorCls(entry.actorCls) }));
+
   const opportunityFocus = computeHermesOpportunityFocus({
     selectedMission,
     decisionItems,
@@ -788,6 +854,8 @@ export default function FounderRevenueWorkspace({
     outreachForLead: selectedMission
       ? selectOutreachForLead(outreachResults, selectedMission.leadId)
       : null,
+    extraTimelineEntries,
+    pipelineRunning: selectedPipeline?.state === "running",
   });
 
   // v8.2 — Karar Merkezi interactions. Selecting a card (or its primary
@@ -804,9 +872,21 @@ export default function FounderRevenueWorkspace({
     if (mission) onSelectHermesMission(mission);
   };
 
+  // Founder Mission Feedback Loop fix: clicking a card's primary/secondary
+  // button calls `e.stopPropagation()` (see the JSX below), so it never
+  // reached the card's own `onClick={() => focusDecisionItem(item)}` — a
+  // founder who approved/rejected straight from the button (not the card
+  // body) never got that mission selected, so Fırsat Odağı and its Mission
+  // Timeline kept showing whatever was selected before, and the founder had
+  // to hunt for what just happened. Both branches below now select the
+  // mission themselves before mutating, so the acted-on mission is always
+  // the one the founder sees next.
   const runPrimaryDecisionAction = (item: HermesDecisionItem) => {
     const mission = missionForDecisionItem(item);
     if (mission && item.decisionType === "approve_message") {
+      if (pendingDecisionIds.has(item.id)) return; // duplicate click while already processing
+      setPendingDecisionIds((prev) => new Set(prev).add(item.id));
+      onSelectHermesMission(mission);
       onApproveMission(mission);
       return;
     }
@@ -822,6 +902,9 @@ export default function FounderRevenueWorkspace({
   const runSecondaryDecisionAction = (item: HermesDecisionItem) => {
     const mission = missionForDecisionItem(item);
     if (mission && item.decisionType === "approve_message") {
+      if (pendingDecisionIds.has(item.id)) return; // duplicate click while already processing
+      setPendingDecisionIds((prev) => new Set(prev).add(item.id));
+      onSelectHermesMission(mission);
       onRejectTask(mission.primaryTaskId);
     }
   };
@@ -856,9 +939,19 @@ export default function FounderRevenueWorkspace({
 
   const hasNoRevenueOutcomes = summary.wonCount === 0 && summary.lostCount === 0 && summary.estimatedMrrTotal === 0;
 
-  // v8.6 (Scope 5) — the one compact sentence the founder reads before
-  // anything else: "Hermes N karar hazırladı." / "Her şey kontrol altında…"
-  const todayStatusSentence = computeTodayStatusSentence(decisionItems.length);
+  // Founder Narrative Layer (v1.0) — replaces the old one-sentence
+  // "Hermes N karar hazırladı." line with the full four-part operational
+  // briefing (status / work completed / findings / required action), same
+  // slot, same "before anything else" position. Every number fed in is one
+  // this screen already computed (`summary`, `intake`) or already holds as
+  // props (`hermesPipelines`, `hermesDrafts`) — no new runtime state.
+  const founderNarrative = computeFounderNarrative({
+    isRunning: Object.values(hermesPipelines ?? {}).some((p) => p.state === "running"),
+    pendingDecisionCount: decisionItems.length,
+    draftsPreparedCount: Object.keys(hermesDrafts ?? {}).length,
+    revenueSummary: summary,
+    intakeSummary: intake,
+  });
 
   return (
     /* Sprint C7 (Founder OS v1.0) — canonical daily flow via CSS order so the
@@ -881,9 +974,24 @@ export default function FounderRevenueWorkspace({
         </div>
       )}
 
-      {/* v8.6 (Scope 5) — one compact sentence before anything else: what requires attention today */}
+      {/* Founder Narrative Layer (v1.0) — one operational briefing before anything else: status, work completed, findings, required action. Same slot the v8.6 one-liner used to occupy. */}
       <div className="border-b border-white/[0.06] px-5 py-3">
-        <p className="text-[12.5px] font-medium text-zinc-200">{todayStatusSentence}</p>
+        <p className="text-[12.5px] font-medium text-zinc-200">{founderNarrative.status}</p>
+        {(founderNarrative.workCompleted.length > 0 || founderNarrative.findings.length > 0) && (
+          <div className="mt-1 space-y-0.5">
+            {founderNarrative.workCompleted.map((sentence, i) => (
+              <p key={`work-${i}`} className="text-[11px] text-zinc-400">
+                {sentence}
+              </p>
+            ))}
+            {founderNarrative.findings.map((sentence, i) => (
+              <p key={`finding-${i}`} className="text-[11px] text-zinc-400">
+                {sentence}
+              </p>
+            ))}
+          </div>
+        )}
+        <p className="mt-1.5 text-[11px] font-medium text-indigo-300">{founderNarrative.requiredAction}</p>
       </div>
 
       {/* Section 1 — Karar Merkezi (v8.2, decision-first since v8.6): only single-touch founder decisions, never a status list */}
@@ -912,7 +1020,9 @@ export default function FounderRevenueWorkspace({
           </div>
         ) : (
           <div className="space-y-1.5">
-            {decisionItems.map((item) => (
+            {decisionItems.map((item) => {
+              const isPending = pendingDecisionIds.has(item.id);
+              return (
               <div
                 key={item.id}
                 role="button"
@@ -937,33 +1047,38 @@ export default function FounderRevenueWorkspace({
                 </div>
                 <p className="mt-1 text-[10px] text-zinc-400">{item.whatHappened}</p>
                 <p className="mt-0.5 text-[10px] text-zinc-500">{item.whyItMatters}</p>
-                <p className="mt-1 text-[10px] font-medium text-indigo-300">{item.hermesRecommendation}</p>
+                <p className="mt-1 text-[10px] font-medium text-indigo-300">
+                  {isPending ? "Founder onayı işleniyor…" : item.hermesRecommendation}
+                </p>
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     type="button"
+                    disabled={isPending}
                     onClick={(e) => {
                       e.stopPropagation();
                       runPrimaryDecisionAction(item);
                     }}
-                    className={btnPrimaryCls}
+                    className={`${btnPrimaryCls} ${isPending ? "cursor-not-allowed opacity-60" : ""}`}
                   >
-                    {item.primaryActionLabel}
+                    {isPending ? "İşleniyor…" : item.primaryActionLabel}
                   </button>
                   {item.secondaryActionLabel && (
                     <button
                       type="button"
+                      disabled={isPending}
                       onClick={(e) => {
                         e.stopPropagation();
                         runSecondaryDecisionAction(item);
                       }}
-                      className={btnCls}
+                      className={`${btnCls} ${isPending ? "cursor-not-allowed opacity-60" : ""}`}
                     >
                       {item.secondaryActionLabel}
                     </button>
                   )}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -1075,17 +1190,19 @@ export default function FounderRevenueWorkspace({
                 {opportunityFocus.primaryActionLabel && focusMatchingDecisionItem && (
                   <button
                     type="button"
+                    disabled={pendingDecisionIds.has(focusMatchingDecisionItem.id)}
                     onClick={() => runOpportunityFocusPrimaryAction(focusMatchingDecisionItem)}
-                    className={btnPrimaryCls}
+                    className={`${btnPrimaryCls} ${pendingDecisionIds.has(focusMatchingDecisionItem.id) ? "cursor-not-allowed opacity-60" : ""}`}
                   >
-                    {opportunityFocus.primaryActionLabel}
+                    {pendingDecisionIds.has(focusMatchingDecisionItem.id) ? "İşleniyor…" : opportunityFocus.primaryActionLabel}
                   </button>
                 )}
                 {opportunityFocus.secondaryActionLabel && focusMatchingDecisionItem && (
                   <button
                     type="button"
+                    disabled={pendingDecisionIds.has(focusMatchingDecisionItem.id)}
                     onClick={() => runSecondaryDecisionAction(focusMatchingDecisionItem)}
-                    className={btnCls}
+                    className={`${btnCls} ${pendingDecisionIds.has(focusMatchingDecisionItem.id) ? "cursor-not-allowed opacity-60" : ""}`}
                   >
                     {opportunityFocus.secondaryActionLabel}
                   </button>
@@ -1093,7 +1210,7 @@ export default function FounderRevenueWorkspace({
               </div>
             )}
 
-            {/* Compact timeline summary — max 5 latest meaningful events */}
+            {/* Mission Timeline — compact summary, max 8 latest meaningful events (founder decision + real pipeline/courier runtime events) */}
             {opportunityFocus.timeline.length > 0 && (
               <div className="border-t border-white/[0.06] pt-2">
                 <ul className="space-y-1">

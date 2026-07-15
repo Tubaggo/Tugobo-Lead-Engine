@@ -95,6 +95,25 @@ export type OpportunityFocusOutreachLike = {
   nextActionLabelTr?: string;
 };
 
+/**
+ * Founder Mission Feedback Loop fix — a pre-classified, mission-scoped
+ * timeline entry the caller (`FounderRevenueWorkspace.tsx`) already derived
+ * from real runtime records (`HermesPipeline`'s own step timestamps via
+ * `buildPipelineTimelineEntries`, `HermesOutboundDraft`'s own timestamps via
+ * `buildDraftTimelineEntries`). This adapter never imports those modules
+ * itself — both live under `@/`-aliased paths, which would break this
+ * file's plain-`node --test` runnability — so it only accepts their
+ * already-computed, already-toned output as plain data. The caller is
+ * responsible for scoping entries to the one selected mission; this module
+ * trusts that contract and merges them in unfiltered, same as every other
+ * `*Like` input this file already accepts.
+ */
+export type OpportunityFocusExtraTimelineEntryLike = {
+  at: number;
+  text: string;
+  tone: HermesOpportunityTimelineTone;
+};
+
 /** Sprint C2 — seçili lead'in qualification özetinin bu panelin okuduğu alt kümesi. */
 export type OpportunityFocusQualificationLike = {
   statusLabelTr: string;
@@ -126,6 +145,22 @@ export type ComputeHermesOpportunityFocusInput = {
   qualificationForLead?: OpportunityFocusQualificationLike | null;
   /** Sprint C3 — seçili mission'ın lead'i için kayıtlı outreach hazırlık özeti (varsa). */
   outreachForLead?: OpportunityFocusOutreachLike | null;
+  /**
+   * Founder Mission Feedback Loop fix — the selected mission's real pipeline
+   * step / courier draft events, already converted to timeline entries by
+   * the caller. Optional and additive: omitting it reproduces the exact
+   * pre-existing timeline (mission.timeline + receipts/replies/demo/
+   * follow-up/outcome).
+   */
+  extraTimelineEntries?: OpportunityFocusExtraTimelineEntryLike[];
+  /**
+   * Founder Mission Execution Experience fix — true only when the caller's
+   * real `HermesPipeline.state === "running"` for this mission. Swaps the
+   * generic "ready" headline for an honest "Hermes is working right now"
+   * one; every other stage is unaffected. Optional and additive — omitting
+   * it (or passing false) reproduces the exact pre-existing copy.
+   */
+  pipelineRunning?: boolean;
 };
 
 const EMPTY_STATE_MESSAGE = "Bir fırsat seçtiğinde Hermes bu otel için önerilen sonraki adımı gösterecek.";
@@ -358,11 +393,29 @@ const STATE_COPY: Record<ActionStage, StateCopy> = {
   },
 };
 
+/**
+ * Founder Mission Execution Experience fix — `STATE_COPY.ready`'s copy
+ * ("Hermes takipte" / "sırası geldiğinde ilerleyecek") was written for a
+ * mission with no pipeline at all, but it's also what "ready" falls back to
+ * the instant a mission is approved and its pipeline is actively
+ * `"running"` — which reads as passive/idle exactly when Hermes is doing
+ * real work. This is the one, narrowly-targeted override: only replaces the
+ * "ready" stage's copy, only when the caller has confirmed (via the real
+ * `HermesPipeline.state`) that work is actually in progress right now.
+ */
+const RUNNING_STATE_COPY: StateCopy = {
+  currentStateLabel: "Hermes şu anda çalışıyor",
+  urgency: "none",
+  whyThisMatters: "Hermes fırsatı hazırlıyor — tamamlandığında bir sonraki adım burada görünecek.",
+  founderNextAction: NO_ACTION_NEEDED,
+  defaultRecommendation: "Hermes bu fırsat için hazırlığını sürdürüyor.",
+};
+
 function isSameMission(missionId: string | null, targetMissionId: string): boolean {
   return missionId === targetMissionId;
 }
 
-/** Combines mission.timeline (already-sanitized Turkish text) with a handful of other existing, timestamped, per-mission records into one compact feed — never more than the 5 most recent. */
+/** Combines mission.timeline (already-sanitized Turkish text) with a handful of other existing, timestamped, per-mission records into one compact feed — never more than the 8 most recent. */
 function buildTimeline(
   mission: OpportunityFocusMissionLike,
   input: ComputeHermesOpportunityFocusInput,
@@ -374,6 +427,12 @@ function buildTimeline(
     if (t.text.startsWith("Onayladı")) tone = "success";
     else if (t.text.startsWith("Reddetti")) tone = "danger";
     entries.push({ label: t.text, occurredAt: t.at, tone });
+  }
+
+  // Founder Mission Feedback Loop fix — real pipeline-stage / courier-draft
+  // events for this same mission, pre-toned by the caller.
+  for (const extra of input.extraTimelineEntries ?? []) {
+    entries.push({ label: extra.text, occurredAt: extra.at, tone: extra.tone });
   }
 
   const receipt = (input.recentReceipts ?? [])
@@ -412,7 +471,7 @@ function buildTimeline(
     });
   }
 
-  return entries.sort((a, b) => (b.occurredAt ?? 0) - (a.occurredAt ?? 0)).slice(0, 5);
+  return entries.sort((a, b) => (b.occurredAt ?? 0) - (a.occurredAt ?? 0)).slice(0, 8);
 }
 
 export function computeHermesOpportunityFocus(input: ComputeHermesOpportunityFocusInput): HermesOpportunityFocus {
@@ -447,7 +506,7 @@ export function computeHermesOpportunityFocus(input: ComputeHermesOpportunityFoc
   const matchingDecisionItem = (input.decisionItems ?? []).find((d) => isSameMission(d.missionId, mission.missionId)) ?? null;
   const intelligence = recentIntelligence.find((i) => isSameMission(i.missionId, mission.missionId)) ?? null;
 
-  const copy = STATE_COPY[stage];
+  const copy = input.pipelineRunning && stage === "ready" ? RUNNING_STATE_COPY : STATE_COPY[stage];
   const readiness = salesReadinessOf(input.qualificationForLead);
   const outreach = outreachReadinessOf(input.outreachForLead);
 

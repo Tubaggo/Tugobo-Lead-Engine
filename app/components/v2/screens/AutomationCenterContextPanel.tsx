@@ -1131,6 +1131,28 @@ function MissionDecisionCenter({
               : FOUNDER_DECISION_PANEL_LABELS.executionNotStarted}
           </span>
         </div>
+        {/* Mission Execution Experience — current step/agent only ever render
+            while the pipeline is actually mid-run (agentFlow/currentStep come
+            straight from the same real pipeline the Developer view already
+            reads; nothing here is invented). Agent name is read only from
+            `agentFlow` (never mission.currentAgent's post-approval fallback),
+            since that fallback can be "courier" — Developer-only vocabulary —
+            while the pipeline itself only ever assigns Scout/Enricher/
+            Appraiser/Shepherd to its four stages. */}
+        {agentFlow?.current && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <span className="text-[10px] text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.executionAgent}</span>
+            <span className="text-[10px] font-semibold text-indigo-300">
+              {HERMES_AGENT_REGISTRY[agentFlow.current].label}
+            </span>
+          </div>
+        )}
+        {currentStep && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <span className="text-[10px] text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.executionStep}</span>
+            <span className="text-[10px] font-medium text-zinc-300">{STAGE_SHORT_LABELS[currentStep.stage]}</span>
+          </div>
+        )}
         <div className="mt-2.5">
           <p className="text-[10px] text-zinc-500">{FOUNDER_DECISION_PANEL_LABELS.executionLastResult}</p>
           {lastFinishedStep?.result ? (
