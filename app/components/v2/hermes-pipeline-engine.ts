@@ -11,6 +11,7 @@ import {
   runSafeAction,
 } from "@/app/components/v2/hermes-execution";
 import type { ExecutableActionKey, HermesStageOutcome } from "@/app/components/v2/hermes-execution";
+import { canCreateDraft } from "@/app/components/v2/hermes-courier";
 
 /**
  * Hermes Pipeline Engine (A5).
@@ -139,6 +140,70 @@ export function canQueuePipeline(
     return { ok: false, reason: "İletişim yasağı (DNC) aktif — pipeline başlatılamaz." };
   }
   return { ok: true };
+}
+
+/**
+ * Founder Preparation-to-Draft Runtime Bridge fix (Part 2).
+ *
+ * The single decision point for what "Onayla — Hermes'i Başlat" should
+ * actually do for a given mission — checked BEFORE the founder's approval is
+ * persisted (Part 1 discovery: approving used to always commit first, then
+ * `canQueuePipeline` silently rejected `outreach-draft` missions afterward,
+ * since `resolveExecutableAction` has no internal-action stage for that task
+ * type). Pure — no state, no mutation, no fetch; the caller acts on the
+ * returned route.
+ *
+ *   - "pipeline": the mission's primary task has a real internal-action
+ *     stage (contact-verification/website-scan/enrichment/ai-review/
+ *     follow-up) and the existing `canQueuePipeline` guard passed — caller
+ *     should run the unchanged four-stage pipeline.
+ *   - "draft": the primary task is "outreach-draft" (no internal-action
+ *     stage of its own — a real message draft *is* its whole commercial
+ *     purpose) and the existing `canCreateDraft` guard passed — caller
+ *     should go straight to the existing draft-creation chain instead of the
+ *     unrelated four-stage pipeline.
+ *   - "blocked": the applicable guard rejected it — `reason` is the guard's
+ *     own internal string (never shown to the founder as-is; the caller
+ *     translates it, e.g. via `founderApprovalBlockerLabel`).
+ *   - "unsupported": every other task type (recovery/demo-preparation/
+ *     proposal/close-decision/founder-review/reply-monitoring) — out of this
+ *     bridge's scope; the caller keeps its own prior behavior unchanged.
+ */
+export type MissionPreparationRoute =
+  | { kind: "pipeline" }
+  | { kind: "draft" }
+  | { kind: "unsupported" }
+  | { kind: "blocked"; reason: string };
+
+export function decideMissionPreparationRoute(
+  mission: HermesMission,
+  card: AutomationCard | undefined,
+  existingPipeline: HermesPipeline | undefined,
+): MissionPreparationRoute {
+  // Both guards below reason about "if the founder approves this mission
+  // right now" — the real snapshot passed in still reads decisionState
+  // "pending" (that's exactly the state the approval button requires), so
+  // it's forced to "approved" for guard evaluation only. An already-decided
+  // mission (approved/rejected/not-required) is passed through unchanged so
+  // `canQueuePipeline`'s own rejected-mission check still applies correctly.
+  const candidate: HermesMission = mission.decisionState === "pending" ? { ...mission, decisionState: "approved" } : mission;
+
+  if (resolveExecutableAction(mission) !== null) {
+    const guard = canQueuePipeline(candidate, card, existingPipeline);
+    if (!guard.ok) return { kind: "blocked", reason: guard.reason };
+    if (!card) return { kind: "blocked", reason: "Lead bulunamadı." };
+    return { kind: "pipeline" };
+  }
+
+  const primaryTask = mission.tasks.find((t) => t.id === mission.primaryTaskId) ?? mission.tasks[0];
+  if (primaryTask?.taskType === "outreach-draft") {
+    const guard = canCreateDraft(candidate, card, false);
+    if (!guard.ok) return { kind: "blocked", reason: guard.reason };
+    if (!card) return { kind: "blocked", reason: "Lead bulunamadı." };
+    return { kind: "draft" };
+  }
+
+  return { kind: "unsupported" };
 }
 
 /**

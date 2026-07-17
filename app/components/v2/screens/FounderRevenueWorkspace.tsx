@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ScoredLead } from "@/app/lib/leads";
+import { OPPORTUNITY_REASON_LABELS, type ScoredLead } from "@/app/lib/leads";
+import type { DraftRevisionBusinessContextLike } from "@/app/components/v2/hermes-draft-revision";
 import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import {
   computeActionQueue,
@@ -21,14 +22,24 @@ import {
 } from "@/app/components/v2/adapters/hermes-decision-queue-adapter";
 import {
   computeHermesOpportunityFocus,
+  computeHermesOpportunityFocusForFreshLead,
   type HermesOpportunityTimelineTone,
-  type HermesOpportunityUrgency,
   type OpportunityFocusExtraTimelineEntryLike,
 } from "@/app/components/v2/adapters/hermes-opportunity-focus-adapter";
 import { buildPipelineTimelineEntries } from "@/app/components/v2/hermes-pipeline-engine";
 import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
 import { buildDraftTimelineEntries } from "@/app/components/v2/hermes-courier";
 import type { HermesOutboundDraft } from "@/app/components/v2/hermes-courier";
+import type { HermesDeliveryRequest } from "@/app/components/v2/hermes-delivery-gateway";
+import type { RunAcquisitionResult } from "@/app/lib/hermes-autonomous-acquisition-runtime";
+import {
+  computeFounderWorkingQueue,
+  isDirectMutationDecisionType,
+  type WorkingQueueItem,
+} from "@/app/components/v2/adapters/hermes-working-queue-adapter";
+import { computeCommercialJourney } from "@/app/components/v2/adapters/hermes-commercial-journey-adapter";
+import { firstSeenAt, isSameCalendarDay } from "@/app/components/v2/adapters/hermes-acquisition-explainability-adapter";
+import DealWorkspace from "@/app/components/v2/screens/DealWorkspace";
 import {
   HERMES_DAILY_WORKSPACE_LABELS,
 } from "@/app/components/v2/adapters/hermes-daily-workspace-adapter";
@@ -202,7 +213,7 @@ import { btnCls, btnPrimaryCls, kpiLabelCls, kpiStripCls, kpiSubCls, kpiValueCls
 type Props = {
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
-  onSelectHermesMission: (mission: HermesMission) => void;
+  onSelectHermesMission: (mission: HermesMission | null) => void;
   /** Reused verbatim for the Karar Merkezi "Onayla" button — the only decision type with a real existing mutation available. */
   onApproveMission: (mission: HermesMission) => void;
   /** Reused verbatim for the Karar Merkezi "Reddet" button. */
@@ -228,6 +239,19 @@ type Props = {
   hermesPipelines?: Record<string, HermesPipeline>;
   /** Founder Mission Feedback Loop fix — same Record V2Shell already passes to AutomationCenterScreen; only the selected mission's draft feeds the Mission Timeline. */
   hermesDrafts?: Record<string, HermesOutboundDraft>;
+  /** Working Queue + Deal Workspace fix — same Record V2Shell already passes to AutomationCenterScreen; feeds the Deal Workspace's message/delivery status. */
+  hermesDeliveries?: Record<string, HermesDeliveryRequest>;
+  /** Working Queue + Deal Workspace fix — same handlers already wired for the (now Developer-Mode-only) right panel; reused verbatim in the Deal Workspace. */
+  onApproveDraft?: (missionId: string) => void;
+  onRejectDraft?: (missionId: string) => void;
+  onEditDraft?: (missionId: string, body: string) => void;
+  /** Working Queue + Deal Workspace fix — the last real `/api/hermes/acquisition/run` result, shown as a truthful one-line run outcome above the Working Queue. */
+  acquisitionRunResult?: RunAcquisitionResult | null;
+  acquisitionTriggerLoading?: boolean;
+  /** Refresh Persistence Recovery fix — set only when the immediate post-run ingest of newly found leads failed to persist; null otherwise. */
+  acquisitionIngestWarning?: string | null;
+  /** Founder Preparation-to-Draft Runtime Bridge fix — founder-safe reason shown when the last "Onayla — Hermes'i Başlat" click's preflight guard rejected it; keyed by missionId, session-only. */
+  hermesApprovalBlockers?: Record<string, string>;
 };
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
@@ -274,23 +298,6 @@ const DECISION_PRIORITY_BADGE_CLS: Record<HermesDecisionPriority, string> = {
   low: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
 };
 
-/** v8.3 — Opportunity Focus's current-state badge is styled by urgency, not by the underlying (now-hidden) runtime stage. */
-const OPPORTUNITY_URGENCY_BADGE_CLS: Record<HermesOpportunityUrgency, string> = {
-  critical: "bg-rose-500/[0.10] text-rose-400 ring-rose-500/20",
-  high: "bg-amber-500/[0.10] text-amber-400 ring-amber-500/20",
-  medium: "bg-cyan-500/[0.10] text-cyan-400 ring-cyan-500/20",
-  low: "bg-white/[0.04] text-zinc-500 ring-white/[0.06]",
-  none: "bg-white/[0.04] text-zinc-600 ring-white/[0.06]",
-};
-
-const OPPORTUNITY_TIMELINE_DOT_CLS: Record<HermesOpportunityTimelineTone, string> = {
-  success: "bg-emerald-400",
-  warning: "bg-amber-400",
-  danger: "bg-rose-400",
-  info: "bg-sky-400",
-  neutral: "bg-zinc-500",
-};
-
 /**
  * Founder Mission Feedback Loop fix — `buildPipelineTimelineEntries`/
  * `buildDraftTimelineEntries` already color-code their own entries via
@@ -306,6 +313,39 @@ function toneFromActorCls(actorCls: string): HermesOpportunityTimelineTone {
 
 function formatTime(at: number): string {
   return at > 0 ? new Date(at).toLocaleString("tr-TR") : "—";
+}
+
+/**
+ * Founder Conversational Message Revision (v1.0) — maps a real `ScoredLead`
+ * to the small, structural set of already-verified fields the revision
+ * prompt is allowed to cite. Never invents a field: everything either comes
+ * straight from the lead or is left `null`/`false`, which
+ * `buildAvailableSignalLabels` (hermes-draft-revision.ts) then correctly
+ * omits from the AI-visible signal list.
+ */
+function buildDraftRevisionBusinessContext(lead: ScoredLead, channel: string): DraftRevisionBusinessContextLike {
+  const sv = lead.signalVerification;
+  const otaScore = lead.otaDependencyLikelihood;
+  const otaDependency: "high" | "medium" | "low" | null =
+    typeof otaScore === "number" ? (otaScore >= 72 ? "high" : otaScore >= 50 ? "medium" : "low") : null;
+  return {
+    hotelName: lead.name,
+    city: lead.city,
+    hotelType: lead.type ?? null,
+    website: lead.website ?? lead.websiteCandidateUrl ?? null,
+    websiteVerified: sv?.websiteVerification === "verified",
+    whatsappNumber: lead.phone ?? null,
+    whatsappVerified: sv?.whatsappVerification === "verified" || sv?.whatsappVerification === "likely",
+    instagramHandle: lead.instagram ?? null,
+    instagramVerified: sv?.instagramVerification === "verified",
+    reservationCtaVerified: sv?.reservationSignal === "verified",
+    otaDependency,
+    icpScore: typeof lead.icpFitScore === "number" ? lead.icpFitScore : null,
+    opportunityScore: typeof lead.verifiedOpportunityScore === "number" ? lead.verifiedOpportunityScore : null,
+    opportunityTier: lead.opportunityTier ?? null,
+    opportunityReasons: (lead.opportunityReasons ?? []).map((k) => OPPORTUNITY_REASON_LABELS[k]?.tr ?? k).slice(0, 6),
+    channel,
+  };
 }
 
 function scrollToKararKuyrugu() {
@@ -335,6 +375,14 @@ export default function FounderRevenueWorkspace({
   onRetryAcquisition,
   hermesPipelines,
   hermesDrafts,
+  hermesDeliveries,
+  onApproveDraft,
+  onRejectDraft,
+  onEditDraft,
+  acquisitionRunResult,
+  acquisitionTriggerLoading,
+  acquisitionIngestWarning,
+  hermesApprovalBlockers,
 }: Props) {
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
@@ -394,6 +442,22 @@ export default function FounderRevenueWorkspace({
   // same render pass for a normal single click; it only matters for two
   // clicks close enough to land before the first re-render removes the card.
   const [pendingDecisionIds, setPendingDecisionIds] = useState<Set<string>>(new Set());
+
+  // Working Queue + Deal Workspace fix — same double-click guard, scoped to
+  // the Deal Workspace's own message-approval decision (a separate runtime
+  // record from the mission decision above, so it needs its own guard).
+  const [pendingDraftMissionIds, setPendingDraftMissionIds] = useState<Set<string>>(new Set());
+
+  // Fresh Opportunity Workspace Bridge fix — a fresh, real acquisition
+  // opportunity may not have formed a mission yet (see
+  // `hermes-monitor/decision-engine.ts`'s dormant-lead SKIP rule), so it has
+  // no `missionId` for `selectedHermesMissionId` to carry. This is the
+  // "selected lead before mission creation" state the Working Queue needs to
+  // still open the Deal Workspace honestly. Mutually exclusive with a mission
+  // selection — selecting either clears the other (see
+  // `selectMissionAndClearFresh` below and the fresh-item branch of
+  // `runPrimary`).
+  const [selectedFreshLeadId, setSelectedFreshLeadId] = useState<string | null>(null);
 
   // v8.6 — the header's "Hermes'i Çalıştır"/"Durumu Yenile" actions bump
   // `refreshSignal` in V2Shell; each bump re-runs the exact same seven
@@ -745,6 +809,23 @@ export default function FounderRevenueWorkspace({
     });
   }, [decisionItems]);
 
+  // Same release pattern as above, scoped to the Deal Workspace's own
+  // draft-approval guard: once a missionId's draft is no longer awaiting a
+  // decision (approved/rejected, or the draft record itself is gone), the
+  // guard can release it.
+  useEffect(() => {
+    setPendingDraftMissionIds((prev) => {
+      if (prev.size === 0) return prev;
+      const stillPending = new Set(
+        Array.from(prev).filter((missionId) => {
+          const status = hermesDrafts?.[missionId]?.status;
+          return status === "draft_ready" || status === "edited";
+        }),
+      );
+      return stillPending.size === prev.size ? prev : stillPending;
+    });
+  }, [hermesDrafts]);
+
   const timeline = computeHermesTimeline(missions, recentReceipts);
   const health = computeHermesHealth({
     hermesRuntimeAvailable: true,
@@ -858,6 +939,82 @@ export default function FounderRevenueWorkspace({
     pipelineRunning: selectedPipeline?.state === "running",
   });
 
+  // Working Queue + Deal Workspace fix — "Bugünkü Çalışma Listesi" composes
+  // the exact same decisionItems Karar Merkezi already produced with
+  // today's fresh, qualified opportunities (same freshness definition
+  // "Hermes Bugün Bunları Buldu" already uses). No second queue, no
+  // re-ranking of real decisions.
+  const runningMissionIds = new Set(
+    Object.entries(hermesPipelines ?? {})
+      .filter(([, p]) => p.state === "running")
+      .map(([missionId]) => missionId),
+  );
+  const workingQueueItems: WorkingQueueItem[] = computeFounderWorkingQueue({
+    decisionItems,
+    leads,
+    missions,
+    runningMissionIds,
+  });
+
+  const selectedDelivery = selectedMission ? hermesDeliveries?.[selectedMission.missionId] : undefined;
+  const selectedLead = selectedMission ? leads.find((l) => l.id === selectedMission.leadId) : undefined;
+  const selectedMissionIsNew = (() => {
+    if (!selectedLead) return false;
+    const seenAt = firstSeenAt(selectedLead);
+    return seenAt !== null && isSameCalendarDay(seenAt, Date.now());
+  })();
+  const journey = selectedMission
+    ? computeCommercialJourney({
+        missionId: selectedMission.missionId,
+        mission: selectedMission,
+        draft: selectedDraft,
+        recentReceipts,
+        recentReplies,
+        recentDemoItems,
+        recentSalesOutcomes,
+      })
+    : null;
+
+  // Commercial Journey Driven Opportunity Workspace v1.0 — the real reply/
+  // demo/outcome matched to the selected mission, using the exact same
+  // missionId-match convention `computeCommercialJourney` already applies
+  // internally (reachedRelevantReply/reachedDemoScheduled/terminalOutcome).
+  // No new fetch, no new registry — these arrays are already in scope.
+  const selectedReply = selectedMission
+    ? (recentReplies.find((r) => r.missionId === selectedMission.missionId) ?? null)
+    : null;
+  const selectedDemo = selectedMission
+    ? (recentDemoItems.find((d) => d.missionId === selectedMission.missionId) ?? null)
+    : null;
+  const selectedOutcome = selectedMission
+    ? (recentSalesOutcomes.find((o) => o.missionId === selectedMission.missionId) ?? null)
+    : null;
+
+  // Fresh Opportunity Workspace Bridge fix — a fresh, real acquisition
+  // opportunity with no mission yet. A stale/mismatched id (the lead is no
+  // longer in the pool) resolves to `null` here, which the render below
+  // shows as a truthful "no longer available" state — never a silent no-op.
+  const selectedFreshLead = selectedFreshLeadId
+    ? (leads.find((l) => l.id === selectedFreshLeadId) ?? null)
+    : null;
+  const freshOpportunityFocus = selectedFreshLead
+    ? computeHermesOpportunityFocusForFreshLead(selectedFreshLead)
+    : null;
+  const freshJourney = selectedFreshLead
+    ? computeCommercialJourney({
+        // No real mission exists yet, so this id can never match a real
+        // receipt/reply/demo/outcome — the journey correctly stays at
+        // "discovered" rather than borrowing another mission's activity.
+        missionId: `fresh:${selectedFreshLead.id}`,
+        mission: null,
+        draft: null,
+        recentReceipts,
+        recentReplies,
+        recentDemoItems,
+        recentSalesOutcomes,
+      })
+    : null;
+
   // v8.2 — Karar Merkezi interactions. Selecting a card (or its primary
   // action, for every decisionType except approve_message) reuses the
   // screen's existing mission-selection state — no new state machine, no
@@ -867,9 +1024,18 @@ export default function FounderRevenueWorkspace({
   const missionForDecisionItem = (item: HermesDecisionItem) =>
     item.missionId ? (missions.find((m) => m.missionId === item.missionId) ?? null) : null;
 
+  // Fresh Opportunity Workspace Bridge fix — a mission selection and a fresh
+  // (mission-less) lead selection are mutually exclusive. Every existing
+  // `onSelectHermesMission` call site below now routes through this wrapper
+  // so picking a mission always clears a stale fresh-lead selection too.
+  const selectMissionAndClearFresh = (mission: HermesMission | null) => {
+    setSelectedFreshLeadId(null);
+    onSelectHermesMission(mission);
+  };
+
   const focusDecisionItem = (item: HermesDecisionItem) => {
     const mission = missionForDecisionItem(item);
-    if (mission) onSelectHermesMission(mission);
+    if (mission) selectMissionAndClearFresh(mission);
   };
 
   // Founder Mission Feedback Loop fix: clicking a card's primary/secondary
@@ -886,7 +1052,7 @@ export default function FounderRevenueWorkspace({
     if (mission && item.decisionType === "approve_message") {
       if (pendingDecisionIds.has(item.id)) return; // duplicate click while already processing
       setPendingDecisionIds((prev) => new Set(prev).add(item.id));
-      onSelectHermesMission(mission);
+      selectMissionAndClearFresh(mission);
       onApproveMission(mission);
       return;
     }
@@ -904,7 +1070,7 @@ export default function FounderRevenueWorkspace({
     if (mission && item.decisionType === "approve_message") {
       if (pendingDecisionIds.has(item.id)) return; // duplicate click while already processing
       setPendingDecisionIds((prev) => new Set(prev).add(item.id));
-      onSelectHermesMission(mission);
+      selectMissionAndClearFresh(mission);
       onRejectTask(mission.primaryTaskId);
     }
   };
@@ -921,10 +1087,35 @@ export default function FounderRevenueWorkspace({
     ? (decisionItems.find((d) => d.missionId === selectedHermesMissionId) ?? null)
     : null;
 
-  const runOpportunityFocusPrimaryAction = (item: HermesDecisionItem) => {
-    runPrimaryDecisionAction(item);
-    if (item.decisionType !== "approve_message") scrollToKararKuyrugu();
+  // Working Queue + Deal Workspace fix — the Deal Workspace's single
+  // "Bugünkü Tek Karar" section reuses these exact handlers: mission-level
+  // approval reuses `runPrimaryDecisionAction`/`runSecondaryDecisionAction`
+  // verbatim (same guard, same mutation); draft-level (message) approval
+  // reuses the `onApproveDraft`/`onRejectDraft` props Karar Merkezi's own
+  // "Mesaj Onayı" flow already receives, with its own duplicate-click guard.
+  const dealWorkspaceApproveMission = () => {
+    if (focusMatchingDecisionItem) runPrimaryDecisionAction(focusMatchingDecisionItem);
   };
+  const dealWorkspaceRejectMission = () => {
+    if (focusMatchingDecisionItem) runSecondaryDecisionAction(focusMatchingDecisionItem);
+  };
+  const dealWorkspaceApproveDraft = () => {
+    if (!selectedMission || !onApproveDraft) return;
+    if (pendingDraftMissionIds.has(selectedMission.missionId)) return;
+    setPendingDraftMissionIds((prev) => new Set(prev).add(selectedMission.missionId));
+    onApproveDraft(selectedMission.missionId);
+  };
+  const dealWorkspaceRejectDraft = () => {
+    if (!selectedMission || !onRejectDraft) return;
+    if (pendingDraftMissionIds.has(selectedMission.missionId)) return;
+    setPendingDraftMissionIds((prev) => new Set(prev).add(selectedMission.missionId));
+    onRejectDraft(selectedMission.missionId);
+  };
+  const dealWorkspaceEditDraft = (body: string) => {
+    if (selectedMission) onEditDraft?.(selectedMission.missionId, body);
+  };
+  const dealWorkspaceBack = () => selectMissionAndClearFresh(null);
+  const freshDealWorkspaceBack = () => setSelectedFreshLeadId(null);
 
   // v8.5 (Scope 3) — "no activity yet" only when literally nothing has
   // happened: every Hermes Bugün counter at zero. Once any counter is
@@ -952,6 +1143,125 @@ export default function FounderRevenueWorkspace({
     revenueSummary: summary,
     intakeSummary: intake,
   });
+
+  // Opportunity Workspace Isolation fix — the central content area is either
+  // "reviewing one opportunity" or "the Founder Home overview," never both at
+  // once. Any selection (a real mission OR a fresh, mission-less lead) takes
+  // over the entire area; Founder Narrative, Bugünkü Çalışma Listesi, Gelir
+  // Nabzı, Hermes Takip Planı, Hermes Bugün Bunları Buldu, Hermes Aktivitesi,
+  // and every Developer-Mode pipeline-detail section stop rendering — not
+  // just visually hidden, structurally absent — until the founder presses
+  // the workspace's own "← Çalışma Listesine Dön" and returns to null/null.
+  // The Header and left navigation live in V2Shell/AutomationCenterScreen,
+  // entirely outside this component's tree, so they're already unaffected.
+  const opportunitySelected = Boolean(selectedMission) || Boolean(selectedFreshLeadId);
+
+  // Founder Message Review & Revision Flow v1.0 — the draft carries no
+  // destination field at all (HermesOutboundDraft has no phone/recipient
+  // field); the real phone and its verification come from the lead itself,
+  // the same `signalVerification` the acquisition explainability section
+  // already reads. `whatsappReadinessStatus` is the exact state this screen
+  // already fetches (`/api/hermes/providers/whatsapp/status`) for the health
+  // card — reused verbatim, not re-fetched.
+  // Founder Conversational Message Revision (v1.0) — real, already-verified
+  // business fields the revision prompt is allowed to cite. `channel` comes
+  // from the real draft when one exists (mission path) or stays "unknown"
+  // for a fresh, draft-less lead — never guessed.
+  const missionBusinessContext = selectedLead
+    ? buildDraftRevisionBusinessContext(selectedLead, selectedDraft?.channel ?? "unknown")
+    : null;
+  const freshBusinessContext = selectedFreshLead
+    ? buildDraftRevisionBusinessContext(selectedFreshLead, "unknown")
+    : null;
+
+  const missionRecipientPhone = selectedLead?.phone ?? null;
+  const missionRecipientPhoneVerified =
+    selectedLead?.signalVerification?.whatsappVerification === "verified" ||
+    selectedLead?.signalVerification?.whatsappVerification === "likely";
+  const freshRecipientPhone = selectedFreshLead?.phone ?? null;
+  const freshRecipientPhoneVerified =
+    selectedFreshLead?.signalVerification?.whatsappVerification === "verified" ||
+    selectedFreshLead?.signalVerification?.whatsappVerification === "likely";
+  const whatsappProviderReady = whatsappReadinessStatus === "controlled_live_ready";
+
+  if (opportunitySelected) {
+    return (
+      <div className="flex flex-col">
+        {selectedMission && journey ? (
+          <DealWorkspace
+            mission={selectedMission}
+            opportunityFocus={opportunityFocus}
+            journey={journey}
+            isNew={selectedMissionIsNew}
+            pipeline={selectedPipeline ?? null}
+            draft={selectedDraft ?? null}
+            delivery={selectedDelivery ?? null}
+            reply={selectedReply ? { textPreview: selectedReply.textPreview ?? "", occurredAt: selectedReply.occurredAt } : null}
+            demo={selectedDemo ? { statusLabel: opportunityFocus.demoStatusLabel } : null}
+            outcome={selectedOutcome ? { status: selectedOutcome.status } : null}
+            isPendingDecision={
+              (focusMatchingDecisionItem ? pendingDecisionIds.has(focusMatchingDecisionItem.id) : false) ||
+              pendingDraftMissionIds.has(selectedMission.missionId)
+            }
+            recipientPhone={missionRecipientPhone}
+            recipientPhoneVerified={missionRecipientPhoneVerified}
+            whatsappProviderReady={whatsappProviderReady}
+            businessContext={missionBusinessContext}
+            approvalBlockerReason={hermesApprovalBlockers?.[selectedMission.missionId] ?? null}
+            onApproveMission={dealWorkspaceApproveMission}
+            onRejectMission={dealWorkspaceRejectMission}
+            onApproveDraft={dealWorkspaceApproveDraft}
+            onRejectDraft={dealWorkspaceRejectDraft}
+            onEditDraft={dealWorkspaceEditDraft}
+            onBack={dealWorkspaceBack}
+          />
+        ) : selectedFreshLead && freshOpportunityFocus && freshJourney ? (
+          // Fresh Opportunity Workspace Bridge fix — a fresh, real acquisition
+          // opportunity with no mission yet. Every mission/draft/delivery-specific
+          // section renders its own "not started" state via its existing null
+          // check — no fabricated mission, no fabricated approval state.
+          <DealWorkspace
+            mission={null}
+            opportunityFocus={freshOpportunityFocus}
+            journey={freshJourney}
+            isNew={true}
+            pipeline={null}
+            draft={null}
+            delivery={null}
+            reply={null}
+            demo={null}
+            outcome={null}
+            isPendingDecision={false}
+            recipientPhone={freshRecipientPhone}
+            recipientPhoneVerified={freshRecipientPhoneVerified}
+            whatsappProviderReady={whatsappProviderReady}
+            businessContext={freshBusinessContext}
+            approvalBlockerReason={null}
+            onApproveMission={() => {}}
+            onRejectMission={() => {}}
+            onApproveDraft={() => {}}
+            onRejectDraft={() => {}}
+            onEditDraft={() => {}}
+            onBack={freshDealWorkspaceBack}
+          />
+        ) : (
+          // Truthful founder-facing state when the selected lead is no
+          // longer in the pool — never a silent no-op.
+          <div className="px-5 py-3">
+            <p className={sectionLabelCls}>Fırsat Alanı</p>
+            <p className="mt-1 text-[11px] text-zinc-600">Bu fırsat artık mevcut değil.</p>
+            <button
+              type="button"
+              onClick={freshDealWorkspaceBack}
+              className="mt-2 text-[11px] font-medium text-indigo-300 hover:text-indigo-200"
+            >
+              ← Çalışma Listesine Dön
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     /* Sprint C7 (Founder OS v1.0) — canonical daily flow via CSS order so the
@@ -994,12 +1304,53 @@ export default function FounderRevenueWorkspace({
         <p className="mt-1.5 text-[11px] font-medium text-indigo-300">{founderNarrative.requiredAction}</p>
       </div>
 
-      {/* Section 1 — Karar Merkezi (v8.2, decision-first since v8.6): only single-touch founder decisions, never a status list */}
+      {/* Working Queue + Deal Workspace fix — truthful "Hermes'i Çalıştır" run outcome.
+          `acquisitionRunResult.summaryTr` is the server's own sanitized Turkish summary
+          (`summarizeAcquisitionRun`) — never composed here, never a fake count. */}
+      {acquisitionTriggerLoading && (
+        <div className="border-b border-white/[0.06] bg-indigo-500/[0.06] px-5 py-2">
+          <p className="text-[11px] font-medium text-indigo-300">Hermes taranıyor…</p>
+        </div>
+      )}
+      {!acquisitionTriggerLoading && acquisitionRunResult && (
+        <div
+          className={`border-b border-white/[0.06] px-5 py-2 ${
+            acquisitionRunResult.status === "blocked" || acquisitionRunResult.status === "failed"
+              ? "bg-amber-500/[0.06]"
+              : "bg-emerald-500/[0.05]"
+          }`}
+        >
+          <p
+            className={`text-[11px] font-medium ${
+              acquisitionRunResult.status === "blocked" || acquisitionRunResult.status === "failed"
+                ? "text-amber-300"
+                : "text-emerald-300"
+            }`}
+          >
+            {acquisitionRunResult.summaryTr}
+          </p>
+        </div>
+      )}
+      {/* Refresh Persistence Recovery fix — reuses this exact existing
+          run-outcome surface (same block, same amber-warning convention
+          `acquisitionRunResult`'s blocked/failed state already uses above)
+          instead of a new notification system. Shown only when the
+          immediate post-run save genuinely failed; the status-poll recovery
+          path stays available regardless. */}
+      {acquisitionIngestWarning && (
+        <div className="border-b border-white/[0.06] bg-amber-500/[0.06] px-5 py-2">
+          <p className="text-[11px] font-medium text-amber-300">{acquisitionIngestWarning}</p>
+        </div>
+      )}
+
+      {/* Section 1 — Bugünkü Çalışma Listesi (Founder Working Queue v1.0, formerly "Karar Merkezi"):
+          every real founder decision (unchanged, same priority order) plus today's fresh, qualified
+          opportunities appended after them. Never a raw list of every historical lead. */}
       <div id={KARAR_KUYRUGU_ANCHOR_ID} className="order-1 border-b border-white/[0.06] px-5 py-3">
-        <p className={sectionLabelCls}>Karar Merkezi</p>
+        <p className={sectionLabelCls}>Bugünkü Çalışma Listesi</p>
         <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Hermes işi yürütür; sen yalnızca karar verirsin.</p>
-        {decisionItems.length === 0 ? (
-          /* v8.6 (Scope 6) — no pending decision is a success state, never an empty warning box */
+        {workingQueueItems.length === 0 ? (
+          /* no pending decision AND no fresh opportunity today is a success state, never an empty warning box */
           <div className="flex items-center gap-3 rounded-lg bg-emerald-500/[0.06] px-4 py-3.5 ring-1 ring-inset ring-emerald-500/15">
             <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5 shrink-0 text-emerald-400" aria-hidden>
               <circle cx="10" cy="10" r="8.25" stroke="currentColor" strokeWidth="1.5" />
@@ -1020,16 +1371,58 @@ export default function FounderRevenueWorkspace({
           </div>
         ) : (
           <div className="space-y-1.5">
-            {decisionItems.map((item) => {
-              const isPending = pendingDecisionIds.has(item.id);
+            {workingQueueItems.map((item) => {
+              const isPending = item.sourceDecisionItem ? pendingDecisionIds.has(item.sourceDecisionItem.id) : false;
+              // Working Queue + Deal Workspace interaction fix — a queue
+              // item whose real decision requires mutation (approve/reject
+              // a prepared message) must still only ever *open* the Deal
+              // Workspace from the queue; the actual Onayla/Reddet mutation
+              // is reserved for Deal Workspace's own "Bugünkü Tek Karar"
+              // section (dealWorkspaceApproveMission/RejectMission below,
+              // which call these exact same runPrimary/SecondaryDecisionAction
+              // handlers once the founder has actually reviewed the opportunity).
+              const isDirectMutation = isDirectMutationDecisionType(item.sourceDecisionItem?.decisionType);
+              const runPrimary = () => {
+                if (item.kind === "fresh_opportunity") {
+                  // Fresh Opportunity Workspace Bridge fix — most freshly
+                  // acquired leads have no mission yet (no ShadowTask was
+                  // generated for a "DISCOVERED"-stage lead; see
+                  // hermes-monitor/decision-engine.ts's dormant SKIP rule).
+                  // Prefer a real mission if one genuinely exists and
+                  // resolves; otherwise open the Deal Workspace directly from
+                  // the lead — never a silent no-op.
+                  if (item.missionId) {
+                    const m = missions.find((mm) => mm.missionId === item.missionId);
+                    if (m) {
+                      selectMissionAndClearFresh(m);
+                      return;
+                    }
+                  }
+                  if (item.leadId) {
+                    selectMissionAndClearFresh(null);
+                    setSelectedFreshLeadId(item.leadId);
+                  }
+                  return;
+                }
+                if (!item.sourceDecisionItem) return;
+                if (isDirectMutation) {
+                  focusDecisionItem(item.sourceDecisionItem);
+                  return;
+                }
+                runPrimaryDecisionAction(item.sourceDecisionItem);
+              };
+              const runSecondary = () => {
+                if (isDirectMutation) return; // no direct reject from the queue — only from Deal Workspace
+                if (item.sourceDecisionItem) runSecondaryDecisionAction(item.sourceDecisionItem);
+              };
               return (
               <div
                 key={item.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => focusDecisionItem(item)}
+                onClick={runPrimary}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") focusDecisionItem(item);
+                  if (e.key === "Enter" || e.key === " ") runPrimary();
                 }}
                 className={`w-full cursor-pointer rounded-lg border px-3 py-2.5 text-left transition-colors duration-150 ${
                   item.missionId === selectedHermesMissionId
@@ -1039,16 +1432,28 @@ export default function FounderRevenueWorkspace({
               >
                 <div className="flex items-center gap-2">
                   <span className="truncate text-[11px] font-semibold text-zinc-200">{item.title}</span>
+                  {item.isNew && (
+                    <span className="inline-flex shrink-0 items-center rounded-full bg-emerald-500/[0.12] px-2 py-[2px] text-[9px] font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/20">
+                      Yeni
+                    </span>
+                  )}
                   <span
-                    className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${DECISION_PRIORITY_BADGE_CLS[item.priority]}`}
+                    className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${
+                      item.sourceDecisionItem ? DECISION_PRIORITY_BADGE_CLS[item.sourceDecisionItem.priority] : DECISION_PRIORITY_BADGE_CLS.low
+                    }`}
                   >
-                    {item.statusLabel}
+                    {item.commercialStageLabel}
                   </span>
+                  {item.isHermesWorking && (
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-indigo-500/[0.10] px-2 py-[2px] text-[9px] font-semibold text-indigo-300">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-400" />
+                      Hermes çalışıyor
+                    </span>
+                  )}
                 </div>
-                <p className="mt-1 text-[10px] text-zinc-400">{item.whatHappened}</p>
-                <p className="mt-0.5 text-[10px] text-zinc-500">{item.whyItMatters}</p>
+                <p className="mt-1 text-[10px] text-zinc-400">{item.whyInQueue}</p>
                 <p className="mt-1 text-[10px] font-medium text-indigo-300">
-                  {isPending ? "Founder onayı işleniyor…" : item.hermesRecommendation}
+                  {isPending ? "Founder onayı işleniyor…" : item.nextDecisionLabel}
                 </p>
                 <div className="mt-2 flex items-center gap-2">
                   <button
@@ -1056,19 +1461,23 @@ export default function FounderRevenueWorkspace({
                     disabled={isPending}
                     onClick={(e) => {
                       e.stopPropagation();
-                      runPrimaryDecisionAction(item);
+                      runPrimary();
                     }}
                     className={`${btnPrimaryCls} ${isPending ? "cursor-not-allowed opacity-60" : ""}`}
                   >
-                    {isPending ? "İşleniyor…" : item.primaryActionLabel}
+                    {isPending
+                      ? "İşleniyor…"
+                      : isDirectMutation
+                        ? FOUNDER_HOME_LABELS.openOpportunityAction
+                        : item.primaryActionLabel}
                   </button>
-                  {item.secondaryActionLabel && (
+                  {item.secondaryActionLabel && !isDirectMutation && (
                     <button
                       type="button"
                       disabled={isPending}
                       onClick={(e) => {
                         e.stopPropagation();
-                        runSecondaryDecisionAction(item);
+                        runSecondary();
                       }}
                       className={`${btnCls} ${isPending ? "cursor-not-allowed opacity-60" : ""}`}
                     >
@@ -1083,150 +1492,10 @@ export default function FounderRevenueWorkspace({
         )}
       </div>
 
-      {/* Section 2 — Fırsat Odağı (v8.3): "Bu otel için şimdi ne yapmalıyım?" — never a mission object viewer */}
-      <div className="order-2 border-b border-white/[0.06] px-5 py-3">
-        <p className={sectionLabelCls}>Fırsat Odağı</p>
-        <p className="mb-2.5 mt-0.5 text-[11px] text-zinc-500">Seçili otel için Hermes&apos;in önerdiği sonraki adım.</p>
-        {opportunityFocus.emptyState ? (
-          <p className="text-[11px] text-zinc-600">{opportunityFocus.emptyState}</p>
-        ) : (
-          <div className="space-y-2 rounded-lg bg-white/[0.02] px-3 py-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="truncate text-[11px] font-semibold text-zinc-200">{opportunityFocus.title}</p>
-                <p className="text-[9px] text-zinc-600">{opportunityFocus.subtitle}</p>
-              </div>
-              <span
-                className={`inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[9px] font-semibold ring-1 ring-inset ${OPPORTUNITY_URGENCY_BADGE_CLS[opportunityFocus.urgency]}`}
-              >
-                {opportunityFocus.currentStateLabel}
-              </span>
-            </div>
-
-            <p className="text-[10px] text-zinc-500">{opportunityFocus.whyThisMatters}</p>
-            <p className="text-[10px] font-medium text-indigo-300">{opportunityFocus.hermesRecommendation}</p>
-            <p className="text-[10px] font-semibold text-zinc-300">{opportunityFocus.founderNextAction}</p>
-
-            {/* Sprint C2 — Satış hazırlığı: "Bu işletme neden satışa hazır veya neden henüz değil?" */}
-            {opportunityFocus.salesReadinessLabel && (
-              <div className="rounded-lg bg-white/[0.02] px-2.5 py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
-                    Satış Hazırlığı
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    <span className="text-[10px] font-medium text-zinc-200">
-                      {opportunityFocus.salesReadinessLabel}
-                    </span>
-                    {opportunityFocus.draftEligibilityLabel && (
-                      <span className="inline-flex items-center rounded-full bg-emerald-500/[0.08] px-2 py-[2px] text-[9px] font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/15">
-                        {opportunityFocus.draftEligibilityLabel}
-                      </span>
-                    )}
-                  </span>
-                </div>
-                {opportunityFocus.salesReadinessSummary && (
-                  <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
-                    {opportunityFocus.salesReadinessSummary}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Sprint C3 — Mesaj hazırlığı: önerilen kanal/şablon/dil + personalization + founder aksiyonu. Gönderim yok. */}
-            {opportunityFocus.outreachStatusLabel && (
-              <div className="rounded-lg bg-white/[0.02] px-2.5 py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
-                    Mesaj Hazırlığı
-                  </span>
-                  <span className="text-[10px] font-medium text-amber-300">
-                    {opportunityFocus.outreachStatusLabel}
-                  </span>
-                </div>
-                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500">
-                  {opportunityFocus.outreachChannelLabel && (
-                    <span>Kanal: <span className="text-zinc-300">{opportunityFocus.outreachChannelLabel}</span></span>
-                  )}
-                  {opportunityFocus.outreachTemplateLabel && (
-                    <span>Şablon: <span className="text-zinc-300">{opportunityFocus.outreachTemplateLabel}</span></span>
-                  )}
-                  {opportunityFocus.outreachLanguageLabel && (
-                    <span>Dil: <span className="text-zinc-300">{opportunityFocus.outreachLanguageLabel}</span></span>
-                  )}
-                </div>
-                {opportunityFocus.outreachPersonalizationSummary && (
-                  <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
-                    {opportunityFocus.outreachPersonalizationSummary}
-                  </p>
-                )}
-                {opportunityFocus.outreachFounderAction && (
-                  <p className="mt-1 text-[10px] font-medium text-indigo-300">
-                    {opportunityFocus.outreachFounderAction}
-                  </p>
-                )}
-              </div>
-            )}
-
-            <div className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.02] px-2.5 py-2">
-              <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">Gelir Sinyali</span>
-              <span className="text-[10px] font-medium text-emerald-300">
-                {opportunityFocus.revenueSignalLabel}
-                {opportunityFocus.estimatedMrrLabel ? ` · ${opportunityFocus.estimatedMrrLabel}` : ""}
-              </span>
-            </div>
-
-            {/* Compact status strip */}
-            <div className="grid grid-cols-5 gap-1.5 text-center">
-              <StatusStripItem label="Mesaj" value={opportunityFocus.whatsappStatusLabel} />
-              <StatusStripItem label="Cevap" value={opportunityFocus.replyIntentLabel} />
-              <StatusStripItem label="Demo" value={opportunityFocus.demoStatusLabel} />
-              <StatusStripItem label="Takip" value={opportunityFocus.followUpStatusLabel} />
-              <StatusStripItem label="Sonuç" value={opportunityFocus.outcomeStatusLabel} />
-            </div>
-
-            {(opportunityFocus.primaryActionLabel || opportunityFocus.secondaryActionLabel) && (
-              <div className="flex items-center gap-2 pt-0.5">
-                {opportunityFocus.primaryActionLabel && focusMatchingDecisionItem && (
-                  <button
-                    type="button"
-                    disabled={pendingDecisionIds.has(focusMatchingDecisionItem.id)}
-                    onClick={() => runOpportunityFocusPrimaryAction(focusMatchingDecisionItem)}
-                    className={`${btnPrimaryCls} ${pendingDecisionIds.has(focusMatchingDecisionItem.id) ? "cursor-not-allowed opacity-60" : ""}`}
-                  >
-                    {pendingDecisionIds.has(focusMatchingDecisionItem.id) ? "İşleniyor…" : opportunityFocus.primaryActionLabel}
-                  </button>
-                )}
-                {opportunityFocus.secondaryActionLabel && focusMatchingDecisionItem && (
-                  <button
-                    type="button"
-                    disabled={pendingDecisionIds.has(focusMatchingDecisionItem.id)}
-                    onClick={() => runSecondaryDecisionAction(focusMatchingDecisionItem)}
-                    className={`${btnCls} ${pendingDecisionIds.has(focusMatchingDecisionItem.id) ? "cursor-not-allowed opacity-60" : ""}`}
-                  >
-                    {opportunityFocus.secondaryActionLabel}
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* Mission Timeline — compact summary, max 8 latest meaningful events (founder decision + real pipeline/courier runtime events) */}
-            {opportunityFocus.timeline.length > 0 && (
-              <div className="border-t border-white/[0.06] pt-2">
-                <ul className="space-y-1">
-                  {opportunityFocus.timeline.map((entry, i) => (
-                    <li key={i} className="flex items-center gap-2">
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${OPPORTUNITY_TIMELINE_DOT_CLS[entry.tone]}`} />
-                      <span className="flex-1 truncate text-[10px] text-zinc-400">{entry.label}</span>
-                      <span className="shrink-0 text-[9px] text-zinc-600">{formatTime(entry.occurredAt ?? 0)}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      {/* Section 2 (Deal Workspace) intentionally has no sibling here — Opportunity
+          Workspace Isolation fix: whenever a mission or fresh lead is selected, the
+          early return above takes over the entire central area instead. This branch
+          only ever runs with nothing selected, so there is nothing to show in its place. */}
 
       {/* Section 3 — Hermes Bugün (v8.6, Scope 7): numbers are secondary — compact rows instead of hero KPI tiles.
           Sprint C7: pipeline-detail — Developer Mode only; the founder reads the canonical six sections. */}
@@ -2228,13 +2497,4 @@ function OpportunityExplanationCard({ card }: { card: FounderOpportunityExplanat
   );
 }
 
-/** v8.3 — Opportunity Focus's compact status strip (Mesaj/Cevap/Demo/Takip/Sonuç). `null` renders a plain dash — never a technical placeholder. */
-function StatusStripItem({ label, value }: { label: string; value: string | null }) {
-  return (
-    <div className="rounded-lg bg-white/[0.02] px-1.5 py-2">
-      <p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-zinc-600">{label}</p>
-      <p className="mt-0.5 truncate text-[9px] font-medium text-zinc-300">{value ?? "—"}</p>
-    </div>
-  );
-}
 

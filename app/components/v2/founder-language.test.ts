@@ -7,8 +7,10 @@ import {
   FOUNDER_HOME_EMPTY_STATE_LABELS,
   FOUNDER_HOME_LABELS,
   FOUNDER_PIPELINE_STATE_LABELS,
+  FOUNDER_PREPARATION_BRIDGE_LABELS,
   FOUNDER_SUMMARY_PANEL_LABELS,
   findForbiddenFounderTerm,
+  founderApprovalBlockerLabel,
   founderizeTimelineText,
 } from "./founder-language.ts";
 import { HERMES_LEAD_INTAKE_BUTTON_LABELS, computeHermesLeadIntakeSummary } from "./adapters/hermes-lead-intake-adapter.ts";
@@ -178,4 +180,49 @@ test("v8.5 RC: lead-intake idle/error summaries use 'fırsat', never the English
   const errored = computeHermesLeadIntakeSummary({ leads: [], missions: [], importError: "boom" });
   assert.ok(!/\blead\b/i.test(idle.founderSummary), idle.founderSummary);
   assert.ok(!/\blead\b/i.test(errored.founderSummary), errored.founderSummary);
+});
+
+/* ── Founder Preparation-to-Draft Runtime Bridge fix (Part 2) ─────────── */
+
+test("preparation bridge: pre-draft recommendation and generic blocker are founder-safe, non-empty Turkish", () => {
+  assertFounderSafe(FOUNDER_PREPARATION_BRIDGE_LABELS, "FOUNDER_PREPARATION_BRIDGE_LABELS");
+  assert.notEqual(FOUNDER_PREPARATION_BRIDGE_LABELS.preDraftRecommendation.trim(), "");
+  assert.notEqual(FOUNDER_PREPARATION_BRIDGE_LABELS.genericBlocker.trim(), "");
+});
+
+test("preparation bridge: the pre-draft line never claims a message already exists (unlike the Karar Merkezi's own approval_required copy)", () => {
+  assert.doesNotMatch(FOUNDER_PREPARATION_BRIDGE_LABELS.preDraftRecommendation, /hazırlanan mesaj/i);
+  assert.doesNotMatch(FOUNDER_PREPARATION_BRIDGE_LABELS.preDraftRecommendation, /gözden geçir/i);
+});
+
+test("founderApprovalBlockerLabel translates every known canCreateDraft/canQueuePipeline guard reason to founder-safe Turkish", () => {
+  const knownReasons = [
+    "Lead bulunamadı — taslak oluşturulamaz.",
+    "Lead bulunamadı.",
+    "İletişim yasağı (DNC) aktif — taslak oluşturulamaz.",
+    "İletişim yasağı (DNC) aktif — pipeline başlatılamaz.",
+    "Fırsat kapanmış — taslak oluşturulamaz.",
+    "Yeterli kanıt/gerekçe yok — taslak oluşturulamaz.",
+    "Outreach taslağı için Founder kararı gerekiyor.",
+    "Bu mission için pipeline zaten başlatıldı.",
+    "Yanıt/takip zamanı bekleniyor — pipeline henüz başlatılamaz.",
+  ];
+  for (const reason of knownReasons) {
+    const label = founderApprovalBlockerLabel(reason);
+    assert.notEqual(label, reason, `"${reason}" must be translated, not echoed verbatim`);
+    assert.equal(findForbiddenFounderTerm(label), null, `"${reason}" -> "${label}"`);
+    assert.notEqual(label.trim(), "");
+  }
+});
+
+test("founderApprovalBlockerLabel falls back to the generic blocker for any unmapped/unexpected reason — never a raw internal string", () => {
+  assert.equal(
+    founderApprovalBlockerLabel("Bu görev dış temas içeriyor — A5'te bağlanacak."),
+    FOUNDER_PREPARATION_BRIDGE_LABELS.genericBlocker,
+  );
+  assert.equal(
+    founderApprovalBlockerLabel("some unexpected internal error: NullPointerException"),
+    FOUNDER_PREPARATION_BRIDGE_LABELS.genericBlocker,
+  );
+  assert.equal(founderApprovalBlockerLabel(""), FOUNDER_PREPARATION_BRIDGE_LABELS.genericBlocker);
 });

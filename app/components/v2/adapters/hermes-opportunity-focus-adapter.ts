@@ -5,6 +5,12 @@ import {
   type MissionLike,
 } from "./founder-revenue-workspace-adapter.ts";
 import type { HermesDecisionItem } from "./hermes-decision-queue-adapter.ts";
+import {
+  explainOpportunity,
+  ACQUISITION_REASON_SENTENCES,
+  firstSeenAt,
+  type ExplainableLeadLike,
+} from "./hermes-acquisition-explainability-adapter.ts";
 import { DELIVERY_STATUS_LABELS_TR } from "../../../lib/whatsapp-delivery-receipt-runtime.ts";
 import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
 import type { StoredWhatsAppReply } from "../../../lib/whatsapp-reply-registry.ts";
@@ -546,5 +552,67 @@ export function computeHermesOpportunityFocus(input: ComputeHermesOpportunityFoc
     outreachLanguageLabel: outreach.languageLabel,
     outreachPersonalizationSummary: outreach.personalizationSummary,
     outreachFounderAction: outreach.founderAction,
+  };
+}
+
+/* ── fresh, mission-less opportunity (Working Queue + Deal Workspace bridge fix) ── */
+
+/** Structural subset a fresh acquisition lead already satisfies — same convention as `WorkingQueueLeadLike`. */
+export type FreshOpportunityLeadLike = ExplainableLeadLike & { id: string; city: string };
+
+const FRESH_OPPORTUNITY_STATE_LABEL = "Yeni Fırsat";
+const FRESH_OPPORTUNITY_WHY = "Uygunluk değerlendirildi.";
+const FRESH_OPPORTUNITY_NEXT_ACTION = "Sonraki adım: Hermes qualification/outreach hazırlığını sürdürecek.";
+const FRESH_OPPORTUNITY_CONTACT_PENDING = "İletişim doğrulaması bekleniyor";
+const FRESH_OPPORTUNITY_CONTACT_VERIFIED = "İletişim kanalı doğrulandı";
+const FRESH_OPPORTUNITY_SCORE_FALLBACK = "Fırsat puanı değerlendiriliyor";
+const FRESH_OPPORTUNITY_DISCOVERED_LABEL = "Fırsat keşfedildi";
+
+/**
+ * A fresh, real acquisition opportunity that has not yet formed a Hermes
+ * mission (no `ShadowTask` was generated for it — see
+ * `hermes-monitor/decision-engine.ts`'s dormant-lead SKIP rule). Every field
+ * reads only from the lead itself plus the existing acquisition
+ * explainability read (`explainOpportunity`, already used by "Hermes Bugün
+ * Bunları Buldu") — no mission, no draft, no pipeline is invented, and
+ * nothing here claims a founder decision is pending when none exists.
+ */
+export function computeHermesOpportunityFocusForFreshLead(lead: FreshOpportunityLeadLike): HermesOpportunityFocus {
+  const explanation = explainOpportunity(lead);
+  const hasVerifiedContact = explanation.reasons.includes(ACQUISITION_REASON_SENTENCES.whatsappActive);
+  const discoveredAt = firstSeenAt(lead);
+
+  return {
+    id: `opportunity-focus:fresh:${lead.id}`,
+    missionId: null,
+    leadId: lead.id,
+    title: lead.name,
+    subtitle: lead.city,
+    currentStateLabel: FRESH_OPPORTUNITY_STATE_LABEL,
+    revenueSignalLabel: explanation.scoreLabel ?? FRESH_OPPORTUNITY_SCORE_FALLBACK,
+    urgency: "none",
+    whyThisMatters: FRESH_OPPORTUNITY_WHY,
+    hermesRecommendation: [explanation.status, ...explanation.reasons.slice(0, 2)].filter(Boolean).join(" "),
+    founderNextAction: FRESH_OPPORTUNITY_NEXT_ACTION,
+    primaryActionLabel: null,
+    secondaryActionLabel: null,
+    whatsappStatusLabel: hasVerifiedContact ? FRESH_OPPORTUNITY_CONTACT_VERIFIED : FRESH_OPPORTUNITY_CONTACT_PENDING,
+    replyIntentLabel: null,
+    demoStatusLabel: null,
+    followUpStatusLabel: null,
+    outcomeStatusLabel: null,
+    estimatedMrrLabel: null,
+    timeline:
+      discoveredAt !== null ? [{ label: FRESH_OPPORTUNITY_DISCOVERED_LABEL, occurredAt: discoveredAt, tone: "info" }] : [],
+    emptyState: null,
+    salesReadinessLabel: null,
+    salesReadinessSummary: null,
+    draftEligibilityLabel: null,
+    outreachStatusLabel: null,
+    outreachChannelLabel: null,
+    outreachTemplateLabel: null,
+    outreachLanguageLabel: null,
+    outreachPersonalizationSummary: null,
+    outreachFounderAction: null,
   };
 }

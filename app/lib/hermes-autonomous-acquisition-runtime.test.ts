@@ -565,6 +565,118 @@ test("retry qualification veya mission'ı duplicate etmez", async () => {
   assert.equal(getRecentQualificationResults(10, NOW + 25 * 60 * 60 * 1000).length, 1);
 });
 
+/* ── Refresh Persistence Recovery fix — candidateLeads in the run response ── */
+
+test("candidateLeads: safe run returns the exact leads registered as candidates, same IDs", async () => {
+  const leads = [
+    lead({ id: "gmaps-1", name: "Otel A", phone: "+90 532 100 00 01", website: "a.com", verifiedOpportunityScore: 90 }),
+    lead({ id: "gmaps-2", name: "Otel B", phone: "+90 532 100 00 02", website: "b.com", verifiedOpportunityScore: 80 }),
+  ];
+  const { adapter } = trackingAdapter(leads);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ minVerifiedOpportunityScore: 70 }),
+    importAdapter: adapter,
+    now: NOW,
+  });
+
+  const registered = getPendingAcquisitionCandidates(NOW).flatMap((b) => b.leads.map((l) => l.id));
+  assert.deepEqual(
+    result.candidateLeads.map((l) => l.id),
+    registered,
+  );
+  assert.deepEqual(
+    result.candidateLeads.map((l) => l.id),
+    ["gmaps-1", "gmaps-2"],
+  );
+});
+
+test("candidateLeads: empty for a dry run — zero mutation means zero candidates", async () => {
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "developer",
+    config: config({ dryRun: true }),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.deepEqual(result.candidateLeads, []);
+});
+
+test("candidateLeads: empty for a blocked run", async () => {
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "scheduled",
+    config: {
+      policy: DEFAULT_ACQUISITION_POLICY,
+      regions: [region()],
+      configErrors: [],
+    },
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.equal(result.status, "blocked");
+  assert.deepEqual(result.candidateLeads, []);
+});
+
+test("candidateLeads: empty when nothing qualifies", async () => {
+  const { adapter } = trackingAdapter([lead({ id: "gmaps-1", verifiedOpportunityScore: 10 })]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config(),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.deepEqual(result.candidateLeads, []);
+});
+
+test("candidateLeads: respects the mission candidate cap, matches missionCandidateCount", async () => {
+  const leads = Array.from({ length: 5 }, (_, i) =>
+    lead({
+      id: `gmaps-${i}`,
+      name: `Otel ${i}`,
+      phone: `+90 532 100 10 0${i}`,
+      website: `otel${i}.com`,
+      verifiedOpportunityScore: 90,
+    }),
+  );
+  const { adapter } = trackingAdapter(leads);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxMissionCandidatesPerRun: 2 }),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.equal(result.candidateLeads.length, 2);
+  assert.equal(result.candidateLeads.length, result.missionCandidateCount);
+});
+
+test("candidateLeads: a mid-run crash still reports whatever was genuinely registered before it", async () => {
+  const okLead = lead({ id: "gmaps-ok", name: "Otel Önce", phone: "+90 532 400 00 01", website: "once.com", verifiedOpportunityScore: 90 });
+  const adapter: AcquisitionImportAdapter = async ({ region }) => {
+    if (region.city === "Antalya") return { ok: true, leads: [okLead], externalRequestCount: 2 };
+    throw new Error("boom mid-run");
+  };
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 2 }, [
+      region({ id: "r1", city: "Antalya" }),
+      region({ id: "r2", city: "Bodrum" }),
+    ]),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.equal(result.status, "failed");
+  assert.deepEqual(
+    result.candidateLeads.map((l) => l.id),
+    ["gmaps-ok"],
+  );
+  // The registry itself must agree — nothing fabricated in the response beyond what's real.
+  assert.deepEqual(
+    getPendingAcquisitionCandidates(NOW).flatMap((b) => b.leads.map((l) => l.id)),
+    ["gmaps-ok"],
+  );
+});
+
 test("run özeti sayaçları qualification aşamasını yansıtır (mission cap korunur)", async () => {
   const leads = Array.from({ length: 8 }, (_, i) =>
     lead({

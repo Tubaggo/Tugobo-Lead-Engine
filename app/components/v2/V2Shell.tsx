@@ -16,6 +16,7 @@ import {
   computeHermesHeaderStatus,
 } from "@/app/components/v2/adapters/hermes-daily-workspace-adapter";
 import type { AcquisitionStatusLike } from "@/app/components/v2/adapters/hermes-acquisition-founder-adapter";
+import type { RunAcquisitionResult } from "@/app/lib/hermes-autonomous-acquisition-runtime";
 import RevenueQueueScreen from "@/app/components/v2/screens/RevenueQueueScreen";
 import RevenueQueueContextPanel from "@/app/components/v2/screens/RevenueQueueContextPanel";
 import LeadListScreen from "@/app/components/v2/screens/LeadListScreen";
@@ -57,6 +58,16 @@ import { useDeveloperMode } from "@/app/components/v2/hooks/useDeveloperMode";
 import { useHermesMissionStateBridgePublisher } from "@/app/components/v2/hooks/useHermesMissionStateBridgePublisher";
 import { usePersistedMissionRecord } from "@/app/components/v2/hooks/usePersistedMissionRecord";
 import {
+  ACQUISITION_INGESTED_RUNS_KEY,
+  parseIngestedRunIds,
+  serializeIngestedRunIds,
+  addIngestedRunId,
+} from "@/app/components/v2/hooks/acquisition-ingested-runs-storage";
+import {
+  LAST_SELECTED_MISSION_STORAGE_KEY,
+  parseLastSelectedMissionId,
+} from "@/app/components/v2/hooks/last-selected-mission-storage";
+import {
   buildExecutionContexts,
   projectExecutionQueue,
   buildFounderCoachInsights,
@@ -64,7 +75,7 @@ import {
 import { buildHermesMonitor } from "@/app/lib/hermes-monitor";
 import { buildHermesMissions, missionBucketOf } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
-import { canQueuePipeline, runHermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
+import { canQueuePipeline, runHermesPipeline, decideMissionPreparationRoute } from "@/app/components/v2/hermes-pipeline-engine";
 import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
 import {
   canCreateDraft,
@@ -74,6 +85,7 @@ import {
   applyDraftRejection,
 } from "@/app/components/v2/hermes-courier";
 import type { HermesOutboundDraft } from "@/app/components/v2/hermes-courier";
+import { founderApprovalBlockerLabel } from "@/app/components/v2/founder-language";
 import { canDeliver, startDeliveryGateway } from "@/app/components/v2/hermes-delivery-gateway";
 import type { HermesDeliveryRequest } from "@/app/components/v2/hermes-delivery-gateway";
 import { PROVIDER_CONNECTORS, canProviderSend, runShadowSend } from "@/app/components/v2/hermes-provider-connectors";
@@ -127,8 +139,34 @@ import type { AnalyticsCard } from "@/app/components/v2/adapters/revenue-analyti
  * Sprint C1 — which acquisition runs' candidate batches were already merged
  * into the local pool. A pure replay guard: even without it, the import
  * merge dedupe would skip every re-ingested lead.
+ *
+ * Refresh Persistence Recovery fix — this guard is now shared by two
+ * ingestion paths (the immediate one right after a founder-triggered run,
+ * and the pre-existing `/status`-poll effect that recovers scheduled/cron
+ * runs a client wasn't open for). Both read/write it through the same two
+ * helpers below (parsing/capping delegated to the pure, node-testable
+ * `acquisition-ingested-runs-storage.ts`) so neither path can diverge from
+ * the other's bookkeeping.
  */
-const ACQUISITION_INGESTED_RUNS_KEY = "tugobo-lead-engine:acquisition-ingested-runs-v1";
+function readIngestedAcquisitionRunIds(): Set<string> {
+  try {
+    return new Set(parseIngestedRunIds(window.localStorage.getItem(ACQUISITION_INGESTED_RUNS_KEY)));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Only ever called after a batch has been genuinely, successfully persisted — never on a failed or empty ingest. */
+function markAcquisitionRunIngested(runId: string, already: Set<string>): void {
+  try {
+    window.localStorage.setItem(
+      ACQUISITION_INGESTED_RUNS_KEY,
+      serializeIngestedRunIds(addIngestedRunId(Array.from(already), runId)),
+    );
+  } catch {
+    // Guard persistence is best-effort — the merge dedupe still protects against duplicates either way.
+  }
+}
 
 /** Sanitized `/api/hermes/acquisition/status` payload — the founder subset plus candidate/run extras. */
 type AcquisitionStatusPayload = AcquisitionStatusLike & {
@@ -281,11 +319,26 @@ export default function V2Shell({ scoredLeads }: Props) {
   // `useDeveloperMode`/`useV2PanelState` already use) — no second source of
   // truth, no new mission/event system, just making the one existing source
   // durable across a reload of the same browser.
-  const [selectedHermesMission, setSelectedHermesMission] = useState<HermesMission | null>(null);
+  // Opportunity Workspace Resume fix — the stable identifier is now the
+  // source of truth (persisted below); the mission OBJECT is derived from
+  // it once `hermesMissions` exists (see the `useMemo` after that
+  // declaration). This also makes `selectedHermesMission` always reflect
+  // the freshest recomputed mission fields instead of the object reference
+  // captured at selection time.
+  const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [hermesDecisions, setHermesDecisions] = usePersistedMissionRecord<{
     status: "approved" | "rejected";
     at: number;
   }>("tugobo-lead-engine:hermes-decisions-v1");
+
+  // Founder Preparation-to-Draft Runtime Bridge fix — session-only (never
+  // persisted) reason shown under "Onayla — Hermes'i Başlat" when the last
+  // attempt's preflight guard rejected it. This is never a fact about the
+  // mission itself (that stays in hermesDecisions/hermesPipelines/
+  // hermesDrafts) — only about the founder's last click — so it correctly
+  // resets on reload instead of surviving as stale state.
+  const [missionApprovalBlockers, setMissionApprovalBlockers] = useState<Record<string, string>>({});
+
   const approveHermesTask = useCallback(
     (taskId: string) =>
       setHermesDecisions((p) => ({ ...p, [taskId]: { status: "approved", at: Date.now() } })),
@@ -361,16 +414,90 @@ export default function V2Shell({ scoredLeads }: Props) {
   const [followUpMutVersion, setFollowUpMutVersion] = useState(0);
   const onFollowUpMutation = useCallback(() => setFollowUpMutVersion((v) => v + 1), []);
 
-  // v8.6 — one signal for both header actions ("Hermes'i Çalıştır" while
-  // idle, "Durumu Yenile" always): each bump re-runs FounderRevenueWorkspace's
-  // existing seven read-only fetches. No new runtime, no new API — the same
-  // pass the workspace's own "Tekrar Dene" already triggers.
+  // v8.6 — one signal for the "Durumu Yenile" action (always available) and
+  // as the post-acquisition-run trigger below: each bump re-runs
+  // FounderRevenueWorkspace's existing seven read-only fetches. No new
+  // runtime, no new API — the same pass the workspace's own "Tekrar Dene"
+  // already triggers.
   const [hermesRefreshSignal, setHermesRefreshSignal] = useState(0);
   const bumpHermesRefresh = useCallback(() => setHermesRefreshSignal((s) => s + 1), []);
+
+  // Working Queue + Deal Workspace fix — "Hermes'i Çalıştır" used to only
+  // call bumpHermesRefresh (a read-only re-fetch of already-computed server
+  // state). It never actually triggered a new acquisition pass, so nothing
+  // new ever appeared no matter how many times the founder pressed it. This
+  // is the smallest missing bridge: POST the exact existing, already-safe
+  // `/api/hermes/acquisition/run` route (same route the Developer Mode
+  // acquisition panel already calls) with `{trigger:"manual"}` — no new
+  // acquisition implementation, no new policy, no new safety gate. The
+  // route's own policy (disabled by default, dry-run by default, hard
+  // budget ceilings, GOOGLE_MAPS_API_KEY-gated) decides what actually
+  // happens; this only decides that a real attempt gets made when the
+  // founder asks for one. After the run settles, `bumpHermesRefresh()`
+  // re-runs the EXISTING `/api/hermes/acquisition/status` fetch below,
+  // which picks up any freshly-registered `pendingCandidates` through the
+  // EXISTING `ingestExternalLeads` merge effect — no second merge path.
+  const [acquisitionTriggerLoading, setAcquisitionTriggerLoading] = useState(false);
+  const [acquisitionRunResult, setAcquisitionRunResult] = useState<RunAcquisitionResult | null>(null);
+  // Refresh Persistence Recovery fix — founder-facing warning shown only
+  // when the immediate ingest below genuinely fails to persist (storage
+  // quota/private mode); cleared on the next successful ingest. Session-only
+  // by design, same convention as `missionApprovalBlockers` above.
+  const [acquisitionIngestWarning, setAcquisitionIngestWarning] = useState<string | null>(null);
 
   const leadImportState = useLeadImport();
   const allLeads = useV2LeadPool(scoredLeads, leadImportState.importedLeads);
   const { ingestExternalLeads } = leadImportState;
+
+  // Refresh Persistence Recovery fix — the acquisition run's own response
+  // now carries the exact candidate leads it just registered
+  // (`RunAcquisitionResult.candidateLeads`), so a founder-triggered run can
+  // persist them through the existing `ingestExternalLeads` path in the same
+  // action, instead of only via the separate `/status`-poll effect below
+  // (which remains, unchanged, as the recovery path for scheduled/cron runs
+  // no client was open for). Both paths share the same
+  // `ACQUISITION_INGESTED_RUNS_KEY` dedupe guard, so neither can double-ingest
+  // the other's work.
+  const runHermesAcquisitionNow = useCallback(async () => {
+    setAcquisitionTriggerLoading(true);
+    try {
+      const res = await fetch("/api/hermes/acquisition/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ trigger: "manual" }),
+      });
+      const data = (await res.json()) as RunAcquisitionResult | { error: string };
+      const result = res.ok && "status" in data ? data : null;
+      setAcquisitionRunResult(result);
+
+      const candidateLeads = result && Array.isArray(result.candidateLeads) ? result.candidateLeads : [];
+      if (result?.runId && candidateLeads.length > 0) {
+        const already = readIngestedAcquisitionRunIds();
+        if (!already.has(result.runId)) {
+          const ingestResult = ingestExternalLeads(candidateLeads as unknown as ScoredLead[], {
+            label: "Hermes Otonom Tarama",
+          });
+          if (ingestResult.persisted) {
+            markAcquisitionRunIngested(result.runId, already);
+            setAcquisitionIngestWarning(null);
+          } else {
+            // Not marked ingested — the existing status-poll effect below
+            // will retry this exact batch on the next refresh signal.
+            setAcquisitionIngestWarning(
+              "Hermes yeni bulunan işletmeleri bu tarayıcıda kalıcı olarak kaydedemedi. Sayfayı yenilemeden önce tekrar dener misin?",
+            );
+          }
+        }
+      }
+    } catch {
+      // Unreachable route is a non-event — the founder view falls back to
+      // its own truthful "no result yet" state, never a raw error.
+      setAcquisitionRunResult(null);
+    } finally {
+      setAcquisitionTriggerLoading(false);
+      bumpHermesRefresh();
+    }
+  }, [bumpHermesRefresh, ingestExternalLeads]);
 
   // Sprint C1 — Hermes Autonomous Acquisition: one read-only status fetch on
   // mount and on every header refresh bump. The server does the scanning on
@@ -407,42 +534,39 @@ export default function V2Shell({ scoredLeads }: Props) {
     };
   }, [hermesRefreshSignal]);
 
-  // Candidate pickup: every pending batch is merged through the EXISTING
-  // import dedupe path (`ingestExternalLeads` → `mergeImportBatch`) exactly
-  // once per run id — the localStorage guard makes refresh cycles no-ops,
-  // and the merge dedupe makes even a lost guard harmless. Missions then
-  // form via the existing monitor and still require founder approval.
+  // Candidate pickup (recovery path): every pending batch is merged through
+  // the EXISTING import dedupe path (`ingestExternalLeads` →
+  // `mergeImportBatch`) exactly once per run id. This is the safety net for
+  // acquisition runs no client was open to immediately ingest (scheduled/cron
+  // triggers, or a founder-triggered run whose immediate ingest above failed
+  // to persist) — `runHermesAcquisitionNow` already covers the common case in
+  // the same action, so most runs are marked ingested before this effect ever
+  // sees them. Shares the exact same guard read/write helpers as that path so
+  // the two can never disagree about what's already durable.
   useEffect(() => {
     const batches = acquisitionStatus?.pendingCandidates;
     if (!batches || batches.length === 0) return;
 
-    let ingestedRunIds: string[] = [];
-    try {
-      const raw = window.localStorage.getItem(ACQUISITION_INGESTED_RUNS_KEY);
-      const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-      ingestedRunIds = Array.isArray(parsed) ? (parsed as string[]) : [];
-    } catch {
-      ingestedRunIds = [];
-    }
-    const ingestedSet = new Set(ingestedRunIds);
+    const ingestedSet = readIngestedAcquisitionRunIds();
+    let anyFailed = false;
 
-    let changed = false;
     for (const batch of batches) {
       if (ingestedSet.has(batch.runId)) continue;
-      ingestExternalLeads(batch.leads, { label: "Hermes Otonom Tarama" });
-      ingestedSet.add(batch.runId);
-      changed = true;
+      const result = ingestExternalLeads(batch.leads, { label: "Hermes Otonom Tarama" });
+      if (result.persisted) {
+        markAcquisitionRunIngested(batch.runId, ingestedSet);
+        ingestedSet.add(batch.runId);
+      } else {
+        // Left unmarked on purpose — the next status refresh retries this
+        // exact batch instead of silently losing it.
+        anyFailed = true;
+      }
     }
 
-    if (changed) {
-      try {
-        window.localStorage.setItem(
-          ACQUISITION_INGESTED_RUNS_KEY,
-          JSON.stringify(Array.from(ingestedSet).slice(-50)),
-        );
-      } catch {
-        // Guard persistence is best-effort — the merge dedupe still protects.
-      }
+    if (anyFailed) {
+      setAcquisitionIngestWarning(
+        "Hermes yeni bulunan işletmeleri bu tarayıcıda kalıcı olarak kaydedemedi. Sayfayı yenilemeden önce tekrar dener misin?",
+      );
     }
   }, [acquisitionStatus, ingestExternalLeads]);
 
@@ -504,6 +628,71 @@ export default function V2Shell({ scoredLeads }: Props) {
     () => buildHermesMissions(hermesMonitor, hermesDecisions),
     [hermesMonitor, hermesDecisions],
   );
+
+  // Opportunity Workspace Resume fix — always re-derived from the current
+  // `hermesMissions` array, never a stale captured object. `null` whenever
+  // `selectedMissionId` is `null` or no longer resolves (lead/mission gone).
+  const selectedHermesMission = useMemo(
+    () => hermesMissions.find((m) => m.missionId === selectedMissionId) ?? null,
+    [hermesMissions, selectedMissionId],
+  );
+
+  // Opportunity Workspace Resume fix — mirrors only the stable mission id
+  // string to localStorage, the same minimal-persistence convention every
+  // other Hermes record here already follows (`usePersistedMissionRecord`),
+  // just simpler (a single string, not a Record). Never the mission object,
+  // never the workspace mode, never a draft — those all stay correctly
+  // re-derived from real runtime state every render.
+  const persistLastSelectedMissionId = useCallback((missionId: string | null) => {
+    try {
+      if (missionId) {
+        window.localStorage.setItem(LAST_SELECTED_MISSION_STORAGE_KEY, missionId);
+      } else {
+        window.localStorage.removeItem(LAST_SELECTED_MISSION_STORAGE_KEY);
+      }
+    } catch {
+      // Best-effort — matches every other Hermes persisted record's convention.
+    }
+  }, []);
+
+  // Resume hydration, step 1 — read the persisted id once on mount (same
+  // "safe default at first paint, real value applied in a mount effect"
+  // convention `useDeveloperMode`/`usePersistedMissionRecord` already use;
+  // `window` is never touched during the initial render, so there is no
+  // SSR/hydration-mismatch risk). `null` here covers both "nothing was ever
+  // selected" (state E) and "storage unavailable/corrupted" — both are
+  // already the correct default (Home).
+  const [pendingRestoreMissionId, setPendingRestoreMissionId] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      setPendingRestoreMissionId(parseLastSelectedMissionId(window.localStorage.getItem(LAST_SELECTED_MISSION_STORAGE_KEY)));
+    } catch {
+      setPendingRestoreMissionId(null);
+    }
+  }, []);
+
+  // Resume hydration, step 2 — resolves the candidate id against the real
+  // `hermesMissions` array (state B → C/D). Fires again whenever
+  // `hermesMissions` changes, so a candidate read before the lead pool
+  // finished hydrating (e.g. an acquired lead not yet merged in) is not
+  // judged prematurely — it only resolves once, the first time this effect
+  // runs with a non-null `pendingRestoreMissionId`, then clears the pending
+  // flag so it never re-evaluates (terminates in a bounded number of
+  // renders, never waits forever). A confirmed match (state C) selects it
+  // through the exact same state this screen's own selection handlers use;
+  // no match (state D) clears the persisted key — never a fabricated
+  // Workspace, never a stale one.
+  useEffect(() => {
+    if (!pendingRestoreMissionId) return;
+    const match = hermesMissions.find((m) => m.missionId === pendingRestoreMissionId);
+    if (match) {
+      setSelectedMissionId(match.missionId);
+      setSelectedAutomationCard(null);
+    } else {
+      persistLastSelectedMissionId(null);
+    }
+    setPendingRestoreMissionId(null);
+  }, [pendingRestoreMissionId, hermesMissions, persistLastSelectedMissionId]);
 
   // v8.0/v8.6 — the single "pending founder decisions" number. The sidebar
   // badge and the header's "Bekleyen Karar" both read this value — never two
@@ -873,18 +1062,52 @@ export default function V2Shell({ scoredLeads }: Props) {
   );
 
   // "Approval becomes execution trigger" (A5): approving a gated mission
-  // both records the founder's decision and starts its pipeline in the same
-  // click — no separate "Hermes Çalıştır" step remains for those missions.
-  // The mission passed to startHermesPipeline is a shallow clone with
-  // decisionState overridden to "approved", since the snapshot from this
-  // render still reads "pending" and hermesMissions won't recompute until
-  // the next render.
+  // both records the founder's decision and starts its pipeline/draft prep
+  // in the same click — no separate step remains for those missions.
+  // Founder Preparation-to-Draft Runtime Bridge fix — `decideMissionPreparationRoute`
+  // (hermes-pipeline-engine.ts) is the single, pure, unit-tested decision of
+  // what this click should do; this callback only acts on its answer. The
+  // guard is now checked BEFORE the founder's approval is persisted, so a
+  // rejected guard never leaves a mission silently stuck "approved" with
+  // nothing running and no visible next step (Part 1 discovery:
+  // `outreach-draft` missions hit exactly this before). "unsupported" (every
+  // task type other than the four internal-action ones and
+  // "outreach-draft") keeps its exact prior behavior — out of this sprint's
+  // scope.
   const approveAndStartPipeline = useCallback(
     (mission: HermesMission) => {
+      const card = automationCardsByLeadId.get(mission.leadId);
+      const route = decideMissionPreparationRoute(mission, card, hermesPipelines[mission.missionId]);
+
+      if (route.kind === "blocked") {
+        setMissionApprovalBlockers((prev) => ({
+          ...prev,
+          [mission.missionId]: founderApprovalBlockerLabel(route.reason),
+        }));
+        return;
+      }
+
+      setMissionApprovalBlockers((prev) => {
+        if (!(mission.missionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[mission.missionId];
+        return next;
+      });
+
+      const candidate: HermesMission = { ...mission, decisionState: "approved" };
       approveHermesTask(mission.primaryTaskId);
-      void startHermesPipeline({ ...mission, decisionState: "approved" });
+
+      if (route.kind === "draft") {
+        if (!card) return; // unreachable — "draft" is only ever returned once a card was confirmed present
+        maybeCreateDraftForMission(candidate, card);
+        return;
+      }
+      // "pipeline" or "unsupported" — both run the exact same unchanged call;
+      // for "unsupported" this is legacy behavior (its own internal guard
+      // will reject it again, exactly as before this fix).
+      void startHermesPipeline(candidate);
     },
-    [approveHermesTask, startHermesPipeline],
+    [automationCardsByLeadId, hermesPipelines, approveHermesTask, startHermesPipeline, maybeCreateDraftForMission],
   );
 
   // followUpMergedLeads is computed separately so it can react to local mutations immediately.
@@ -970,14 +1193,25 @@ export default function V2Shell({ scoredLeads }: Props) {
 
   // The context panel shows either a Hermes Mission Decision Center or a
   // lead detail — never both. Selecting one side clears the other.
-  const handleSelectHermesMission = useCallback((mission: HermesMission) => {
-    setSelectedHermesMission(mission);
-    setSelectedAutomationCard(null);
-  }, []);
-  const handleSelectAutomationCard = useCallback((card: AutomationCard) => {
-    setSelectedAutomationCard(card);
-    setSelectedHermesMission(null);
-  }, []);
+  // Working Queue + Deal Workspace fix — widened to accept `null` so the
+  // Deal Workspace's "← Çalışma Listesine Dön" button can deselect back to
+  // the Working Queue through the exact same setter, no new state.
+  const handleSelectHermesMission = useCallback(
+    (mission: HermesMission | null) => {
+      setSelectedMissionId(mission?.missionId ?? null);
+      setSelectedAutomationCard(null);
+      persistLastSelectedMissionId(mission?.missionId ?? null);
+    },
+    [persistLastSelectedMissionId],
+  );
+  const handleSelectAutomationCard = useCallback(
+    (card: AutomationCard) => {
+      setSelectedAutomationCard(card);
+      setSelectedMissionId(null);
+      persistLastSelectedMissionId(null);
+    },
+    [persistLastSelectedMissionId],
+  );
 
   function handleNavigate(screen: V2Screen) {
     setActiveScreen(screen);
@@ -993,7 +1227,7 @@ export default function V2Shell({ scoredLeads }: Props) {
     setSelectedCommandCard(null);
     setSelectedAnalyticsCard(null);
     setSelectedAutomationCard(null);
-    setSelectedHermesMission(null);
+    setSelectedMissionId(null);
   }
 
   // Used by the Founder Command Center's "Kişiyi Doğrula" / "AI Yeniden
@@ -1059,7 +1293,7 @@ export default function V2Shell({ scoredLeads }: Props) {
     // Sprint C1 — the header merges autonomous acquisition state: a
     // server-side run shows "Çalışıyor", the newest completed scan feeds
     // "Son Tarama", and a broken config shows "Kontrol Gerekli".
-    acquisitionRunning: acquisitionStatus?.running === true,
+    acquisitionRunning: acquisitionStatus?.running === true || acquisitionTriggerLoading,
     acquisitionLastScanAt: acquisitionStatus?.lastScanAt ?? null,
     acquisitionNeedsAttention: acquisitionStatus ? !acquisitionStatus.configOk : false,
   });
@@ -1092,7 +1326,7 @@ export default function V2Shell({ scoredLeads }: Props) {
             isHermes
               ? {
                   status: hermesHeaderStatus,
-                  onRunHermes: bumpHermesRefresh,
+                  onRunHermes: runHermesAcquisitionNow,
                   onRefreshStatus: bumpHermesRefresh,
                   developerMode,
                   onToggleDeveloperMode: toggleDeveloperMode,
@@ -1302,7 +1536,19 @@ export default function V2Shell({ scoredLeads }: Props) {
                 acquisition={acquisitionForFounder}
                 acquisitionFetchState={acquisitionFetchState}
                 onRetryAcquisition={bumpHermesRefresh}
+                acquisitionRunResult={acquisitionRunResult}
+                acquisitionTriggerLoading={acquisitionTriggerLoading}
+                acquisitionIngestWarning={acquisitionIngestWarning}
+                onEditDraft={editHermesDraft}
+                hermesApprovalBlockers={missionApprovalBlockers}
               />
+              {/* Right Panel Decision (Founder Working Queue + Deal Workspace v1.0) —
+                  Founder Mode no longer has a right operating panel: every founder-critical
+                  section it used to show (mission overview/progress, execution, message
+                  approval, delivery status) now lives in the full-width Deal Workspace inside
+                  AutomationCenterScreen → FounderRevenueWorkspace. Developer Mode keeps this
+                  panel exactly as before — its own technical sections were never touched. */}
+              {developerMode && (
               <AutomationCenterContextPanel
                 developerMode={developerMode}
                 selectedCard={selectedAutomationCard}
@@ -1472,6 +1718,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                   selectedHermesMission && attemptControlledLiveSendForMission(selectedHermesMission.missionId)
                 }
               />
+              )}
             </>
           ) : (
             <>

@@ -144,6 +144,14 @@ export const FOUNDER_HOME_LABELS = {
   leadIntakeSection: "Hermes Fırsat Keşfi",
   activeJobsTile: "Aktif İş",
   outcomePendingTile: "Sonuç Bekliyor",
+  /**
+   * Working Queue + Deal Workspace interaction fix — the queue's own
+   * primary action for an item whose real decision requires mutation
+   * (approve/reject a prepared message). The queue only ever opens the
+   * opportunity; the actual "Onayla"/"Reddet" buttons live inside Deal
+   * Workspace's "Bugünkü Tek Karar" section.
+   */
+  openOpportunityAction: "Fırsatı Aç",
 } as const;
 
 /**
@@ -187,3 +195,45 @@ export const FOUNDER_HOME_EMPTY_STATE_LABELS = {
   revenuePulse: "Henüz satış sonucu kaydedilmedi.",
   activity: "Hermes aktivitesi başladığında önemli gelişmeler burada görünecek.",
 } as const;
+
+/**
+ * Founder Preparation-to-Draft Runtime Bridge fix (Part 2).
+ *
+ * `hermes-decision-queue-adapter.ts`'in "approval_required" için ürettiği
+ * sabit cümle ("Hazırlanan mesaj gözden geçirilip onaylanmayı bekliyor.")
+ * yalnızca gerçek bir taslak zaten varken doğrudur; ama aynı cümle, mission
+ * henüz "approval" aşamasındayken ve hiçbir taslak yokken de gösteriliyordu
+ * (Deal Workspace'in "Hermes Brifingi" bölümü, `opportunityFocus.hermesRecommendation`
+ * üzerinden). `preDraftRecommendation` bu iki durumu ayırmak için Deal
+ * Workspace içinde (`showMissionApproval` doğruyken) o cümlenin yerine
+ * kullanılır — decision-queue-adapter'ın kendi verisi değiştirilmez, gerçek
+ * bir taslak zaten var olan hiçbir karar öğesi etkilenmez.
+ */
+export const FOUNDER_PREPARATION_BRIDGE_LABELS = {
+  preDraftRecommendation: "Onayından sonra Hermes bu fırsat için mesaj taslağını hazırlayacak.",
+  genericBlocker: "Hazırlık şu anda başlatılamadı.",
+} as const;
+
+/**
+ * Ham guard nedenleri (`canCreateDraft`/`canQueuePipeline`) → tek, dürüst,
+ * teknik olmayan founder cümlesi. Eşlenmeyen bir neden asla ham haliyle
+ * gösterilmez — `genericBlocker`'a düşer. Anahtarlar (guard'ın kendi iç
+ * metni) teknik kalabilir; yalnızca değerler founder'a gösterilir ve
+ * `findForbiddenFounderTerm` ile denetlenir.
+ */
+const APPROVAL_BLOCKER_LABELS: Record<string, string> = {
+  "Lead bulunamadı — taslak oluşturulamaz.": "Bu fırsat için gerekli bilgiler bulunamadı.",
+  "Lead bulunamadı.": "Bu fırsat için gerekli bilgiler bulunamadı.",
+  "İletişim yasağı (DNC) aktif — taslak oluşturulamaz.": "Bu işletme iletişime kapalı.",
+  "İletişim yasağı (DNC) aktif — pipeline başlatılamaz.": "Bu işletme iletişime kapalı.",
+  "Fırsat kapanmış — taslak oluşturulamaz.": "Bu fırsat zaten kapanmış.",
+  "Yeterli kanıt/gerekçe yok — taslak oluşturulamaz.": "Bu fırsat için yeterli satış sinyali bulunamadı.",
+  "Outreach taslağı için Founder kararı gerekiyor.": "Bu fırsat için önce daha yakından inceleme gerekiyor.",
+  "Bu mission için pipeline zaten başlatıldı.": "Bu fırsat için hazırlık zaten başladı.",
+  "Yanıt/takip zamanı bekleniyor — pipeline henüz başlatılamaz.": "Şu anda takip zamanı bekleniyor.",
+};
+
+/** Bilinen bir guard nedenini founder-safe Türkçeye çevirir; eşlenmeyen her şey ham haliyle değil, genel ama dürüst bir cümleye düşer. */
+export function founderApprovalBlockerLabel(reason: string): string {
+  return APPROVAL_BLOCKER_LABELS[reason] ?? FOUNDER_PREPARATION_BRIDGE_LABELS.genericBlocker;
+}

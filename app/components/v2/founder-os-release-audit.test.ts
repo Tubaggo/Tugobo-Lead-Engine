@@ -9,6 +9,7 @@ import { HERMES_CONVERSATION_FOUNDER_LABELS } from "./adapters/hermes-conversati
 import { HERMES_FOLLOW_UP_PLAN_LABELS } from "./adapters/hermes-follow-up-plan-founder-adapter.ts";
 import { HERMES_REVENUE_PIPELINE_LABELS, formatMrrLabel } from "./adapters/hermes-revenue-pipeline-founder-adapter.ts";
 import { HERMES_ACQUISITION_EXPLAINABILITY_LABELS } from "./adapters/hermes-acquisition-explainability-adapter.ts";
+import { computeHermesOpportunityFocusForFreshLead } from "./adapters/hermes-opportunity-focus-adapter.ts";
 
 /* ── Sprint C7 — Founder Operating System v1.0 Release Audit ──
    Feature freeze. These tests are the production gate: while Developer Mode is
@@ -57,11 +58,16 @@ test("C7 audit: acquisition explainability labels are founder-safe", () => {
 /* ── Canonical daily workflow section titles ──────────────────── */
 
 test("C7 audit: the canonical six-section daily flow titles are founder-safe Turkish", () => {
-  // Karar Merkezi + Fırsat Odağı are literal titles in the workspace; the rest
-  // come from adapter label maps. This documents the canonical Founder OS flow.
+  // Founder Working Queue + Deal Workspace v1.0 — "Karar Merkezi" (single-touch
+  // decisions only) became "Bugünkü Çalışma Listesi" (decisions + today's fresh
+  // opportunities, same slot); "Fırsat Odağı" (a compact per-mission card) became
+  // "Fırsat Alanı", the label shown when no mission is selected — once selected,
+  // the full-width Deal Workspace renders instead (Deal Header, not this label).
+  // Both are still literal titles in the workspace; the rest come from adapter
+  // label maps. This documents the canonical Founder OS flow.
   const canonicalTitles = [
-    "Karar Merkezi",
-    "Fırsat Odağı",
+    "Bugünkü Çalışma Listesi",
+    "Fırsat Alanı",
     HERMES_REVENUE_PIPELINE_LABELS.sectionTitle, // Gelir Nabzı
     HERMES_FOLLOW_UP_PLAN_LABELS.sectionTitle, // Hermes Takip Planı
     HERMES_ACQUISITION_EXPLAINABILITY_LABELS.sectionTitle, // Hermes Bugün Bunları Buldu
@@ -72,6 +78,33 @@ test("C7 audit: the canonical six-section daily flow titles are founder-safe Tur
     assert.equal(findForbiddenFounderTerm(title), null, title);
     assert.notEqual(title.trim(), "");
   }
+});
+
+/* ── Fresh Opportunity Workspace Bridge fix — mission-less opportunity copy ── */
+
+test("C7 audit: a fresh, mission-less opportunity's Deal Workspace copy is founder-safe and never overstates a pending decision", () => {
+  const focus = computeHermesOpportunityFocusForFreshLead({
+    id: "lead-audit-1",
+    name: "Audit Test Otel",
+    city: "Mersin",
+    phone: "+90 555 000 0000",
+    verifiedOpportunityScore: 80,
+  });
+  for (const value of [
+    focus.currentStateLabel,
+    focus.whyThisMatters,
+    focus.hermesRecommendation,
+    focus.founderNextAction,
+    focus.revenueSignalLabel,
+    focus.whatsappStatusLabel ?? "",
+  ]) {
+    assert.equal(findForbiddenFounderTerm(value), null, value);
+    assert.notEqual(value.trim(), "");
+  }
+  // Never claims a founder decision, message, or channel state that doesn't exist yet.
+  assert.equal(focus.primaryActionLabel, null);
+  assert.equal(focus.salesReadinessLabel, null);
+  assert.equal(focus.outreachStatusLabel, null);
 });
 
 /* ── Developer Mode gating (Scope 8) ──────────────────────────── */

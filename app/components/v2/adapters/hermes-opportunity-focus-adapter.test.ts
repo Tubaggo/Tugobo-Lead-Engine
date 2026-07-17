@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   computeHermesOpportunityFocus,
+  computeHermesOpportunityFocusForFreshLead,
   type ComputeHermesOpportunityFocusInput,
   type OpportunityFocusMissionLike,
+  type FreshOpportunityLeadLike,
 } from "./hermes-opportunity-focus-adapter.ts";
 import type { HermesDecisionItem } from "./hermes-decision-queue-adapter.ts";
 import type { ProcessedWhatsAppDeliveryReceipt } from "../../../lib/whatsapp-delivery-receipt-processor.ts";
@@ -527,4 +529,69 @@ test("sales_ready olmayan durumda taslak rozeti üretilmez", () => {
   });
   assert.equal(focus.salesReadinessLabel, "Daha Fazla Veri Gerekli");
   assert.equal(focus.draftEligibilityLabel, null);
+});
+
+/* ── computeHermesOpportunityFocusForFreshLead (Fresh Opportunity Workspace Bridge fix) ── */
+
+function buildFreshLead(overrides: Partial<FreshOpportunityLeadLike> = {}): FreshOpportunityLeadLike {
+  return {
+    id: "lead-fresh-1",
+    name: "Nook Hotel Mersin",
+    city: "Mersin",
+    phone: "+90 555 111 2233",
+    website: "nookhotelmersin.com",
+    firstImportedAt: Date.now(),
+    verifiedOpportunityScore: 82,
+    ...overrides,
+  };
+}
+
+test("a fresh lead with no mission still produces a full, honest opportunity focus", () => {
+  const focus = computeHermesOpportunityFocusForFreshLead(buildFreshLead());
+  assert.equal(focus.missionId, null);
+  assert.equal(focus.leadId, "lead-fresh-1");
+  assert.equal(focus.title, "Nook Hotel Mersin");
+  assert.equal(focus.subtitle, "Mersin");
+  assert.equal(focus.currentStateLabel, "Yeni Fırsat");
+  assert.ok(focus.hermesRecommendation.length > 0);
+});
+
+test("a fresh lead never claims a founder decision is pending", () => {
+  const focus = computeHermesOpportunityFocusForFreshLead(buildFreshLead());
+  assert.equal(focus.primaryActionLabel, null);
+  assert.equal(focus.secondaryActionLabel, null);
+  assert.equal(focus.salesReadinessLabel, null);
+  assert.equal(focus.outreachStatusLabel, null);
+  assert.equal(focus.demoStatusLabel, null);
+});
+
+test("a fresh lead with a verified WhatsApp signal shows the verified contact label, not the pending one", () => {
+  const focus = computeHermesOpportunityFocusForFreshLead(
+    buildFreshLead({ signalVerification: { whatsappVerification: "verified" } }),
+  );
+  assert.equal(focus.whatsappStatusLabel, "İletişim kanalı doğrulandı");
+});
+
+test("a fresh lead with no verified contact signal shows the pending contact label", () => {
+  const focus = computeHermesOpportunityFocusForFreshLead(buildFreshLead({ signalVerification: undefined }));
+  assert.equal(focus.whatsappStatusLabel, "İletişim doğrulaması bekleniyor");
+});
+
+test("a fresh lead's revenue signal reuses the real acquisition score label, never a fabricated MRR band", () => {
+  const focus = computeHermesOpportunityFocusForFreshLead(buildFreshLead({ verifiedOpportunityScore: 91 }));
+  assert.equal(focus.revenueSignalLabel, "Fırsat Puanı 91");
+});
+
+test("a fresh lead's timeline shows a real discovery entry when firstImportedAt is known", () => {
+  const now = Date.now();
+  const focus = computeHermesOpportunityFocusForFreshLead(buildFreshLead({ firstImportedAt: now, createdAt: undefined }));
+  assert.equal(focus.timeline.length, 1);
+  assert.equal(focus.timeline[0]!.occurredAt, now);
+});
+
+test("a fresh lead with no known discovery timestamp gets an empty timeline, never a fabricated one", () => {
+  const focus = computeHermesOpportunityFocusForFreshLead(
+    buildFreshLead({ firstImportedAt: undefined, createdAt: undefined }),
+  );
+  assert.deepEqual(focus.timeline, []);
 });

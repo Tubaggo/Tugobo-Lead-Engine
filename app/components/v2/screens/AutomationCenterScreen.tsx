@@ -30,6 +30,7 @@ import {
 } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import { resolveDeveloperLeadImportNavigation } from "@/app/components/v2/adapters/hermes-lead-intake-adapter";
 import type { AcquisitionStatusLike } from "@/app/components/v2/adapters/hermes-acquisition-founder-adapter";
+import type { RunAcquisitionResult } from "@/app/lib/hermes-autonomous-acquisition-runtime";
 import type { ScoredLead } from "@/app/lib/leads";
 import type { V2Screen } from "@/app/components/v2/types";
 import type { ImportHistoryEntry } from "@/app/components/v2/hooks/useLeadImport";
@@ -134,7 +135,7 @@ type Props = {
   monitor: HermesMonitor;
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
-  onSelectHermesMission: (mission: HermesMission) => void;
+  onSelectHermesMission: (mission: HermesMission | null) => void;
   hermesDecisions: HermesDecisionMap;
   onApproveMission: (mission: HermesMission) => void;
   onRejectTask: (taskId: string) => void;
@@ -172,6 +173,16 @@ type Props = {
   acquisitionFetchState: "loading" | "ready" | "error";
   /** Sprint C1.5 — re-runs the shell's acquisition status fetch ("Tekrar Dene"). */
   onRetryAcquisition: () => void;
+  /** Working Queue + Deal Workspace fix — the last real POST /api/hermes/acquisition/run result, null before the first run this session. */
+  acquisitionRunResult: RunAcquisitionResult | null;
+  /** Working Queue + Deal Workspace fix — true only while the POST above is in flight. */
+  acquisitionTriggerLoading: boolean;
+  /** Refresh Persistence Recovery fix — set only when the immediate post-run ingest of newly found leads failed to persist to localStorage; null otherwise. Session-only, cleared on the next successful ingest. */
+  acquisitionIngestWarning?: string | null;
+  /** Working Queue + Deal Workspace fix — same handler already wired to the (now Developer-Mode-only) right panel's draft textarea; reused verbatim in the Deal Workspace. */
+  onEditDraft: (missionId: string, body: string) => void;
+  /** Founder Preparation-to-Draft Runtime Bridge fix — founder-safe reason (already translated by `founderApprovalBlockerLabel`) shown when the last "Onayla — Hermes'i Başlat" click's preflight guard rejected it; keyed by missionId, session-only. */
+  hermesApprovalBlockers?: Record<string, string>;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -1248,7 +1259,7 @@ function MissionQueue({
   missions: HermesMission[];
   selectedHermesMissionId: string | null;
   expandedMissionId: string | null;
-  onSelectHermesMission: (mission: HermesMission) => void;
+  onSelectHermesMission: (mission: HermesMission | null) => void;
   onToggleExpand: (missionId: string) => void;
   onApproveMission: (mission: HermesMission) => void;
   onRejectTask: (taskId: string) => void;
@@ -1379,7 +1390,7 @@ function CourierDraftsSection({
 }: {
   drafts: Record<string, HermesOutboundDraft>;
   missions: HermesMission[];
-  onSelectHermesMission: (mission: HermesMission) => void;
+  onSelectHermesMission: (mission: HermesMission | null) => void;
   onApproveDraft: (missionId: string) => void;
   onRejectDraft: (missionId: string) => void;
 }) {
@@ -2051,6 +2062,11 @@ export default function AutomationCenterScreen({
   acquisition,
   acquisitionFetchState,
   onRetryAcquisition,
+  acquisitionRunResult,
+  acquisitionTriggerLoading,
+  acquisitionIngestWarning,
+  onEditDraft,
+  hermesApprovalBlockers,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -2102,8 +2118,16 @@ export default function AutomationCenterScreen({
           acquisition={acquisition}
           acquisitionFetchState={acquisitionFetchState}
           onRetryAcquisition={onRetryAcquisition}
+          acquisitionRunResult={acquisitionRunResult}
+          acquisitionTriggerLoading={acquisitionTriggerLoading}
+          acquisitionIngestWarning={acquisitionIngestWarning}
           hermesPipelines={hermesPipelines}
           hermesDrafts={hermesDrafts}
+          hermesDeliveries={hermesDeliveries}
+          onApproveDraft={onApproveDraft}
+          onRejectDraft={onRejectDraft}
+          onEditDraft={onEditDraft}
+          hermesApprovalBlockers={hermesApprovalBlockers}
         />
 
         {developerMode && (

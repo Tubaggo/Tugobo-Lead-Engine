@@ -13,6 +13,7 @@ import {
   OUTREACH_PACK_SYSTEM,
   REFINE_SINGLE_COPY_SYSTEM,
   EXTRACTED_WEBSITE_SIGNALS_INTERPRETATION_SYSTEM,
+  DRAFT_REVISION_SYSTEM,
 } from "./prompts";
 import { openAiCompatibleChatCompletion, type ChatMessage } from "./openai-compat";
 import {
@@ -452,6 +453,53 @@ export type {
   ExtractedSignalsInterpretationInput,
   WebsiteContactSignalsInterpretation,
 } from "@/app/lib/intelligence/extracted-signals-interpretation";
+
+/**
+ * Founder Conversational Message Revision (v1.0) — sends the founder's
+ * free-text instruction, the current draft, and only already-verified
+ * business context fields to the LLM. Returns the raw JSON text (or null on
+ * failure/timeout); parsing/validation happens in the caller via
+ * `parseDraftRevisionResponse` (hermes-draft-revision.ts) — this function
+ * never trusts the response itself.
+ */
+export async function generateDraftRevision(params: {
+  founderInstruction: string;
+  currentDraftBody: string;
+  channel: string;
+  businessContext: Record<string, unknown>;
+  availableSignalLabels: string[];
+}): Promise<string | null> {
+  const timeoutMs = defaultTimeoutMs();
+  const messages: ChatMessage[] = [
+    { role: "system", content: DRAFT_REVISION_SYSTEM },
+    {
+      role: "user",
+      content: JSON.stringify({
+        founderInstruction: params.founderInstruction,
+        currentDraftBody: params.currentDraftBody,
+        channel: params.channel,
+        businessContext: params.businessContext,
+        availableSignalLabels: params.availableSignalLabels,
+      }),
+    },
+  ];
+  const dsKey = getDeepSeekApiKey();
+  if (dsKey) {
+    return deepseekChatText({ messages, jsonObject: true, temperature: 0.4, timeoutMs });
+  }
+  const oaKey = process.env.OPENAI_API_KEY?.trim();
+  if (!oaKey) return null;
+  const model = process.env.OPENAI_MODEL?.trim().replace(/^["']|["']$/g, "") || "gpt-4o-mini";
+  return openAiCompatibleChatCompletion({
+    url: OPENAI_CHAT_URL,
+    apiKey: oaKey,
+    model,
+    messages,
+    temperature: 0.4,
+    jsonObject: true,
+    timeoutMs,
+  });
+}
 
 /**
  * Single-string Turkish polish (e.g. one-off copy tweaks). Returns null → keep {@link text}.

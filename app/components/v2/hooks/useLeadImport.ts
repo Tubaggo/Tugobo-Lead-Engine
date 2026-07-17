@@ -70,6 +70,18 @@ export type IngestExternalLeadsResult = {
   added: number;
   updated: number;
   skipped: number;
+  /**
+   * Refresh Persistence Recovery fix — true when the merged pool (including
+   * any new leads from this batch) was actually written to
+   * `localStorage["imported-leads-v2"]`, or when there was genuinely nothing
+   * new to write (empty batch / pure duplicates). False only means the
+   * localStorage write itself failed (quota, private mode, unavailable) —
+   * the in-memory React state is still updated either way, so the caller
+   * must not treat `false` as "nothing happened," only as "not yet durable."
+   */
+  persisted: boolean;
+  /** Founder-safe, non-technical message — set only when `persisted` is false. Never a raw exception. */
+  error?: string;
 };
 
 export type UseLeadImportReturn = {
@@ -265,12 +277,18 @@ function loadImportedLeadsV2(): ScoredLead[] {
   return [];
 }
 
-function saveImportedLeadsV2(leads: ScoredLead[]) {
-  if (typeof window === "undefined") return;
+/**
+ * Refresh Persistence Recovery fix — now reports whether the write actually
+ * landed. Existing callers that ignore the return value (e.g. `handleImport`)
+ * are unaffected; only `ingestExternalLeads` reads it.
+ */
+function saveImportedLeadsV2(leads: ScoredLead[]): boolean {
+  if (typeof window === "undefined") return false;
   try {
     window.localStorage.setItem(IMPORTED_LEADS_V2_KEY, JSON.stringify(leads));
+    return true;
   } catch {
-    // ignore
+    return false;
   }
 }
 
@@ -571,7 +589,7 @@ export function useLeadImport(): UseLeadImportReturn {
    */
   const ingestExternalLeads = useCallback(
     (batch: ScoredLead[], meta: { label: string }): IngestExternalLeadsResult => {
-      if (batch.length === 0) return { added: 0, updated: 0, skipped: 0 };
+      if (batch.length === 0) return { added: 0, updated: 0, skipped: 0, persisted: true };
 
       const importTs = Date.now();
       const importSessionId =
@@ -590,12 +608,28 @@ export function useLeadImport(): UseLeadImportReturn {
 
       const skipped = batch.length - lastSessionBatch.length;
       if (freshNewLeads.length === 0 && updatedIds.length === 0) {
-        return { added: 0, updated: 0, skipped };
+        // Nothing new after dedupe — there was nothing to persist, so this is
+        // trivially "persisted", not a failure.
+        return { added: 0, updated: 0, skipped, persisted: true };
       }
 
+      // Refresh Persistence Recovery fix — the in-memory pool always updates
+      // so the founder sees the new leads this session regardless of storage
+      // outcome; `persisted` tells the caller whether that update is durable
+      // across a refresh. A failed write never clears/replaces existing data
+      // (`nextImported` is always a superset of `prev`).
       setImportedLeads(nextImported);
       importedLeadsRef.current = nextImported;
-      saveImportedLeadsV2(nextImported);
+      const persisted = saveImportedLeadsV2(nextImported);
+      if (!persisted) {
+        return {
+          added: freshNewLeads.length,
+          updated: updatedIds.length,
+          skipped,
+          persisted: false,
+          error: "Yeni bulunan işletmeler bu tarayıcıda kalıcı olarak kaydedilemedi.",
+        };
+      }
       saveImportMeta({ hasRun: true });
 
       const cities = Array.from(new Set(freshNewLeads.map((l) => l.city))).slice(0, 3);
@@ -612,7 +646,7 @@ export function useLeadImport(): UseLeadImportReturn {
       };
       setImportHistory((prevHistory) => [entry, ...prevHistory].slice(0, 10));
 
-      return { added: freshNewLeads.length, updated: updatedIds.length, skipped };
+      return { added: freshNewLeads.length, updated: updatedIds.length, skipped, persisted: true };
     },
     [],
   );

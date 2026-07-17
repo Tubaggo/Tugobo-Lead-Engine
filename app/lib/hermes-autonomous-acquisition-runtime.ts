@@ -131,6 +131,15 @@ export type RunAcquisitionResult = {
    * bekleyen mevcut aday havuzundan üretilir — her iki yolda da sıfır mutation.
    */
   qualificationPreview: QualificationPreview | null;
+  /**
+   * Refresh Persistence Recovery fix — the exact candidate leads registered
+   * for THIS run (same objects handed to `registerAcquisitionCandidates`,
+   * never re-fetched or re-normalized). Lets the client persist them
+   * immediately via the existing `ingestExternalLeads` path instead of
+   * waiting on a second `/status` round trip. Always `[]` for a dry run, a
+   * blocked run, or a run where nothing qualified — never fabricated.
+   */
+  candidateLeads: AcquisitionDiscoveredLead[];
 };
 
 function hourWindow(now: number): string {
@@ -147,6 +156,7 @@ function defaultIdempotencyKey(trigger: AcquisitionTrigger, now: number): string
 function toResult(
   run: HermesAcquisitionRun,
   qualificationPreview: QualificationPreview | null = null,
+  candidateLeads: AcquisitionDiscoveredLead[] = [],
 ): RunAcquisitionResult {
   return {
     status: run.status,
@@ -170,6 +180,7 @@ function toResult(
     notQualifiedCount: run.notQualifiedCount,
     qualificationBlockedCount: run.qualificationBlockedCount,
     qualificationPreview,
+    candidateLeads,
   };
 }
 
@@ -455,6 +466,11 @@ export async function runHermesAutonomousAcquisition(
   let remainingLeadBudget = budget.remainingLeadBudget;
   let remainingCandidateBudget = budget.maxMissionCandidates;
   const seenThisRun = new Set<string>();
+  // Refresh Persistence Recovery fix — the exact objects handed to
+  // `registerAcquisitionCandidates` below, accumulated across every region,
+  // so the caller can return them verbatim in `RunAcquisitionResult` without
+  // a second read of the registry or any re-normalization.
+  const runCandidateLeads: AcquisitionDiscoveredLead[] = [];
 
   try {
     for (const region of selectedRegions) {
@@ -587,6 +603,7 @@ export async function runHermesAutonomousAcquisition(
       const candidates = qualified.slice(0, Math.max(0, handoffCap));
       if (candidates.length > 0) {
         registerAcquisitionCandidates(run.id, candidates, now);
+        runCandidateLeads.push(...candidates);
         for (const c of candidates) rememberAcquisitionDedupeKeys(leadDedupeKeysFor(c));
         importedCount += candidates.length;
         missionCandidateCount += candidates.length;
@@ -647,7 +664,10 @@ export async function runHermesAutonomousAcquisition(
       },
       now,
     );
-    return toResult(finished!);
+    // A mid-loop crash still leaves any already-registered candidates real
+    // and reachable — reporting them here lets the client persist whatever
+    // genuinely succeeded before the failure, same as the registry already does.
+    return toResult(finished!, null, runCandidateLeads);
   }
 
   const status: AcquisitionRunStatus =
@@ -704,5 +724,5 @@ export async function runHermesAutonomousAcquisition(
     },
     now,
   );
-  return toResult(finished!, buildQualificationPreview(qualPreviewInputs));
+  return toResult(finished!, buildQualificationPreview(qualPreviewInputs), runCandidateLeads);
 }

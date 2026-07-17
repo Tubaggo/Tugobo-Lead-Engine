@@ -291,7 +291,8 @@ export function explainOpportunity(lead: ExplainableLeadLike): FounderOpportunit
 
 /* ── section view ───────────────────────────────────────────── */
 
-function isSameCalendarDay(a: number, b: number): boolean {
+/** Exported for reuse by hermes-working-queue-adapter.ts — the single freshness definition both sections read from. */
+export function isSameCalendarDay(a: number, b: number): boolean {
   const da = new Date(a);
   const db = new Date(b);
   return (
@@ -301,7 +302,8 @@ function isSameCalendarDay(a: number, b: number): boolean {
   );
 }
 
-function firstSeenAt(lead: ExplainableLeadLike): number | null {
+/** Exported for reuse by hermes-working-queue-adapter.ts — "found today" and "fresh opportunity" must always mean the same thing. */
+export function firstSeenAt(lead: Pick<ExplainableLeadLike, "firstImportedAt" | "createdAt">): number | null {
   if (typeof lead.firstImportedAt === "number" && Number.isFinite(lead.firstImportedAt)) {
     return lead.firstImportedAt;
   }
