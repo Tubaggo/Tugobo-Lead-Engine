@@ -84,6 +84,11 @@ import ImportPanel, {
 import { ICP_SEARCH_CONFIGS, filterLeadsForTargetAudience } from "@/app/lib/places-import";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 import {
+  SectionNavigationRail,
+  SECTION_ANCHOR_CLS,
+  getSectionNavItems,
+} from "@/app/components/SectionNavigationRail";
+import {
   acquisitionSignalUiLine,
   acquisitionWeaknessUiLine,
   aiInsightParagraphUiText,
@@ -10478,6 +10483,7 @@ function SalesPipelineBoard({
 
 export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const { locale } = useLocale();
+  const sectionNavItems = useMemo(() => getSectionNavItems(locale), [locale]);
   const [mounted, setMounted] = useState(false);
   const [renderNow, setRenderNow] = useState(0);
   const [stateMap, setStateMap] = useState<StateMap>({});
@@ -13058,8 +13064,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   };
 
   return (
-    <div className="relative mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-      <header className="flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
+    <div className="relative mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+      <header className="mb-6 flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
             <BrandLogo />
@@ -13097,8 +13103,19 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         </div>
       </header>
 
+      <div className="lg:grid lg:grid-cols-[196px_minmax(0,1fr)] lg:items-start lg:gap-6">
+        <SectionNavigationRail
+          items={sectionNavItems}
+          revalidateKey={`${mounted}:${allRows.length}`}
+        />
+
+        <div className="flex min-w-0 flex-col gap-6">
       {/* Stats */}
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
+      <section
+        id="genel-bakis"
+        tabIndex={-1}
+        className={`${SECTION_ANCHOR_CLS} grid grid-cols-2 gap-3 md:grid-cols-5 focus:outline-none`}
+      >
         <StatCard
           label={t("stat_session_leads", locale)}
           value={stats.sessionLeads}
@@ -13209,12 +13226,14 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {/* v2.3 Daily Operating Brief — "Bugünün Operasyonu" */}
       {mounted && allRows.length > 0 && (
-        <DailyOperatingBrief
-          rows={allRows}
-          now={renderNow || Date.now()}
-          completedToday={safeCompletedToday}
-          activeQueueCount={safeActiveQueueCount}
-        />
+        <div id="bugunun-operasyonu" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
+          <DailyOperatingBrief
+            rows={allRows}
+            now={renderNow || Date.now()}
+            completedToday={safeCompletedToday}
+            activeQueueCount={safeActiveQueueCount}
+          />
+        </div>
       )}
 
       {/* v2.3 Daily Progress Strip — "Günlük İlerleme" */}
@@ -13250,17 +13269,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {/* v3.0 Autonomous Sales Plan — "Bugünün Satış Planı" */}
       {mounted && allRows.length > 0 && (
-        <AutonomousSalesPlan
-          rows={allRows}
-          now={renderNow || Date.now()}
-          contactFinderMap={contactFinderMap}
-          onOpenDetail={(id) => setOpenId(id)}
-        />
+        <div id="satis-plani" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
+          <AutonomousSalesPlan
+            rows={allRows}
+            now={renderNow || Date.now()}
+            contactFinderMap={contactFinderMap}
+            onOpenDetail={(id) => setOpenId(id)}
+          />
+        </div>
       )}
 
       {/* v3.2.1 Revenue Pipeline Overview — KPI grid */}
       {mounted && allRows.length > 0 && (
-        <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
+        <div id="gelir-risk" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
+          <RevenuePipelineOverview rows={allRows} now={renderNow || Date.now()} />
+        </div>
       )}
 
       {/* v3.3.0 Founder Forecast Engine — 30-day deterministic forecast */}
@@ -13298,13 +13321,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {/* v2.1 Founder Focus — "Bugünün En Öncelikli Fırsatları" */}
       {mounted && allRows.length > 0 && (
-        <TodayTopPrioritiesPanel
-          rows={allRows}
-          now={renderNow || Date.now()}
-          onOpenDetail={(id) => setOpenId(id)}
-          onBuildQueue={(ids) => addLeadIdsToDailyQueue(ids)}
-          queueFull={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
-        />
+        <div id="bugunun-firsatlari" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
+          <TodayTopPrioritiesPanel
+            rows={allRows}
+            now={renderNow || Date.now()}
+            onOpenDetail={(id) => setOpenId(id)}
+            onBuildQueue={(ids) => addLeadIdsToDailyQueue(ids)}
+            queueFull={safeActiveQueueCount >= DAILY_OUTREACH_LIMIT}
+          />
+        </div>
       )}
 
       {/* v1.8 Execution counters — Bugün Ulaşılacak / Takip Bekleyen / Demo Adayı / Kazanılan */}
@@ -13334,7 +13359,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
       {/* v1.9 Pipeline Counters — Temas Kuruldu / Takipte / Demo Aşamasında / Kazanıldı */}
       {mounted && allRows.length > 0 && (
-        <PipelineCounters rows={allRows} />
+        <div id="satis-boru-hatti" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
+          <PipelineCounters rows={allRows} />
+        </div>
       )}
 
       {/* v1.9 "Satış Boru Hattı" pipeline board */}
@@ -13347,7 +13374,9 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       )}
 
       {/* Import */}
-      <ImportPanel onImport={handleImport} hasCachedResults={hasCachedImportResults} />
+      <div id="lead-havuzu" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
+        <ImportPanel onImport={handleImport} hasCachedResults={hasCachedImportResults} />
+      </div>
 
       <section className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -13808,7 +13837,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       )}
 
       {/* Hot 10 */}
-      <section>
+      <section id="sicak-leadler" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
         <div className="mb-3 flex items-end justify-between">
           <div>
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-zinc-300">
@@ -13838,7 +13867,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       </section>
 
       {/* All Leads (collapsible) */}
-      <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur">
+      <section
+        id="tum-leadler"
+        tabIndex={-1}
+        className={`${SECTION_ANCHOR_CLS} overflow-hidden rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur focus:outline-none`}
+      >
         <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-300">
@@ -14687,6 +14720,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           </div>,
           document.body,
         )}
+        </div>
+      </div>
     </div>
   );
 }
