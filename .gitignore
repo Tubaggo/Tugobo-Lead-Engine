@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# hermes runtime state (region rotation cursor — local/server only, never committed)
+/.hermes-runtime/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

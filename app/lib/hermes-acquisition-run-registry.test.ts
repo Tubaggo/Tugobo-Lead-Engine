@@ -5,10 +5,12 @@ import {
   finishAcquisitionRun,
   getAcquisitionTodayCounters,
   getActiveAcquisitionRun,
+  getAllRegionLastRunAt,
   getPendingAcquisitionCandidates,
   getRecentAcquisitionRuns,
   getRegionLastRunAt,
   hasSeenAcquisitionDedupeKey,
+  hydrateRegionLastRunAt,
   markRegionsScanned,
   registerAcquisitionCandidates,
   rememberAcquisitionDedupeKeys,
@@ -134,6 +136,18 @@ test("region last-run bookkeeping works", () => {
   markRegionsScanned(["r1", "r2"], NOW);
   assert.equal(getRegionLastRunAt("r1"), NOW);
   assert.equal(getRegionLastRunAt("r2"), NOW);
+});
+
+test("hydrateRegionLastRunAt seeds unset regions but never overwrites a fresher in-memory value", () => {
+  markRegionsScanned(["r1"], NOW);
+  hydrateRegionLastRunAt({ r1: NOW - 999999, r2: NOW - 5000 });
+  assert.equal(getRegionLastRunAt("r1"), NOW, "r1 already had an in-memory value — disk must not clobber it");
+  assert.equal(getRegionLastRunAt("r2"), NOW - 5000, "r2 had no in-memory value — hydration fills it");
+});
+
+test("getAllRegionLastRunAt returns a full snapshot of the rotation cursor map", () => {
+  markRegionsScanned(["r1", "r2"], NOW);
+  assert.deepEqual(getAllRegionLastRunAt(), { r1: NOW, r2: NOW });
 });
 
 test("dedupe keys are remembered across runs", () => {

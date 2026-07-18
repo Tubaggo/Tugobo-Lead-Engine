@@ -183,6 +183,14 @@ type Props = {
   onEditDraft: (missionId: string, body: string) => void;
   /** Founder Preparation-to-Draft Runtime Bridge fix — founder-safe reason (already translated by `founderApprovalBlockerLabel`) shown when the last "Onayla — Hermes'i Başlat" click's preflight guard rejected it; keyed by missionId, session-only. */
   hermesApprovalBlockers?: Record<string, string>;
+  /**
+   * Strict Target Market Allowlist fix — true only when the server's live
+   * acquisition scope is `tugobo-need` (read via the existing
+   * `/api/hermes/acquisition/status` bridge in V2Shell). Gates the active
+   * Founder queue's target-market filter; `turkey`/`custom` scope omit this
+   * and keep the pre-existing broad behavior.
+   */
+  restrictToTargetMarket?: boolean;
 };
 
 /* ── Shared vocabulary ──────────────────────────────────────────── */
@@ -2067,6 +2075,7 @@ export default function AutomationCenterScreen({
   acquisitionIngestWarning,
   onEditDraft,
   hermesApprovalBlockers,
+  restrictToTargetMarket,
 }: Props) {
   // Which mission's card is expanded inline — independent of side-panel
   // selection, so the founder can scan several missions without losing place.
@@ -2121,6 +2130,7 @@ export default function AutomationCenterScreen({
           acquisitionRunResult={acquisitionRunResult}
           acquisitionTriggerLoading={acquisitionTriggerLoading}
           acquisitionIngestWarning={acquisitionIngestWarning}
+          restrictToTargetMarket={restrictToTargetMarket}
           hermesPipelines={hermesPipelines}
           hermesDrafts={hermesDrafts}
           hermesDeliveries={hermesDeliveries}

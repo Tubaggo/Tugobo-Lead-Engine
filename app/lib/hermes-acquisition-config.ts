@@ -7,6 +7,8 @@ import {
   type AcquisitionPolicy,
   type AcquisitionRegion,
 } from "./hermes-autonomous-acquisition-policy.ts";
+import { TURKEY_ACQUISITION_REGIONS } from "./hermes-turkey-acquisition-regions.ts";
+import { TUGOBO_NEED_ACQUISITION_REGIONS } from "./hermes-tugobo-need-acquisition-regions.ts";
 
 /**
  * Hermes Acquisition Config (Sprint C1 — Scope 2).
@@ -29,11 +31,20 @@ import {
 
 export type AcquisitionEnv = Record<string, string | undefined>;
 
+export type AcquisitionRegionScope = "turkey" | "tugobo-need" | "custom";
+
 export type AcquisitionConfig = {
   policy: AcquisitionPolicy;
   regions: AcquisitionRegion[];
   /** Developer-facing (Turkish) validation notes. Non-empty ⇒ acquisition is blocked. */
   configErrors: string[];
+  /**
+   * Strict Target Market Allowlist fix — exposed so the client-side Founder
+   * Home queue can gate its strict market-eligibility filter on the exact
+   * same scope the server is actually running, via the existing
+   * `/api/hermes/acquisition/status` bridge. Never a second config system.
+   */
+  regionScope: AcquisitionRegionScope;
 };
 
 const ENV_KEYS = {
@@ -47,7 +58,24 @@ const ENV_KEYS = {
   maxMissionsPerRun: "HERMES_ACQUISITION_MAX_MISSIONS_PER_RUN",
   minOpportunityScore: "HERMES_ACQUISITION_MIN_OPPORTUNITY_SCORE",
   regionsJson: "HERMES_ACQUISITION_REGIONS_JSON",
+  regionScope: "HERMES_ACQUISITION_REGION_SCOPE",
 } as const;
+
+/**
+ * `turkey` → the built-in 81-province catalog. `tugobo-need` → the built-in
+ * TUGOBO-need-focused locality catalog (resort/tourism markets sourced
+ * first, İstanbul included but last). Either way
+ * `HERMES_ACQUISITION_REGIONS_JSON` is ignored. `custom` → the existing
+ * JSON-region behavior, unchanged. Unset or any unrecognized value all
+ * resolve to `"custom"` — the pre-existing backward-compatible behavior —
+ * so a typo can never silently widen the scan.
+ */
+function resolveRegionScope(raw: string | undefined): AcquisitionRegionScope {
+  const v = raw?.trim().toLowerCase();
+  if (v === "turkey") return "turkey";
+  if (v === "tugobo-need") return "tugobo-need";
+  return "custom";
+}
 
 function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined) return fallback;
@@ -175,7 +203,13 @@ export function loadAcquisitionConfigFromEnv(env: AcquisitionEnv): AcquisitionCo
     errors.push("Etkinleştirme bayrağı açık ama mod kapalı — tarama devre dışı kaldı.");
   }
 
-  const regions = parseRegions(env[ENV_KEYS.regionsJson], errors);
+  const regionScope = resolveRegionScope(env[ENV_KEYS.regionScope]);
+  const regions =
+    regionScope === "turkey"
+      ? TURKEY_ACQUISITION_REGIONS.map((r) => ({ ...r }))
+      : regionScope === "tugobo-need"
+        ? TUGOBO_NEED_ACQUISITION_REGIONS.map((r) => ({ ...r }))
+        : parseRegions(env[ENV_KEYS.regionsJson], errors);
   if ((enabled && mode !== "disabled") && regions.length === 0 && errors.length === 0) {
     errors.push("Tarama etkin ama hiç bölge tanımlanmadı.");
   }
@@ -229,5 +263,5 @@ export function loadAcquisitionConfigFromEnv(env: AcquisitionEnv): AcquisitionCo
     updatedAt: null,
   };
 
-  return { policy, regions, configErrors: errors };
+  return { policy, regions, configErrors: errors, regionScope };
 }

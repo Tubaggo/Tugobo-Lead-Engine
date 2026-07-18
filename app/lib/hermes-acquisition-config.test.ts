@@ -145,6 +145,104 @@ test("enabled config without regions reports an error", () => {
   assert.ok(c.configErrors.some((e) => e.includes("bölge")));
 });
 
+test("scope=turkey returns the built-in 81-province catalog and ignores REGIONS_JSON", () => {
+  const c = loadAcquisitionConfigFromEnv({
+    HERMES_ACQUISITION_REGION_SCOPE: "turkey",
+    HERMES_ACQUISITION_REGIONS_JSON: VALID_REGIONS_JSON,
+  });
+  assert.equal(c.regions.length, 81);
+  assert.equal(c.configErrors.length, 0);
+  assert.ok(c.regions.some((r) => r.id === "istanbul-hotel"));
+  // The custom JSON's "antalya-hotel" (priority 1) must not have been used —
+  // the catalog's own Antalya entry (priority 2) wins.
+  const antalya = c.regions.find((r) => r.id === "antalya-hotel");
+  assert.equal(antalya?.priority, 2);
+});
+
+test("scope=custom uses the existing REGIONS_JSON parser, unchanged", () => {
+  const c = loadAcquisitionConfigFromEnv({
+    HERMES_ACQUISITION_REGION_SCOPE: "custom",
+    HERMES_ACQUISITION_REGIONS_JSON: VALID_REGIONS_JSON,
+  });
+  assert.equal(c.regions.length, 2);
+  assert.equal(c.regions[0].city, "Antalya");
+});
+
+test("scope unset + REGIONS_JSON present stays backward-compatible (custom behavior)", () => {
+  const c = loadAcquisitionConfigFromEnv({
+    HERMES_ACQUISITION_REGIONS_JSON: VALID_REGIONS_JSON,
+  });
+  assert.equal(c.regions.length, 2);
+  assert.equal(c.regions[0].city, "Antalya");
+});
+
+test("scope unset + no REGIONS_JSON stays the existing safe empty/disabled behavior", () => {
+  const c = loadAcquisitionConfigFromEnv({});
+  assert.deepEqual(c.regions, []);
+  assert.equal(c.policy.enabled, false);
+});
+
+test("an unknown scope value falls back to custom/unset — never silently scans all of Turkey", () => {
+  const c = loadAcquisitionConfigFromEnv({
+    HERMES_ACQUISITION_REGION_SCOPE: "worldwide",
+    HERMES_ACQUISITION_REGIONS_JSON: VALID_REGIONS_JSON,
+  });
+  assert.equal(c.regions.length, 2);
+});
+
+test("turkey scope leaves every other cost/limit env setting intact", () => {
+  const c = loadAcquisitionConfigFromEnv({
+    HERMES_ACQUISITION_REGION_SCOPE: "turkey",
+    HERMES_ACQUISITION_DAILY_LEAD_LIMIT: "5",
+    HERMES_ACQUISITION_MAX_REGIONS_PER_RUN: "1",
+  });
+  assert.equal(c.regions.length, 81);
+  assert.equal(c.policy.dailyLeadLimit, 5);
+  assert.equal(c.policy.maxRegionsPerRun, 1);
+});
+
+test("scope=tugobo-need returns the built-in need-focused locality catalog and ignores REGIONS_JSON", () => {
+  const c = loadAcquisitionConfigFromEnv({
+    HERMES_ACQUISITION_REGION_SCOPE: "tugobo-need",
+    HERMES_ACQUISITION_REGIONS_JSON: VALID_REGIONS_JSON,
+  });
+  assert.equal(c.configErrors.length, 0);
+  assert.ok(c.regions.length > 0);
+  const sorted = [...c.regions].sort((a, b) => a.priority - b.priority);
+  assert.equal(sorted[0].city, "Antalya");
+});
+
+test("scope=tugobo-need leaves every other cost/limit env setting intact", () => {
+  const c = loadAcquisitionConfigFromEnv({
+    HERMES_ACQUISITION_REGION_SCOPE: "tugobo-need",
+    HERMES_ACQUISITION_DAILY_LEAD_LIMIT: "5",
+    HERMES_ACQUISITION_MAX_REGIONS_PER_RUN: "1",
+  });
+  assert.equal(c.policy.dailyLeadLimit, 5);
+  assert.equal(c.policy.maxRegionsPerRun, 1);
+});
+
+test("scope=turkey still returns the 81-province catalog, unaffected by the new tugobo-need scope", () => {
+  const c = loadAcquisitionConfigFromEnv({ HERMES_ACQUISITION_REGION_SCOPE: "turkey" });
+  assert.equal(c.regions.length, 81);
+});
+
+test("regionScope is exposed on the config output for the client status bridge", () => {
+  assert.equal(loadAcquisitionConfigFromEnv({}).regionScope, "custom");
+  assert.equal(
+    loadAcquisitionConfigFromEnv({ HERMES_ACQUISITION_REGION_SCOPE: "turkey" }).regionScope,
+    "turkey",
+  );
+  assert.equal(
+    loadAcquisitionConfigFromEnv({ HERMES_ACQUISITION_REGION_SCOPE: "tugobo-need" }).regionScope,
+    "tugobo-need",
+  );
+  assert.equal(
+    loadAcquisitionConfigFromEnv({ HERMES_ACQUISITION_REGION_SCOPE: "nonsense" }).regionScope,
+    "custom",
+  );
+});
+
 test("config output never contains the cron secret", () => {
   const c = loadAcquisitionConfigFromEnv({
     HERMES_ACQUISITION_CRON_SECRET: "super-secret-value",

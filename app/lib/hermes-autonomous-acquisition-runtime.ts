@@ -15,9 +15,11 @@ import {
   finishAcquisitionRun,
   getAcquisitionTodayCounters,
   getActiveAcquisitionRun,
+  getAllRegionLastRunAt,
   getPendingAcquisitionCandidates,
   getRegionLastRunAt,
   hasSeenAcquisitionDedupeKey,
+  hydrateRegionLastRunAt,
   markRegionsScanned,
   recordBlockedAcquisitionRun,
   registerAcquisitionCandidates,
@@ -89,6 +91,11 @@ export type AcquisitionImportAdapter = (input: {
   maxResults: number;
 }) => Promise<AcquisitionImportAdapterResult>;
 
+/** Türkiye Region Rotation v1.0 — reads the durable rotation cursor. Sync: the existing selection chain is sync end-to-end. */
+export type RegionStateHydrator = () => Record<string, number>;
+/** Persists the full rotation cursor snapshot. A `{ ok: false }` result never aborts or rolls back the run — only a safe warning is surfaced. */
+export type RegionStatePersister = (state: Record<string, number>) => { ok: boolean; error?: string };
+
 export type RunAcquisitionInput = {
   trigger: AcquisitionTrigger;
   config: AcquisitionConfig;
@@ -99,6 +106,14 @@ export type RunAcquisitionInput = {
   /** Cron/webhook retry protection; derived from trigger + time window when absent. */
   idempotencyKey?: string;
   now?: number;
+  /**
+   * Türkiye Region Rotation v1.0 — optional durable-persistence wiring.
+   * Absent by default (every pre-existing caller/test keeps working exactly
+   * as before, entirely in-memory). The production route wires the real
+   * disk-backed store; nothing here ever performs I/O on its own.
+   */
+  regionStateHydrator?: RegionStateHydrator;
+  regionStatePersister?: RegionStatePersister;
 };
 
 export type RunAcquisitionResult = {
@@ -230,6 +245,19 @@ export async function runHermesAutonomousAcquisition(
       detailTr: `Tarama isteği alındı (${input.trigger}).`,
     }),
   ];
+
+  // Türkiye Region Rotation v1.0 — hydrate the in-memory cursor from the
+  // durable store (if wired) before reading any region's last-run moment,
+  // so a fresh process restores rotation progress instead of restarting
+  // from scratch. A missing/failed hydrator degrades to the pre-existing
+  // in-memory-only behavior — never a throw, never blocks the run.
+  if (input.regionStateHydrator) {
+    try {
+      hydrateRegionLastRunAt(input.regionStateHydrator());
+    } catch {
+      // Best-effort: in-memory rotation state continues to work unhydrated.
+    }
+  }
 
   // Regions carry their real last-run moments from the registry.
   const regions = input.config.regions.map((r) => ({
@@ -498,6 +526,20 @@ export async function runHermesAutonomousAcquisition(
       externalRequestCount += result.externalRequestCount;
       remainingRequestBudget = Math.max(0, remainingRequestBudget - result.externalRequestCount);
       markRegionsScanned([region.id], now);
+
+      // Türkiye Region Rotation v1.0 — persist the rotation cursor right
+      // after marking this region scanned, so a mid-run crash on a later
+      // region still keeps the earlier regions' durable progress. A write
+      // failure never rolls back the scan that already happened — it only
+      // adds a truthful, founder-safe warning to the existing safeErrors
+      // surface (shown in the Developer Mode recent-runs panel).
+      if (input.regionStatePersister) {
+        const persistResult = input.regionStatePersister(getAllRegionLastRunAt());
+        if (!persistResult.ok) {
+          const warning = "Bölge rotasyon durumu kalıcı olarak kaydedilemedi.";
+          if (!safeErrors.includes(warning)) safeErrors.push(warning);
+        }
+      }
 
       if (!result.ok) {
         hitProviderTrouble = true;

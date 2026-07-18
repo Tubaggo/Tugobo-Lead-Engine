@@ -7,6 +7,10 @@ import {
 } from "@/app/lib/hermes-acquisition-request";
 import { runHermesAutonomousAcquisition } from "@/app/lib/hermes-autonomous-acquisition-runtime";
 import { hermesAcquisitionServerImportAdapter } from "@/app/lib/hermes-acquisition-server-adapter";
+import {
+  readAcquisitionRegionStateFromDisk,
+  writeAcquisitionRegionStateToDisk,
+} from "@/app/lib/hermes-acquisition-region-state-store";
 
 /**
  * Hermes Autonomous Acquisition — scheduler-compatible run trigger
@@ -61,6 +65,9 @@ export async function POST(request: Request) {
     config,
     importAdapter: hermesAcquisitionServerImportAdapter,
     forceDryRun: parsed.forceDryRun,
+    // Türkiye Region Rotation v1.0 — durable rotation cursor, server-only.
+    regionStateHydrator: readAcquisitionRegionStateFromDisk,
+    regionStatePersister: writeAcquisitionRegionStateToDisk,
   });
 
   return NextResponse.json(result);

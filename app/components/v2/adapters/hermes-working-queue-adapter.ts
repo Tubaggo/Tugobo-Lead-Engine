@@ -5,6 +5,19 @@ import {
   type ExplainableLeadLike,
 } from "./hermes-acquisition-explainability-adapter.ts";
 import type { HermesDecisionItem, HermesDecisionType } from "./hermes-decision-queue-adapter.ts";
+import {
+  computeTugoboNeedAssessment,
+  buildTugoboNeedFounderSentence,
+  buildTugoboNeedFounderLine,
+  type TugoboNeedAssessment,
+  type TugoboNeedLeadLike,
+} from "./tugobo-need-assessment.ts";
+import {
+  computeTugoboTargetMarketEligibility,
+  buildTargetMarketFounderLine,
+  type TargetMarketEligibility,
+  type TargetMarketLeadLike,
+} from "./tugobo-target-market-eligibility.ts";
 
 /**
  * Hermes Working Queue adapter (Founder Working Queue + Deal Workspace v1.0).
@@ -62,12 +75,22 @@ export type WorkingQueueItem = {
   secondaryActionLabel: string | null;
   /** Carries the original decision item through unchanged — only present for `kind: "decision"`, so the founder-mode Onayla/Reddet handlers stay exactly the ones Karar Merkezi already uses. */
   sourceDecisionItem: HermesDecisionItem | null;
+  /**
+   * TUGOBO Need-Based Acquisition Engine — the deterministic need
+   * assessment behind this fresh opportunity. `null` for `kind: "decision"`
+   * items (a real decision is already actionable; the need gate only ever
+   * applies to freshly-surfaced opportunities, see `computeFounderWorkingQueue`).
+   */
+  tugoboNeed: TugoboNeedAssessment | null;
 };
 
 /** Structural subset of `ScoredLead` this module reads — any real ScoredLead satisfies it automatically. */
-export type WorkingQueueLeadLike = ExplainableLeadLike & {
-  id: string;
-};
+export type WorkingQueueLeadLike = ExplainableLeadLike &
+  TugoboNeedLeadLike &
+  TargetMarketLeadLike & {
+    id: string;
+    city?: string;
+  };
 
 export type WorkingQueueMissionLike = {
   missionId: string;
@@ -84,6 +107,17 @@ export type ComputeFounderWorkingQueueInput = {
   runningMissionIds?: ReadonlySet<string>;
   /** Injectable for tests; defaults to `Date.now()`. */
   now?: number;
+  /**
+   * Strict Target Market Allowlist fix — when `true` (the caller sets this
+   * only when the server's live acquisition scope is `tugobo-need`, read
+   * via the existing `/api/hermes/acquisition/status` bridge — never a
+   * second config system), both fresh opportunities AND decision-kind items
+   * are additionally gated on `computeTugoboTargetMarketEligibility`,
+   * BEFORE the TUGOBO need gate. Omitted or `false` (the `turkey`/`custom`
+   * scope case) preserves the exact pre-existing broad behavior — no
+   * business is ever excluded on market grounds.
+   */
+  restrictToTargetMarket?: boolean;
 };
 
 const FRESH_OPPORTUNITY_LABEL = "Yeni Fırsat";
@@ -109,6 +143,7 @@ function decisionToWorkingQueueItem(
     primaryActionLabel: item.primaryActionLabel,
     secondaryActionLabel: item.secondaryActionLabel,
     sourceDecisionItem: item,
+    tugoboNeed: null,
   };
 }
 
@@ -116,8 +151,18 @@ function freshOpportunityToWorkingQueueItem(
   lead: WorkingQueueLeadLike,
   seenAt: number,
   missionId: string | null,
+  needAssessment: TugoboNeedAssessment,
+  eligibility: TargetMarketEligibility | null,
 ): WorkingQueueItem {
-  const explanation = explainOpportunity(lead);
+  // Strict Target Market Allowlist fix, Part 4 — when eligibility was
+  // actually checked (tugobo-need scope), the card explicitly separates the
+  // two gates: market membership, then real need evidence. Never a single
+  // "seçildi çünkü <city>" sentence. Falls back to the need-only sentence
+  // when eligibility wasn't computed (turkey/custom scope).
+  const whyInQueue = eligibility
+    ? `${buildTargetMarketFounderLine(eligibility)}\n\n${buildTugoboNeedFounderLine(needAssessment)}`
+    : buildTugoboNeedFounderSentence(needAssessment, lead.city);
+
   return {
     id: `working-queue:fresh:${lead.id}`,
     kind: "fresh_opportunity",
@@ -125,7 +170,7 @@ function freshOpportunityToWorkingQueueItem(
     leadId: lead.id,
     title: lead.name,
     isNew: true,
-    whyInQueue: explanation.status,
+    whyInQueue,
     commercialStageLabel: FRESH_OPPORTUNITY_LABEL,
     nextDecisionLabel: FRESH_OPPORTUNITY_NEXT_DECISION,
     lastMeaningfulChangeAt: seenAt,
@@ -133,6 +178,7 @@ function freshOpportunityToWorkingQueueItem(
     primaryActionLabel: FRESH_OPPORTUNITY_PRIMARY_ACTION,
     secondaryActionLabel: null,
     sourceDecisionItem: null,
+    tugoboNeed: needAssessment,
   };
 }
 
@@ -148,6 +194,34 @@ export function computeFounderWorkingQueue(input: ComputeFounderWorkingQueueInpu
   const now = input.now ?? Date.now();
   const runningMissionIds = input.runningMissionIds ?? new Set<string>();
   const missionIdByLeadId = new Map((input.missions ?? []).map((m) => [m.leadId, m.missionId]));
+  const restrictToTargetMarket = input.restrictToTargetMarket === true;
+  const leadById = new Map((input.leads ?? []).map((l) => [l.id, l]));
+
+  // Strict Target Market Allowlist fix — KAPI 1. Only ever applied when the
+  // live scope is tugobo-need; the turkey/custom case always returns true
+  // (and a null eligibility object, so the founder copy stays need-only,
+  // unchanged from before this fix) — nothing changes for those scopes. An
+  // orphan reference (no matching lead — the location can't be verified) is
+  // treated exactly like an unknown location: excluded from the active
+  // queue, never a crash.
+  function eligibilityOf(candidate: TargetMarketLeadLike | undefined): TargetMarketEligibility | null {
+    if (!restrictToTargetMarket) return null;
+    if (!candidate) {
+      return {
+        eligible: false,
+        confidence: "unknown",
+        matchedMarketId: null,
+        matchedMarketName: null,
+        matchedClusterName: null,
+        reason: "",
+      };
+    }
+    return computeTugoboTargetMarketEligibility(candidate);
+  }
+  function isTargetMarketEligible(candidate: TargetMarketLeadLike | undefined): boolean {
+    const eligibility = eligibilityOf(candidate);
+    return eligibility === null || eligibility.eligible;
+  }
 
   const decisionLeadIds = new Set(
     input.decisionItems.map((item) => item.leadId).filter((id): id is string => id !== null),
@@ -155,16 +229,40 @@ export function computeFounderWorkingQueue(input: ComputeFounderWorkingQueueInpu
 
   const freshOpportunities = (input.leads ?? [])
     .filter((lead) => !decisionLeadIds.has(lead.id))
-    .map((lead) => ({ lead, seenAt: firstSeenAt(lead) }))
-    .filter((entry): entry is { lead: WorkingQueueLeadLike; seenAt: number } => entry.seenAt !== null)
+    .map((lead) => ({ lead, eligibility: eligibilityOf(lead) }))
+    .filter((entry) => entry.eligibility === null || entry.eligibility.eligible)
+    .map((entry) => ({ ...entry, seenAt: firstSeenAt(entry.lead) }))
+    .filter(
+      (entry): entry is { lead: WorkingQueueLeadLike; eligibility: TargetMarketEligibility | null; seenAt: number } =>
+        entry.seenAt !== null,
+    )
     .filter((entry) => isSameCalendarDay(entry.seenAt, now))
     .filter((entry) => explainOpportunity(entry.lead).attentionLevel !== "waiting")
+    .map((entry) => ({ ...entry, needAssessment: computeTugoboNeedAssessment(entry.lead) }))
+    // TUGOBO Need-Based Acquisition Engine — an independent, additive gate on
+    // top of the existing attentionLevel check. Low measured need never
+    // enters today's queue; insufficient evidence is deliberately kept in
+    // (Hermes hasn't verified enough to rule it out) rather than eliminated.
+    .filter((entry) => entry.needAssessment.level !== "low")
     .sort((a, b) => b.seenAt - a.seenAt)
     .map((entry) =>
-      freshOpportunityToWorkingQueueItem(entry.lead, entry.seenAt, missionIdByLeadId.get(entry.lead.id) ?? null),
+      freshOpportunityToWorkingQueueItem(
+        entry.lead,
+        entry.seenAt,
+        missionIdByLeadId.get(entry.lead.id) ?? null,
+        entry.needAssessment,
+        entry.eligibility,
+      ),
     );
 
-  const decisions = input.decisionItems.map((item) => decisionToWorkingQueueItem(item, runningMissionIds));
+  const decisions = input.decisionItems
+    .filter((item) => {
+      // Not lead-scoped — no geography concept exists to gate on, so a
+      // system-level decision item is never hidden by market filtering.
+      if (item.leadId === null) return true;
+      return isTargetMarketEligible(leadById.get(item.leadId));
+    })
+    .map((item) => decisionToWorkingQueueItem(item, runningMissionIds));
 
   return [...decisions, ...freshOpportunities];
 }

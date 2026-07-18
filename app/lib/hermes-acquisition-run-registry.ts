@@ -317,6 +317,24 @@ export function getRegionLastRunAt(regionId: string): number | null {
   return regionLastRunAt.get(regionId) ?? null;
 }
 
+/**
+ * Türkiye Region Rotation v1.0 — seeds the in-memory cursor map from a
+ * durable source (a disk-backed state store, wired in only by the
+ * production route) without ever overwriting an already-set in-memory
+ * value. Additive only: this registry stays a pure in-memory store with no
+ * fs coupling of its own — the caller decides where `entries` came from.
+ */
+export function hydrateRegionLastRunAt(entries: Record<string, number>): void {
+  for (const [id, at] of Object.entries(entries)) {
+    if (!regionLastRunAt.has(id)) regionLastRunAt.set(id, at);
+  }
+}
+
+/** A snapshot of the full in-memory rotation cursor map — the source a durable store persists from. */
+export function getAllRegionLastRunAt(): Record<string, number> {
+  return Object.fromEntries(regionLastRunAt);
+}
+
 /* ── duplicate control across runs ──────────────────────────── */
 
 export function hasSeenAcquisitionDedupeKey(keys: string[]): boolean {

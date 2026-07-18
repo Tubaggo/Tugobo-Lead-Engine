@@ -38,6 +38,12 @@ export async function GET() {
   return NextResponse.json({
     configOk: config.configErrors.length === 0,
     configNotes: config.configErrors,
+    // Strict Target Market Allowlist fix — the Founder Home active-queue
+    // filter reads this to decide whether strict market eligibility applies
+    // (only ever gated ON for `tugobo-need`; `turkey`/`custom` keep their
+    // existing broad behavior). This is the single client-visible bridge —
+    // no second config system.
+    regionScope: config.regionScope,
     enabled: config.policy.enabled,
     mode: config.policy.mode,
     dryRun: config.policy.dryRun,

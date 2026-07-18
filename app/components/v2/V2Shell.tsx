@@ -75,6 +75,7 @@ import {
 import { buildHermesMonitor } from "@/app/lib/hermes-monitor";
 import { buildHermesMissions, missionBucketOf } from "@/app/components/v2/adapters/hermes-mission-adapter";
 import type { HermesMission } from "@/app/components/v2/adapters/hermes-mission-adapter";
+import { computeTugoboTargetMarketEligibility } from "@/app/components/v2/adapters/tugobo-target-market-eligibility";
 import { canQueuePipeline, runHermesPipeline, decideMissionPreparationRoute } from "@/app/components/v2/hermes-pipeline-engine";
 import type { HermesPipeline } from "@/app/components/v2/hermes-pipeline-engine";
 import {
@@ -179,6 +180,14 @@ type AcquisitionStatusPayload = AcquisitionStatusLike & {
     blockingReasons: string[];
     completedAt: number | null;
   }>;
+  /**
+   * Strict Target Market Allowlist fix — read via the existing status bridge
+   * (never a second config system) to decide whether the strict
+   * target-market gate applies to the active Founder queue. Only ever
+   * gates ON for "tugobo-need"; "turkey"/"custom"/absent keep the
+   * pre-existing broad behavior.
+   */
+  regionScope?: string;
 };
 
 export const SCREEN_META: Record<V2Screen, { title: string; subtitle: string }> = {
@@ -671,6 +680,11 @@ export default function V2Shell({ scoredLeads }: Props) {
     }
   }, []);
 
+  // Strict Target Market Allowlist fix — read via the existing status
+  // bridge (never a second config system). Only ever true for the
+  // tugobo-need scope; turkey/custom keep the pre-existing broad behavior.
+  const restrictToTargetMarket = acquisitionStatus?.regionScope === "tugobo-need";
+
   // Resume hydration, step 2 — resolves the candidate id against the real
   // `hermesMissions` array (state B → C/D). Fires again whenever
   // `hermesMissions` changes, so a candidate read before the lead pool
@@ -682,54 +696,100 @@ export default function V2Shell({ scoredLeads }: Props) {
   // through the exact same state this screen's own selection handlers use;
   // no match (state D) clears the persisted key — never a fabricated
   // Workspace, never a stale one.
+  //
+  // Strict Target Market Allowlist fix — a match that resolves to a
+  // business outside the approved target market (only checked when the
+  // live scope is tugobo-need) is treated exactly like state D: the
+  // persisted key is cleared and the founder lands safely on Home. The
+  // underlying mission/draft/lead record itself is never touched — this
+  // only ever affects which mission the resume flow reopens.
+  //
+  // This effect deliberately waits for `acquisitionFetchState` to settle
+  // (not "loading") before judging eligibility — `restrictToTargetMarket`
+  // starts `false` until the status fetch resolves, and resolving the
+  // restore against that transient false would wrongly treat an
+  // out-of-scope mission as in-scope on a fast first render. The wait is
+  // bounded (the status fetch settles to "ready"/"error" exactly once per
+  // mount) so hydration still never waits forever.
   useEffect(() => {
     if (!pendingRestoreMissionId) return;
+    if (acquisitionFetchState === "loading") return;
     const match = hermesMissions.find((m) => m.missionId === pendingRestoreMissionId);
-    if (match) {
+    const outOfScope =
+      match && restrictToTargetMarket
+        ? !computeTugoboTargetMarketEligibility({ name: match.hotelName, city: match.city }).eligible
+        : false;
+    if (match && !outOfScope) {
       setSelectedMissionId(match.missionId);
       setSelectedAutomationCard(null);
     } else {
       persistLastSelectedMissionId(null);
     }
     setPendingRestoreMissionId(null);
-  }, [pendingRestoreMissionId, hermesMissions, persistLastSelectedMissionId]);
+  }, [
+    pendingRestoreMissionId,
+    hermesMissions,
+    persistLastSelectedMissionId,
+    restrictToTargetMarket,
+    acquisitionFetchState,
+  ]);
 
   // v8.0/v8.6 — the single "pending founder decisions" number. The sidebar
   // badge and the header's "Bekleyen Karar" both read this value — never two
   // independently drifting counts.
-  const pendingHermesDecisionCount = useMemo(
-    () =>
-      hermesMissions.filter((m) => missionBucketOf(m) === "approval").length +
+  const pendingHermesDecisionCount = useMemo(() => {
+    // Strict Target Market Allowlist fix — every sub-count below is
+    // mission-scoped (deliveries/gates/dry-responses are all keyed by
+    // missionId), so gating the eligible-mission-id set once here filters
+    // all four consistently. Unaffected (identical to before) when
+    // restrictToTargetMarket is false.
+    const eligibleMissionIds = restrictToTargetMarket
+      ? new Set(
+          hermesMissions
+            .filter((m) => computeTugoboTargetMarketEligibility({ name: m.hotelName, city: m.city }).eligible)
+            .map((m) => m.missionId),
+        )
+      : null;
+    const isEligible = (missionId: string) => eligibleMissionIds === null || eligibleMissionIds.has(missionId);
+
+    return (
+      hermesMissions.filter((m) => missionBucketOf(m) === "approval" && isEligible(m.missionId)).length +
       // Ready-for-provider AND not yet shadow-sent — a completed shadow
       // receipt is done, not pending, so it must not inflate this count.
       Object.values(hermesDeliveries).filter(
-        (d) => d.status === "ready" && !hermesProviderReceipts[d.missionId],
+        (d) => d.status === "ready" && !hermesProviderReceipts[d.missionId] && isEligible(d.missionId),
       ).length +
       // Gates awaiting final confirmation only — cancelled/blocked/
       // confirmed gates are resolved, not pending founder attention.
-      Object.values(hermesLiveSendGates).filter((g) => g.status === "pending_confirmation").length +
+      Object.values(hermesLiveSendGates).filter(
+        (g) => g.status === "pending_confirmation" && isEligible(g.missionId),
+      ).length +
       // Dry-mode-ready only — confirmed_but_blocked gates that don't yet
       // have a dry response. A completed dry response is resolved, not
       // pending, so it must not inflate this count (no overcounting).
       Object.values(hermesLiveSendGates).filter(
-        (g) => g.status === "confirmed_but_blocked" && !hermesProviderApiDryResponses[g.missionId],
+        (g) =>
+          g.status === "confirmed_but_blocked" &&
+          !hermesProviderApiDryResponses[g.missionId] &&
+          isEligible(g.missionId),
       ).length +
       // Controlled live checks pending only — dry_ready responses that
       // don't yet have a live-send result. A completed (always
       // "blocked") result is resolved, not pending, so it must not
       // inflate this count (no overcounting).
       Object.entries(hermesProviderApiDryResponses).filter(
-        ([missionId, r]) => r.status === "dry_ready" && !hermesLiveSendResults[missionId],
-      ).length,
-    [
-      hermesMissions,
-      hermesDeliveries,
-      hermesProviderReceipts,
-      hermesLiveSendGates,
-      hermesProviderApiDryResponses,
-      hermesLiveSendResults,
-    ],
-  );
+        ([missionId, r]) => r.status === "dry_ready" && !hermesLiveSendResults[missionId] && isEligible(missionId),
+      ).length
+    );
+  }, [
+    hermesMissions,
+    hermesDeliveries,
+    hermesProviderReceipts,
+    hermesLiveSendGates,
+    hermesProviderApiDryResponses,
+    hermesLiveSendResults,
+    restrictToTargetMarket,
+  ]);
 
   // v8.6 — the header's "Son Aktivite": the newest moment across every
   // mission's existing timeline. Read-only over state that already exists;
@@ -1541,6 +1601,7 @@ export default function V2Shell({ scoredLeads }: Props) {
                 acquisitionIngestWarning={acquisitionIngestWarning}
                 onEditDraft={editHermesDraft}
                 hermesApprovalBlockers={missionApprovalBlockers}
+                restrictToTargetMarket={restrictToTargetMarket}
               />
               {/* Right Panel Decision (Founder Working Queue + Deal Workspace v1.0) —
                   Founder Mode no longer has a right operating panel: every founder-critical

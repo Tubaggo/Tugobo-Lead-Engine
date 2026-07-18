@@ -34,6 +34,7 @@ import type { HermesDeliveryRequest } from "@/app/components/v2/hermes-delivery-
 import type { RunAcquisitionResult } from "@/app/lib/hermes-autonomous-acquisition-runtime";
 import {
   computeFounderWorkingQueue,
+  summarizeFounderWorkingQueue,
   isDirectMutationDecisionType,
   type WorkingQueueItem,
 } from "@/app/components/v2/adapters/hermes-working-queue-adapter";
@@ -252,6 +253,15 @@ type Props = {
   acquisitionIngestWarning?: string | null;
   /** Founder Preparation-to-Draft Runtime Bridge fix — founder-safe reason shown when the last "Onayla — Hermes'i Başlat" click's preflight guard rejected it; keyed by missionId, session-only. */
   hermesApprovalBlockers?: Record<string, string>;
+  /**
+   * Strict Target Market Allowlist fix — true only when the server's live
+   * acquisition scope is `tugobo-need`. Gates the Working Queue's
+   * target-market filter (and, transitively, the founder narrative's
+   * pending-decision count, which now reads from the same filtered
+   * Working Queue output). `turkey`/`custom` scope omit this and keep the
+   * pre-existing broad behavior.
+   */
+  restrictToTargetMarket?: boolean;
 };
 
 const KARAR_KUYRUGU_ANCHOR_ID = "hermes-home-karar-kuyrugu";
@@ -383,6 +393,7 @@ export default function FounderRevenueWorkspace({
   acquisitionTriggerLoading,
   acquisitionIngestWarning,
   hermesApprovalBlockers,
+  restrictToTargetMarket,
 }: Props) {
   const [recentReceipts, setRecentReceipts] = useState<ProcessedWhatsAppDeliveryReceipt[]>([]);
   const [receiptsReachable, setReceiptsReachable] = useState<boolean | null>(null);
@@ -954,7 +965,13 @@ export default function FounderRevenueWorkspace({
     leads,
     missions,
     runningMissionIds,
+    restrictToTargetMarket,
   });
+  // Strict Target Market Allowlist fix — the founder narrative's pending
+  // count now reads from the same target-market-filtered Working Queue
+  // output, not a raw `decisionItems.length` — an out-of-scope decision
+  // must never inflate "N karar seni bekliyor."
+  const workingQueueSummary = summarizeFounderWorkingQueue(workingQueueItems);
 
   const selectedDelivery = selectedMission ? hermesDeliveries?.[selectedMission.missionId] : undefined;
   const selectedLead = selectedMission ? leads.find((l) => l.id === selectedMission.leadId) : undefined;
@@ -1138,7 +1155,7 @@ export default function FounderRevenueWorkspace({
   // props (`hermesPipelines`, `hermesDrafts`) — no new runtime state.
   const founderNarrative = computeFounderNarrative({
     isRunning: Object.values(hermesPipelines ?? {}).some((p) => p.state === "running"),
-    pendingDecisionCount: decisionItems.length,
+    pendingDecisionCount: workingQueueSummary.decisionCount,
     draftsPreparedCount: Object.keys(hermesDrafts ?? {}).length,
     revenueSummary: summary,
     intakeSummary: intake,
@@ -1507,8 +1524,8 @@ export default function FounderRevenueWorkspace({
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
           <TodayFocusRow
             label={HERMES_DAILY_WORKSPACE_LABELS.todayPendingDecisions}
-            value={String(decisionItems.length)}
-            accent={decisionItems.length > 0 ? "text-amber-400" : "text-zinc-300"}
+            value={String(workingQueueSummary.decisionCount)}
+            accent={workingQueueSummary.decisionCount > 0 ? "text-amber-400" : "text-zinc-300"}
           />
           <TodayFocusRow
             label={HERMES_DAILY_WORKSPACE_LABELS.todayDiscoveredOpportunities}

@@ -59,6 +59,7 @@ function config(
     },
     regions,
     configErrors,
+    regionScope: "custom",
   };
 }
 
@@ -102,6 +103,7 @@ test("no external call and blocked status when acquisition is disabled", async (
       policy: DEFAULT_ACQUISITION_POLICY,
       regions: [region()],
       configErrors: [],
+      regionScope: "custom",
     },
     importAdapter: adapter,
     now: NOW,
@@ -610,6 +612,7 @@ test("candidateLeads: empty for a blocked run", async () => {
       policy: DEFAULT_ACQUISITION_POLICY,
       regions: [region()],
       configErrors: [],
+      regionScope: "custom",
     },
     importAdapter: adapter,
     now: NOW,
@@ -698,4 +701,245 @@ test("run özeti sayaçları qualification aşamasını yansıtır (mission cap 
   // Cap: 8 sales_ready bulunsa da yalnız 3 aday teslim edilir.
   assert.equal(result.missionCandidateCount, 3);
   assert.equal(result.status, "partial");
+});
+
+/* ── Türkiye Region Rotation v1.0 — durable cursor wiring ──────
+ *
+ * A fake in-memory "disk" (a plain object, never real fs) stands in for the
+ * durable store the production route wires in. This exercises the
+ * hydrator/persister contract in isolation, with zero real I/O and zero
+ * risk of leaving test artifacts on disk. `__resetAcquisitionRunRegistryForTests`
+ * between calls simulates a server restart: the in-memory rotation map is
+ * wiped, but the fake disk survives — exactly like a real process restart
+ * with a durable file underneath.
+ */
+
+function fakeDurableRegionStore() {
+  let disk: Record<string, number> = {};
+  return {
+    hydrator: () => ({ ...disk }),
+    persister: (state: Record<string, number>) => {
+      disk = { ...state };
+      return { ok: true as const };
+    },
+    failingPersister: () => ({ ok: false as const, error: "disk full (test fixture)" }),
+    readDisk: () => ({ ...disk }),
+  };
+}
+
+function threeRegions(): AcquisitionRegion[] {
+  return [
+    region({ id: "istanbul-hotel", city: "İstanbul", priority: 1 }),
+    region({ id: "antalya-hotel", city: "Antalya", priority: 2 }),
+    region({ id: "izmir-hotel", city: "İzmir", priority: 3 }),
+  ];
+}
+
+test("rotation: first run with no prior state selects the first eligible (lowest-priority) region", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.deepEqual(result.selectedRegionsSafe, ["İstanbul"]);
+});
+
+test("rotation: mark + simulated restart — the second run picks the next unrun region, not the same one", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter: adapter1 } = trackingAdapter([lead()]);
+
+  const first = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter1,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.deepEqual(first.selectedRegionsSafe, ["İstanbul"]);
+  assert.ok(store.readDisk()["istanbul-hotel"] === NOW);
+
+  // Simulate a server restart: the in-memory registry is wiped, the fake
+  // disk survives untouched.
+  __resetAcquisitionRunRegistryForTests();
+  __resetQualificationRegistryForTests();
+
+  const { adapter: adapter2 } = trackingAdapter([lead()]);
+  const second = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter2,
+    now: NOW + 60 * 60 * 1000,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.deepEqual(second.selectedRegionsSafe, ["Antalya"]);
+});
+
+test("rotation: across three runs with a simulated restart between each, no unrun region repeats before all are scanned", async () => {
+  const store = fakeDurableRegionStore();
+  const seenOrder: string[] = [];
+
+  for (let i = 0; i < 3; i += 1) {
+    __resetAcquisitionRunRegistryForTests();
+    __resetQualificationRegistryForTests();
+    const { adapter } = trackingAdapter([lead()]);
+    const result = await runHermesAutonomousAcquisition({
+      trigger: "manual",
+      config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+      importAdapter: adapter,
+      now: NOW + i * 60 * 60 * 1000,
+      regionStateHydrator: store.hydrator,
+      regionStatePersister: store.persister,
+    });
+    seenOrder.push(result.selectedRegionsSafe[0]);
+  }
+
+  assert.deepEqual(seenOrder, ["İstanbul", "Antalya", "İzmir"]);
+  assert.equal(new Set(seenOrder).size, 3, "no region repeated before all three were scanned");
+});
+
+test("rotation: maxRegionsPerRun=1 selects exactly one region per run", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.equal(result.selectedRegionsSafe.length, 1);
+});
+
+test("rotation: maxRegionsPerRun=3 selects up to three regions, never exceeding the policy hard limit", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 3 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.equal(result.selectedRegionsSafe.length, 3);
+  assert.deepEqual(new Set(result.selectedRegionsSafe), new Set(["İstanbul", "Antalya", "İzmir"]));
+});
+
+test("rotation: a blocked run (disabled policy) never persists any region as scanned", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter, calls } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "scheduled",
+    config: { policy: DEFAULT_ACQUISITION_POLICY, regions: threeRegions(), configErrors: [], regionScope: "custom" },
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.equal(result.status, "blocked");
+  assert.equal(calls.length, 0);
+  assert.deepEqual(store.readDisk(), {});
+});
+
+test("rotation: a real scan persists lastRunAt for the exact region that was actually scanned", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter } = trackingAdapter([lead()]);
+  await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.deepEqual(store.readDisk(), { "istanbul-hotel": NOW });
+});
+
+test("rotation: dry run never invokes the persister and never writes rotation state", async () => {
+  const store = fakeDurableRegionStore();
+  let persisterCalls = 0;
+  const trackingPersister = (state: Record<string, number>) => {
+    persisterCalls += 1;
+    return store.persister(state);
+  };
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "developer",
+    config: config({ dryRun: true, maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: trackingPersister,
+  });
+  assert.equal(result.dryRun, true);
+  assert.equal(persisterCalls, 0);
+  assert.deepEqual(store.readDisk(), {});
+});
+
+test("rotation: the run summary reports the real selected region's city, not a placeholder", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.ok(result.summaryTr.includes("İstanbul"));
+});
+
+test("rotation: a persister failure surfaces a safe warning but does not undo the scan or fail the run", async () => {
+  const store = fakeDurableRegionStore();
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.failingPersister,
+  });
+  assert.notEqual(result.status, "blocked");
+  assert.notEqual(result.status, "failed");
+  assert.deepEqual(result.selectedRegionsSafe, ["İstanbul"]);
+  const runs = getRecentAcquisitionRuns(1);
+  assert.ok(runs[0].safeErrors.some((e) => e.includes("kalıcı olarak kaydedilemedi")));
+});
+
+test("rotation: cooldown still blocks a just-scanned region even with durable state wired in", async () => {
+  const store = fakeDurableRegionStore();
+  store.persister({ "istanbul-hotel": NOW - 60 * 60 * 1000 }); // scanned 1h ago, cooldown 24h
+  const { adapter, calls } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+    regionStateHydrator: store.hydrator,
+    regionStatePersister: store.persister,
+  });
+  assert.deepEqual(result.selectedRegionsSafe, ["Antalya"]);
+  assert.equal(calls.length, 1);
+});
+
+test("rotation: with no hydrator/persister wired, behavior is identical to the pre-existing in-memory-only path", async () => {
+  const { adapter } = trackingAdapter([lead()]);
+  const result = await runHermesAutonomousAcquisition({
+    trigger: "manual",
+    config: config({ maxRegionsPerRun: 1 }, threeRegions()),
+    importAdapter: adapter,
+    now: NOW,
+  });
+  assert.deepEqual(result.selectedRegionsSafe, ["İstanbul"]);
+  assert.equal(result.status, "completed");
 });
