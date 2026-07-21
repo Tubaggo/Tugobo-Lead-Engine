@@ -6,6 +6,7 @@ import {
   type AirtableLeadPayload,
   updateLeadRecord,
 } from "@/app/lib/airtable";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 type SyncLeadBody = {
   leads?: Record<string, unknown>[];
@@ -105,7 +106,7 @@ async function createOrUpdateWithFallback(
   }
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   if (!getAirtableConnection()) {
     return NextResponse.json({ configured: false, added: 0, updated: 0, skipped: 0 });
   }
@@ -151,3 +152,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ configured: true, error: message }, { status: 500 });
   }
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

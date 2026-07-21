@@ -4,6 +4,7 @@ import {
   maturityFromScore,
   type SignalConfidence,
 } from "@/app/lib/intelligence/confidence";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 type ContactFinderType =
   | "VERIFIED_WHATSAPP"
@@ -341,7 +342,7 @@ function estimateSocialLinksQuality(data: {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   let body: { website?: string; phone?: string; instagram?: string };
   try {
     body = (await req.json()) as { website?: string; phone?: string; instagram?: string };
@@ -513,3 +514,6 @@ export async function POST(req: Request) {
     );
   }
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

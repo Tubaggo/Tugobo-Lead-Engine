@@ -5,6 +5,7 @@ import {
   getContactQuality,
   type ScoredLead,
 } from "@/app/lib/leads";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 function toNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -85,7 +86,7 @@ function mapRecordToLead(
   });
 }
 
-export async function GET() {
+async function handleGET() {
   if (!getAirtableConnection()) {
     return NextResponse.json({ configured: false, leads: [] });
   }
@@ -99,3 +100,6 @@ export async function GET() {
     return NextResponse.json({ configured: true, error: message }, { status: 500 });
   }
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const GET = withAdminSession(handleGET);

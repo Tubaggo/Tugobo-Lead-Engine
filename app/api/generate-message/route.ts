@@ -16,6 +16,7 @@ import type {
   RecommendedChannel,
   LeadTemperature,
 } from "@/app/lib/intelligence/outreach-intelligence";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 type GenerateMessageBody = {
   leadId?: string;
@@ -278,7 +279,7 @@ function parseAcquisitionContext(input: {
   };
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
@@ -491,3 +492,6 @@ export async function POST(req: Request) {
     },
   });
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

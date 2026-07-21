@@ -14,6 +14,7 @@ import {
   type ScoredLead,
 } from "@/app/lib/leads";
 import { summarizeVerificationResult } from "@/app/lib/signal-verification";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
@@ -81,7 +82,7 @@ function insightLlmExtra(lead: ScoredLead): Record<string, unknown> | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
@@ -238,3 +239,6 @@ export async function POST(req: Request) {
     );
   }
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

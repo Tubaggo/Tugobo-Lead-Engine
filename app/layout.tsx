@@ -17,6 +17,8 @@ export const metadata: Metadata = {
   title: "Tugobo Lead Engine",
   description:
     "Find and contact high-probability tourism & accommodation leads every morning.",
+  // Private single-operator tool; keep it out of every search index.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({

@@ -13,6 +13,7 @@ import {
   PLACES_RATE_LIMIT_USER_MESSAGE,
 } from "@/app/lib/places-import-session";
 import { enrichLeadsWithHomepageSignalsBatched } from "@/app/lib/enrich-lead-homepage";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 const TEXT_SEARCH =
   "https://maps.googleapis.com/maps/api/place/textsearch/json";
@@ -166,7 +167,7 @@ async function fetchPlaceDetailsCached(
   return request;
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY?.trim();
   if (!apiKey) {
     return NextResponse.json(
@@ -323,3 +324,6 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ leads });
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

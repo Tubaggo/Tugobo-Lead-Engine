@@ -6,6 +6,7 @@ import {
   updateLeadRecordFields,
   type AirtableRecord,
 } from "@/app/lib/airtable";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 type FollowUpItem = {
   recordId: string;
@@ -63,7 +64,7 @@ function isDueToday(item: FollowUpItem): boolean {
   return true;
 }
 
-export async function GET() {
+async function handleGET() {
   if (!getAirtableConnection()) {
     return NextResponse.json({ configured: false, leads: [] });
   }
@@ -90,7 +91,7 @@ type ActionBody = {
   action?: unknown;
 };
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   if (!getAirtableConnection()) {
     return NextResponse.json({ configured: false, updated: false });
   }
@@ -145,3 +146,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ configured: true, updated: false, error: message }, { status: 500 });
   }
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const GET = withAdminSession(handleGET);
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

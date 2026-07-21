@@ -11,6 +11,7 @@ import {
   OPPORTUNITY_REASON_LABELS,
   type ScoredLead,
 } from "@/app/lib/leads";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -78,7 +79,7 @@ function insightLlmExtraFromLead(lead: ScoredLead): Record<string, unknown> | nu
   return Object.keys(out).length > 0 ? out : null;
 }
 
-export async function GET() {
+async function handleGET() {
   const s = getLlmProviderStatus();
   return NextResponse.json({
     configured: s.llm_enabled,
@@ -87,7 +88,7 @@ export async function GET() {
   });
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
@@ -138,3 +139,9 @@ export async function POST(req: Request) {
     });
   }
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const GET = withAdminSession(handleGET);
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

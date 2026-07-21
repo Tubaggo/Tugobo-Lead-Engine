@@ -4,6 +4,7 @@ import {
   getAirtableConnection,
   updateLeadRecordFields,
 } from "@/app/lib/airtable";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 type MarkSentBody = {
   lead?: {
@@ -33,7 +34,7 @@ function asNumber(value: unknown): number | null {
   return null;
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   if (!getAirtableConnection()) {
     return NextResponse.json({ configured: false, updated: false });
   }
@@ -111,3 +112,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ configured: true, updated: false, warning: message });
   }
 }
+
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

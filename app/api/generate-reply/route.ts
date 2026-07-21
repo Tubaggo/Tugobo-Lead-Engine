@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
 type GenerateReplyBody = {
   ownerReply: string;
@@ -161,7 +162,7 @@ function buildReplySuggestion(body: GenerateReplyBody): ReplySuggestion {
   };
 }
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
@@ -191,3 +192,5 @@ export async function POST(req: Request) {
   return NextResponse.json(suggestion);
 }
 
+/** Protected: unauthenticated callers get a generic JSON 401. */
+export const POST = withAdminSession(handlePOST);

@@ -83,6 +83,7 @@ import ImportPanel, {
 } from "@/app/components/ImportPanel";
 import { ICP_SEARCH_CONFIGS, filterLeadsForTargetAudience } from "@/app/lib/places-import";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
+import { LogoutButton } from "@/app/components/LogoutButton";
 import {
   SectionNavigationRail,
   SECTION_ANCHOR_CLS,
@@ -13100,6 +13101,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           >
             {t("follow_ups", locale)}
           </a>
+          <LogoutButton />
         </div>
       </header>
 
