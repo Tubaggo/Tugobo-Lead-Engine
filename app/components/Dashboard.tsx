@@ -127,17 +127,21 @@ import {
   computeCommercialPackaging,
   type CommercialPackage,
 } from "@/lib/commercial/commercial-packaging";
+import * as operationalState from "@/app/lib/operational-state/client";
+import { reportPersistFailure } from "@/app/lib/operational-state/client";
+import { runLegacyMigration } from "@/app/lib/operational-state/legacy-migration";
 
-const STORAGE_KEY = "tugobo-lead-engine:state-v1";
-const EXTRA_LEADS_KEY = "tugobo-lead-engine:extra-leads-v1";
-const IMPORTED_LEADS_V2_KEY = "tugobo-lead-engine:imported-leads-v2";
+/**
+ * Critical operational state (workflow, roster, queue, activity) lives on the
+ * server — see `app/lib/operational-state/`. The keys below are the remaining
+ * browser-local ones: view preferences and regenerable caches, which are
+ * correct in localStorage and stay there.
+ */
 const LEAD_ENRICHMENT_OVERRIDES_KEY = "tugobo-lead-engine:lead-enrichment-overrides-v1";
 const LAST_IMPORT_KEY = "tugobo-lead-engine:last-import-v1";
 const IMPORT_CACHE_KEY = "tugobo-lead-engine:import-cache-v1";
 const CONTACT_FINDER_MAP_KEY = "tugobo-lead-engine:contact-finder-map-v1";
 const IMPORT_META_KEY = "tugobo-lead-engine:import-meta-v1";
-const DAILY_OUTREACH_STORAGE_KEY = "tugobo-lead-engine:daily-outreach-v1";
-const OUTREACH_LOG_KEY = "tugobo-lead-engine:outreach-log-v1";
 const AI_INTERPRETATION_CACHE_KEY = "tugobo-lead-engine:ai-interpretation-cache-v1";
 /** Max leads staged for today's outreach queue (local calendar day). */
 const DAILY_OUTREACH_LIMIT = 20;
@@ -494,34 +498,43 @@ function normalizeStateEntry(v: unknown): LeadStatusUpdate {
   };
 }
 
+/**
+ * Reads the workflow map from the hydrated server mirror.
+ *
+ * Synchronous by design: this is called from render paths and event handlers
+ * that cannot await. `operationalState.hydrate()` fills the mirror once on
+ * mount, so every read after that is a local lookup of server-owned data.
+ * Before hydration this returns `{}`, which is the same empty-workspace state
+ * the old localStorage version returned on a fresh browser.
+ */
 function loadState(): StateMap {
   if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return {};
-    const out: StateMap = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      out[k] = normalizeStateEntry(v);
-    }
-    return out;
-  } catch {
-    return {};
+  const out: StateMap = {};
+  for (const [id, v] of Object.entries(operationalState.readStateMap())) {
+    out[id] = normalizeStateEntry(v);
   }
+  return out;
 }
 
+// Lets the client compare a sparse server record against a normalized
+// dashboard record, so a save patches only what actually changed.
+operationalState.setStateNormalizer(normalizeStateEntry);
+
+/**
+ * Persists the workflow map to the server.
+ *
+ * Fire-and-forget from the caller's perspective (the existing call sites are
+ * synchronous), but failures are surfaced through {@link reportPersistFailure}
+ * rather than swallowed — a lost sales-stage change must not be invisible.
+ * Nothing is written to localStorage: the server is the source of truth.
+ */
 function saveState(state: StateMap) {
   if (typeof window === "undefined") return;
-  try {
-    const sanitized: StateMap = {};
-    for (const [id, v] of Object.entries(state)) {
-      sanitized[id] = normalizeStateEntry(v);
-    }
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
-  } catch {
-    // ignore quota errors
+  const sanitized: StateMap = {};
+  for (const [id, v] of Object.entries(state)) {
+    sanitized[id] = normalizeStateEntry(v);
   }
+  void operationalState.patchLeads(sanitized).catch(reportPersistFailure);
 }
 
 function ensureLeadCreatedAt(lead: ScoredLead, fallbackTs: number): ScoredLead {
@@ -554,41 +567,32 @@ function ensureLeadsCreatedAt(leads: ScoredLead[], fallbackTs: number): ScoredLe
   return leads.map((lead) => ensureLeadCreatedAt(lead, fallbackTs));
 }
 
+/**
+ * The imported lead roster, from the server mirror.
+ *
+ * The timestamp migrations still run here: records imported before those
+ * fields existed are stored as-is on the server and normalized on read, so
+ * the server file stays a faithful record of what was imported.
+ */
 function loadImportedLeadsV2(): ScoredLead[] {
   if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(IMPORTED_LEADS_V2_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed)
-        ? ensureLeadsCreatedAt(parsed as ScoredLead[], LEGACY_CREATED_AT_TS).map((l) =>
-            migrateImportedLeadTimestamps(l, LEGACY_CREATED_AT_TS),
-          )
-        : [];
-    }
-    const leg = window.localStorage.getItem(EXTRA_LEADS_KEY);
-    if (leg) {
-      const parsed = JSON.parse(leg);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        window.localStorage.setItem(IMPORTED_LEADS_V2_KEY, leg);
-        return ensureLeadsCreatedAt(parsed as ScoredLead[], LEGACY_CREATED_AT_TS).map((l) =>
-          migrateImportedLeadTimestamps(l, LEGACY_CREATED_AT_TS),
-        );
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return [];
+  const roster = operationalState.readRoster();
+  return ensureLeadsCreatedAt(roster, LEGACY_CREATED_AT_TS).map((l) =>
+    migrateImportedLeadTimestamps(l, LEGACY_CREATED_AT_TS),
+  );
 }
 
+/**
+ * Persists the roster server-side.
+ *
+ * This is what makes a second device usable at all: without it the roster
+ * lives in one browser and every other device renders an empty workspace.
+ * It also means a re-import is never needed to recover leads, which is real
+ * Google Places spend avoided.
+ */
 function saveImportedLeadsV2(leads: ScoredLead[]) {
   if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(IMPORTED_LEADS_V2_KEY, JSON.stringify(leads));
-  } catch {
-    // ignore quota errors
-  }
+  void operationalState.putRoster(leads).catch(reportPersistFailure);
 }
 
 function loadLastImportPayload(): LastImportPayload {
@@ -1270,8 +1274,8 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
   }
   const today = localCalendarDayKey();
   try {
-    const raw = window.localStorage.getItem(DAILY_OUTREACH_STORAGE_KEY);
-    if (!raw) {
+    const p = operationalState.readDailyQueue() as Partial<DailyOutreachPersisted> | null;
+    if (!p) {
       return {
         queueDate: today,
         todayQueue: [],
@@ -1282,7 +1286,8 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
         dncToday: 0,
       };
     }
-    const p = JSON.parse(raw) as Partial<DailyOutreachPersisted>;
+    // Day rollover: yesterday's queue is not today's work. Reset and persist so
+    // every device agrees on the same empty queue for the new day.
     if (p.queueDate !== today) {
       const fresh: DailyOutreachPersisted = {
         queueDate: today,
@@ -1293,7 +1298,7 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
         skippedToday: 0,
         dncToday: 0,
       };
-      window.localStorage.setItem(DAILY_OUTREACH_STORAGE_KEY, JSON.stringify(fresh));
+      saveDailyOutreachState(fresh);
       return fresh;
     }
     return {
@@ -1409,61 +1414,59 @@ function loadDailyOutreachState(): DailyOutreachPersisted {
 
 function saveDailyOutreachState(next: DailyOutreachPersisted) {
   if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(DAILY_OUTREACH_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
+  void operationalState.putDailyQueue(next).catch(reportPersistFailure);
 }
 
+/**
+ * The outreach log, rebuilt from the server's per-lead activity timeline.
+ *
+ * `leadId` is the mirror key rather than a stored field — the server keys
+ * activity by lead already, so storing it twice would let the two disagree.
+ */
 function loadOutreachEvents(): Record<string, OutreachEvent[]> {
   if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(OUTREACH_LOG_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, OutreachEvent[]> = {};
-    for (const [leadId, value] of Object.entries(parsed)) {
-      if (!Array.isArray(value)) continue;
-      const events: OutreachEvent[] = value
-        .map((row) => row as Partial<OutreachEvent>)
-        .filter(
-          (row) =>
-            typeof row.id === "string" &&
-            typeof row.leadId === "string" &&
-            typeof row.type === "string" &&
-            typeof row.createdAt === "string",
-        )
-        .map((row) => ({
-          id: row.id as string,
-          leadId: row.leadId as string,
-          type: row.type as OutreachEventType,
-          messageVariant:
-            row.messageVariant === "soft" ||
-            row.messageVariant === "direct" ||
-            row.messageVariant === "consultative"
-              ? row.messageVariant
-              : undefined,
-          messagePreview:
-            typeof row.messagePreview === "string" ? row.messagePreview : undefined,
-          createdAt: row.createdAt as string,
-          followUpAt: typeof row.followUpAt === "string" ? row.followUpAt : undefined,
-        }));
-      if (events.length > 0) out[leadId] = events;
-    }
-    return out;
-  } catch {
-    return {};
+  const out: Record<string, OutreachEvent[]> = {};
+  for (const [leadId, entries] of Object.entries(operationalState.readActivity())) {
+    const events: OutreachEvent[] = entries.map((entry) => ({
+      id: entry.id,
+      leadId,
+      type: entry.type as OutreachEventType,
+      messageVariant:
+        entry.messageVariant === "soft" ||
+        entry.messageVariant === "direct" ||
+        entry.messageVariant === "consultative"
+          ? entry.messageVariant
+          : undefined,
+      messagePreview: entry.detail,
+      createdAt: entry.createdAt,
+      followUpAt: entry.followUpAt,
+    }));
+    if (events.length > 0) out[leadId] = events;
   }
+  return out;
 }
 
+/**
+ * Persists the outreach log.
+ *
+ * Appends per lead rather than replacing the whole map: the server
+ * deduplicates on entry id, so re-sending an event already stored is a no-op
+ * and two devices logging concurrently both keep their entries.
+ */
 function saveOutreachEvents(eventsByLead: Record<string, OutreachEvent[]>) {
   if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(OUTREACH_LOG_KEY, JSON.stringify(eventsByLead));
-  } catch {
-    // ignore quota/serialization edge cases; UI stays functional in-memory.
+  for (const [leadId, events] of Object.entries(eventsByLead)) {
+    if (events.length === 0) continue;
+    const entries = events.map((event) => ({
+      id: event.id,
+      type: event.type,
+      title: event.type,
+      detail: event.messagePreview,
+      createdAt: event.createdAt,
+      messageVariant: event.messageVariant,
+      followUpAt: event.followUpAt,
+    }));
+    void operationalState.appendActivity(leadId, entries).catch(reportPersistFailure);
   }
 }
 
@@ -10564,28 +10567,66 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [airtableSyncedLeadIds, setAirtableSyncedLeadIds] = useState<string[]>([]);
 
   useEffect(() => {
+    let cancelled = false;
     setMounted(true);
     setRenderNow(Date.now());
-    setStateMap(loadState());
-    const stored = loadImportedLeadsV2();
-    setImportedLeads(stored);
-    importedLeadsRef.current = stored;
+
+    // Browser-local state (view preferences and regenerable caches) can be read
+    // synchronously — it never left localStorage.
     const lip = loadLastImportPayload();
     setLatestImportLeads(lip.batch);
     setLastImportNewIds(lip.newIds);
     setLastImportUpdatedIds(lip.updatedIds);
     setContactFinderMap(loadContactFinderMap());
-    setDailyOutreach(loadDailyOutreachState());
-    setOutreachEventsByLead(loadOutreachEvents());
     setLeadEnrichmentOverrides(loadLeadEnrichmentOverrides());
-    const meta = loadImportMeta();
-    setHasImportRun(
-      meta.hasRun ||
-        lip.batch.length > 0 ||
-        stored.some((l) => l.id.startsWith("gmaps-")),
-    );
     setDateLabel(buildTodayLabel());
+
+    /**
+     * Critical state comes from the server. Hydrate the mirror first, then run
+     * the one-shot legacy migration (which adopts this browser's pre-v3.7.5
+     * localStorage without overwriting anything the server already holds), then
+     * re-hydrate so the UI renders the merged result.
+     *
+     * Every read below runs after hydration, so `loadState()` and friends see
+     * server data rather than an empty mirror.
+     */
+    void (async () => {
+      try {
+        await operationalState.hydrate();
+        const migration = await runLegacyMigration();
+        if (migration.ran) await operationalState.hydrate();
+      } catch (err) {
+        // Hydration failed: render an empty workspace rather than stale local
+        // data, and say so. Silently falling back to localStorage would
+        // recreate the split-brain this sprint removes.
+        if (!cancelled) reportPersistFailure(err);
+        return;
+      }
+      if (cancelled) return;
+
+      setStateMap(loadState());
+      const stored = loadImportedLeadsV2();
+      setImportedLeads(stored);
+      importedLeadsRef.current = stored;
+      setDailyOutreach(loadDailyOutreachState());
+      setOutreachEventsByLead(loadOutreachEvents());
+      const meta = loadImportMeta();
+      setHasImportRun(
+        meta.hasRun ||
+          lip.batch.length > 0 ||
+          stored.some((l) => l.id.startsWith("gmaps-")),
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  // Surfaces failed server writes. Without this a rejected save would be an
+  // unhandled rejection and the founder would think the change had persisted.
+  const [persistError, setPersistError] = useState<string | null>(null);
+  useEffect(() => operationalState.onPersistError(setPersistError), []);
 
   const appendOutreachEvent = useCallback(
     (
@@ -13066,6 +13107,24 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   return (
     <div className="relative mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+      {/*
+        A failed server write must never be silent — the founder would keep
+        working on top of a change that was not saved.
+      */}
+      {persistError ? (
+        <div
+          role="alert"
+          className="mb-4 flex items-start justify-between gap-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+        >
+          <span>{persistError}</span>
+          <button
+            onClick={() => setPersistError(null)}
+            className="shrink-0 rounded-md border border-red-400/30 px-2 py-0.5 text-xs text-red-100 transition hover:bg-red-500/20"
+          >
+            {locale === "tr" ? "Kapat" : "Close"}
+          </button>
+        </div>
+      ) : null}
       <header className="mb-6 flex flex-col gap-1 border-b border-white/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2">

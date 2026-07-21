@@ -4,10 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 import { t } from "@/app/lib/i18n";
-
-const STORAGE_KEY = "tugobo-lead-engine:state-v1";
-const IMPORTED_LEADS_V2_KEY = "tugobo-lead-engine:imported-leads-v2";
-const OUTREACH_LOG_KEY = "tugobo-lead-engine:outreach-log-v1";
+import * as operationalState from "@/app/lib/operational-state/client";
 
 type OutreachEventType =
   | "message_prepared"
@@ -76,17 +73,30 @@ function followUpStatus(lead: FollowUpLead, locale: "tr" | "en"): string {
   return lead.last_outreach_action || t("not_contacted", locale);
 }
 
-function loadLocalFollowUps(): FollowUpLead[] {
+/**
+ * Follow-ups derived from server operational state.
+ *
+ * Reads the same store the dashboard writes, so this page shows the same
+ * pipeline on every device instead of whatever happened to be in this
+ * browser's localStorage.
+ */
+async function loadLocalFollowUps(): Promise<FollowUpLead[]> {
   if (typeof window === "undefined") return [];
   try {
-    const rawLeads = window.localStorage.getItem(IMPORTED_LEADS_V2_KEY);
-    const rawState = window.localStorage.getItem(STORAGE_KEY);
-    const rawEvents = window.localStorage.getItem(OUTREACH_LOG_KEY);
-    const leads = rawLeads ? (JSON.parse(rawLeads) as LocalLead[]) : [];
-    const state = rawState ? (JSON.parse(rawState) as Record<string, LocalLeadState>) : {};
-    const eventsByLead = rawEvents
-      ? (JSON.parse(rawEvents) as Record<string, OutreachEvent[]>)
-      : {};
+    await operationalState.hydrate();
+    const leads = operationalState.readRoster() as unknown as LocalLead[];
+    const state = operationalState.readStateMap() as Record<string, LocalLeadState>;
+    const activity = operationalState.readActivity();
+    const eventsByLead: Record<string, OutreachEvent[]> = {};
+    for (const [leadId, entries] of Object.entries(activity)) {
+      eventsByLead[leadId] = entries.map((entry) => ({
+        id: entry.id,
+        leadId,
+        type: entry.type as OutreachEventType,
+        createdAt: entry.createdAt,
+        followUpAt: entry.followUpAt,
+      }));
+    }
 
     const out: FollowUpLead[] = [];
     for (const lead of leads) {
@@ -164,7 +174,7 @@ export default function FollowUpsPage() {
 
   const load = async () => {
     setLoading(true);
-    const localLeads = loadLocalFollowUps();
+    const localLeads = await loadLocalFollowUps();
     try {
       const res = await fetch("/api/airtable/follow-ups", { cache: "no-store" });
       const data = (await res.json()) as {

@@ -41,3 +41,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# operational state (development fallback for LEAD_ENGINE_DATA_DIR)
+# Real pipeline data. Never commit it; on the VPS this lives outside the repo.
+/.data/
