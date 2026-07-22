@@ -131,6 +131,30 @@ Suggested cron (daily at 03:00), as the PM2 user:
 Because backups live inside the data directory, copy them off the box
 periodically if you want protection against losing the VPS itself.
 
+### Automatic pre-reset snapshots
+
+The test-data cleanup in the app (**Veri ve Operasyon → Dokunulmamış Duruma
+Getir**, and the bulk actions on the follow-ups page) takes its own snapshot
+before it changes anything:
+
+```
+/var/lib/tugobo-lead-engine/backups/operational-state-YYYYMMDD-HHmmss-pre-reset.json
+```
+
+- Written **before** the write lock is taken, so a failed snapshot means the
+  reset never ran. The API answers `503` and the UI says nothing was reset.
+- A byte copy of the file on disk, not a re-serialization of parsed state — a
+  backup that went through the normalizer is a backup of what we *think* the
+  file said.
+- **Exempt from the cron's 20-file retention.** `pnpm state:backup` skips
+  `-pre-reset` names when pruning, so the undo for a cleanup cannot be aged out
+  while you still think it is there. Clear them by hand once you are satisfied
+  with a reset.
+- The reset never touches `roster`, so business data, scores, enrichment and
+  channel verification survive it regardless.
+
+To undo a reset, restore the matching `-pre-reset` snapshot using section 7.
+
 ---
 
 ## 6. Verify

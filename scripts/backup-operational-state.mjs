@@ -35,9 +35,22 @@ function stamp(date = new Date()) {
   );
 }
 
+/**
+ * Rotates this script's own snapshots.
+ *
+ * `-pre-reset` snapshots are skipped deliberately. Those are taken
+ * automatically before a destructive test-data cleanup and are the only way to
+ * undo one; a daily cron quietly aging them out would remove the undo while
+ * the founder still believed it existed.
+ */
 async function prune(backupDir) {
   const entries = (await fs.readdir(backupDir))
-    .filter((name) => name.startsWith(BACKUP_PREFIX) && name.endsWith(".json"))
+    .filter(
+      (name) =>
+        name.startsWith(BACKUP_PREFIX) &&
+        name.endsWith(".json") &&
+        !name.endsWith("-pre-reset.json"),
+    )
     .sort();
 
   const excess = entries.length - RETENTION;

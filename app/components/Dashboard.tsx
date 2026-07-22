@@ -6219,6 +6219,105 @@ function LeadDetailNotesSection({
   );
 }
 
+/**
+ * Confirmation copy for the two reset profiles.
+ *
+ * Spelled out rather than summarised: the untouched profile clears DNC, won
+ * and lost along with everything else, and a founder who does not know that
+ * before clicking will only find out afterwards.
+ */
+const RESET_CONFIRM_TEXT: Record<"followup_only" | "untouched", string> = {
+  followup_only:
+    "Bu lead takip listesinden çıkarılacak.\n\n" +
+    "Geçmiş satış durumu, aktiviteler ve mesaj taslakları korunacak.",
+  untouched:
+    "Bu leadin test sırasında oluşan operasyon geçmişi temizlenecek.\n\n" +
+    "Korunacak:\n" +
+    "- işletme ve iletişim bilgileri\n" +
+    "- skorlar ve analizler\n" +
+    "- kanal doğrulamaları\n" +
+    "- enrichment verileri\n\n" +
+    "Temizlenecek:\n" +
+    "- kuyruk ve takip\n" +
+    "- satış aşaması\n" +
+    "- temas ve aktivite geçmişi\n" +
+    "- test notları\n" +
+    "- mesaj taslakları\n" +
+    "- demo / kazanıldı / kaybedildi / DNC test durumları\n\n" +
+    "Lead silinmez. İşlem öncesi otomatik yedek alınır.",
+};
+
+/**
+ * Test-data cleanup for one lead.
+ *
+ * Kept at the bottom of the drawer and visually quiet on purpose. This is
+ * maintenance, not selling — putting it near the Operation Guide would place a
+ * destructive action next to the one the founder uses every day.
+ */
+function LeadDataResetSection({
+  lead,
+  onReset,
+}: {
+  lead: LeadTableRow;
+  onReset: (leadId: string, profile: "followup_only" | "untouched") => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<null | "followup_only" | "untouched">(null);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const run = async (profile: "followup_only" | "untouched") => {
+    if (busy) return;
+    if (!window.confirm(RESET_CONFIRM_TEXT[profile])) return;
+    setBusy(profile);
+    setError(null);
+    setDone(null);
+    try {
+      await onReset(lead.id, profile);
+      setDone(
+        profile === "untouched"
+          ? "Lead dokunulmamış duruma getirildi. Otomatik yedek oluşturuldu."
+          : "Lead takip listesinden çıkarıldı.",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "İşlem tamamlanamadı.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-1.5 text-[11px] uppercase tracking-wider text-zinc-500">
+        Veri ve Operasyon
+      </div>
+      <p className="mb-2 text-[11px] leading-snug text-zinc-500">
+        Test sırasında oluşan operasyon durumunu temizler. İşletme bilgileri,
+        skorlar, analizler ve kanal doğrulamaları korunur; lead silinmez.
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void run("followup_only")}
+          className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy === "followup_only" ? "Çıkarılıyor…" : "Takipten Çıkar"}
+        </button>
+        <button
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void run("untouched")}
+          className="rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-medium text-amber-200 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy === "untouched" ? "Temizleniyor…" : "Dokunulmamış Duruma Getir"}
+        </button>
+      </div>
+      {error ? <p className="mt-1.5 text-[11px] text-rose-300">{error}</p> : null}
+      {done ? <p className="mt-1.5 text-[11px] text-emerald-300">{done}</p> : null}
+    </div>
+  );
+}
+
 /** Single render tree for the open lead (one selected object, no list iteration). */
 function LeadDetailPanel({
   selectedLead,
@@ -6255,6 +6354,7 @@ function LeadDetailPanel({
   onMarkMessageOpened,
   onMarkMessageContacted,
   focusMessageWorkspace,
+  onResetLead,
 }: {
   selectedLead: LeadTableRow;
   onClose: () => void;
@@ -6297,8 +6397,12 @@ function LeadDetailPanel({
   onMarkMessagePrepared: (leadId: string) => void;
   onMarkMessageOpened: (leadId: string) => void;
   onMarkMessageContacted: (leadId: string) => void;
-  /** Seeds the initial scroll-to-workspace request from the deep link. */
+  /** Scrolls the Operation Guide into view — used by the deep link. */
   focusMessageWorkspace: boolean;
+  onResetLead: (
+    leadId: string,
+    profile: "followup_only" | "untouched",
+  ) => Promise<void>;
 }) {
   const { locale } = useLocale();
   return (
@@ -6388,6 +6492,7 @@ function LeadDetailPanel({
           setDraftNote={setDraftNote}
           updateLead={updateLead}
         />
+        <LeadDataResetSection lead={selectedLead} onReset={onResetLead} />
       </div>
     </div>
   );
@@ -10534,6 +10639,41 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     };
   }, []);
 
+  /**
+   * Re-reads every client view of server state from the refreshed mirror.
+   *
+   * Used after a reset, which can remove lead records, empty the daily queue
+   * and drop activity in one transaction. Patching each list individually would
+   * leave whichever one was forgotten rendering rows for state that no longer
+   * exists, so all of them are re-derived at once.
+   */
+  const reloadFromServerState = useCallback(() => {
+    setStateMap(loadState());
+    const stored = loadImportedLeadsV2();
+    setImportedLeads(stored);
+    importedLeadsRef.current = stored;
+    setDailyOutreach(loadDailyOutreachState());
+    setOutreachEventsByLead(loadOutreachEvents());
+  }, []);
+
+  /**
+   * Clears test operating state for one lead, then re-derives every list.
+   *
+   * The server snapshots before it touches anything, so there is no
+   * client-side backup step to get wrong. On failure nothing changed and the
+   * error propagates to the button that asked for it.
+   */
+  const resetLeadOperationalData = useCallback(
+    async (leadId: string, profile: "followup_only" | "untouched") => {
+      await operationalState.resetLeads([leadId], profile);
+      reloadFromServerState();
+      // The drawer showed the state that no longer exists; close it rather
+      // than re-render a lead the founder just declared untouched.
+      setOpenId(null);
+    },
+    [reloadFromServerState],
+  );
+
   // Surfaces failed server writes. Without this a rejected save would be an
   // unhandled rejection and the founder would think the change had persisted.
   const [persistError, setPersistError] = useState<string | null>(null);
@@ -14602,6 +14742,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 onMarkMessageOpened={markAiMessageOpened}
                 onMarkMessageContacted={recordWhatsAppOutreach}
                 focusMessageWorkspace={focusMessagePanelLeadId === openLead.id}
+                onResetLead={resetLeadOperationalData}
               />
             </aside>
           </div>,

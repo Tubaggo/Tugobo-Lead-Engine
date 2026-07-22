@@ -127,6 +127,28 @@ describe("backup script", () => {
     assert.ok(backups.some((n) => !n.startsWith("operational-state-2020")));
   });
 
+  test("never prunes an automatic pre-reset snapshot", async () => {
+    await writeState(validState());
+    const backupDir = path.join(tempDir, "backups");
+    await fs.mkdir(backupDir, { recursive: true });
+
+    // Old enough to be first in line for pruning, and the only undo for a
+    // destructive cleanup — retention must not touch it.
+    const preReset = "operational-state-20200101-000000-pre-reset.json";
+    await fs.writeFile(path.join(backupDir, preReset), "{}", "utf8");
+    for (let i = 0; i < 25; i += 1) {
+      await fs.writeFile(
+        path.join(backupDir, `operational-state-20200102-${String(i).padStart(6, "0")}.json`),
+        "{}",
+        "utf8",
+      );
+    }
+
+    await exec(BACKUP_SCRIPT);
+    const backups = await listBackups();
+    assert.ok(backups.includes(preReset), "pre-reset snapshot must survive pruning");
+  });
+
   test("does not print lead data or the environment", async () => {
     await writeState(validState());
     const { stdout } = await exec(BACKUP_SCRIPT);

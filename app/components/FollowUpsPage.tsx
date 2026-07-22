@@ -250,6 +250,67 @@ export default function FollowUpsPage() {
 
   const hotCount = useMemo(() => leads.filter((l) => l.hot_score > 70).length, [leads]);
 
+  /*
+   * Bulk test-data cleanup.
+   *
+   * Selection is entirely manual. No name pattern, date window or score
+   * heuristic picks leads here — "this one was only a test" is a judgement the
+   * founder makes, and a wrong guess deletes real pipeline history.
+   *
+   * Only locally derived rows can be selected: an Airtable-only row has no
+   * counterpart in the operational store to reset.
+   */
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const resettableLeads = useMemo(
+    () => leads.filter((l): l is FollowUpLead & { leadId: string } => Boolean(l.leadId)),
+    [leads],
+  );
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  const toggleSelected = (leadId: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(leadId) ? prev.filter((id) => id !== leadId) : [...prev, leadId],
+    );
+  };
+
+  const allSelected =
+    resettableLeads.length > 0 && selectedIds.length === resettableLeads.length;
+
+  const runBulkReset = async (profile: "followup_only" | "untouched") => {
+    if (bulkBusy || selectedIds.length === 0) return;
+    const message =
+      profile === "untouched"
+        ? `${selectedIds.length} lead dokunulmamış duruma getirilecek.\n\n` +
+          "Korunacak: işletme bilgileri, skorlar, analizler, kanal doğrulamaları.\n" +
+          "Temizlenecek: kuyruk, takip, satış aşaması, aktivite geçmişi, notlar, " +
+          "mesaj taslakları ve demo / kazanıldı / kaybedildi / DNC test durumları.\n\n" +
+          "Lead silinmez. İşlem öncesi otomatik yedek alınır."
+        : `${selectedIds.length} lead takip listesinden çıkarılacak.\n\n` +
+          "Geçmiş satış durumu, aktiviteler ve mesaj taslakları korunacak.";
+    if (!window.confirm(message)) return;
+
+    setBulkBusy(true);
+    setNotice("");
+    try {
+      const result = await operationalState.resetLeads(selectedIds, profile);
+      setSelectedIds([]);
+      setNotice(
+        profile === "untouched"
+          ? `${result.changed} lead dokunulmamış duruma getirildi. ` +
+            "İşletme verileri ve analizler korundu." +
+            (result.backupCreated ? " Otomatik backup oluşturuldu." : "")
+          : `${result.changed} lead takip listesinden çıkarıldı.`,
+      );
+      await load();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("update_failed", locale));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-zinc-950 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto grid w-full max-w-[1400px] grid-cols-1 gap-4 lg:grid-cols-[180px_1fr]">
@@ -291,6 +352,44 @@ export default function FollowUpsPage() {
             </button>
           </div>
           {notice && <p className="mt-3 text-xs text-amber-200">{notice}</p>}
+
+          {/* Test-data cleanup. Manual selection only. */}
+          {resettableLeads.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() =>
+                    setSelectedIds(
+                      allSelected ? [] : resettableLeads.map((l) => l.leadId),
+                    )
+                  }
+                  className="h-3.5 w-3.5 accent-orange-400"
+                />
+                Bu sayfadakileri seç
+              </label>
+              <span className="text-[11px] text-zinc-500">
+                {selectedIds.length} seçili
+              </span>
+              <button
+                type="button"
+                disabled={bulkBusy || selectedIds.length === 0}
+                onClick={() => void runBulkReset("followup_only")}
+                className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {bulkBusy ? "Uygulanıyor…" : "Seçilenleri Takipten Çıkar"}
+              </button>
+              <button
+                type="button"
+                disabled={bulkBusy || selectedIds.length === 0}
+                onClick={() => void runBulkReset("untouched")}
+                className="rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-medium text-amber-200 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {bulkBusy ? "Uygulanıyor…" : "Seçilenleri Dokunulmamış Yap"}
+              </button>
+            </div>
+          )}
           {loading ? (
             <p className="mt-4 text-sm text-zinc-400">{t("loading", locale)}</p>
           ) : leads.length === 0 ? (
@@ -309,7 +408,17 @@ export default function FollowUpsPage() {
                     }`}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
+                      <div className="flex items-start gap-2">
+                        {lead.leadId ? (
+                          <input
+                            type="checkbox"
+                            aria-label={lead.business_name || t("unknown", locale)}
+                            checked={selectedSet.has(lead.leadId)}
+                            onChange={() => toggleSelected(lead.leadId!)}
+                            className="mt-1 h-3.5 w-3.5 accent-orange-400"
+                          />
+                        ) : null}
+                        <div>
                         <div className="text-sm font-medium text-zinc-100">
                           {lead.business_name || t("unknown", locale)}
                         </div>
@@ -321,6 +430,7 @@ export default function FollowUpsPage() {
                         >
                           {lead.whatsapp || t("no_whatsapp", locale)}
                         </a>
+                        </div>
                       </div>
                       {lead.hot_score > 70 && (
                         <span className="rounded-full bg-orange-500/20 px-2 py-0.5 text-[10px] font-medium text-orange-200">

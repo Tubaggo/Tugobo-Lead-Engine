@@ -401,6 +401,55 @@ export async function putDailyQueue(queue: unknown): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* reset                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export type ResetProfileName = "followup_only" | "untouched";
+
+export type ResetResponse = {
+  ok: true;
+  profile: ResetProfileName;
+  requested: number;
+  changed: number;
+  backupCreated: boolean;
+  backupFile: string | null;
+};
+
+/**
+ * Clears test operating state for the given leads and re-reads the workspace.
+ *
+ * The full hydrate is deliberate. A reset can remove lead records, empty the
+ * daily queue and drop activity in one transaction; patching the mirror
+ * entry-by-entry would leave whichever list the caller forgot showing rows for
+ * state that no longer exists. Re-reading is cheap and cannot go stale.
+ */
+export async function resetLeads(
+  leadIds: string[],
+  profile: ResetProfileName,
+): Promise<ResetResponse> {
+  let response: ResetResponse;
+  try {
+    response = (await request("/api/operational-state/reset", {
+      method: "POST",
+      body: JSON.stringify({ leadIds, profile, confirm: true }),
+    })) as ResetResponse;
+  } catch (err) {
+    // The one failure the founder can act on: the snapshot did not happen, so
+    // neither did the reset. Saying "could not save" here would be misleading.
+    if (err instanceof OperationalStateError && err.status === 503) {
+      throw new OperationalStateError(
+        "Yedek alınamadı; hiçbir kayıt sıfırlanmadı. Veri dizinini kontrol edin.",
+        503,
+      );
+    }
+    throw err;
+  }
+
+  await hydrate();
+  return response;
+}
+
+/* -------------------------------------------------------------------------- */
 /* migration                                                                  */
 /* -------------------------------------------------------------------------- */
 

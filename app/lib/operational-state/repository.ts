@@ -1,7 +1,15 @@
 import "server-only";
 
 import type { ScoredLead } from "../leads.ts";
+import { backupBeforeMutation } from "./backup.ts";
 import { resolveDataDir, resolveStateFilePath } from "./env.ts";
+import {
+  normalizeResetIds,
+  planLeadReset,
+  removeLeadsFromDailyQueue,
+  type ResetLeadResult,
+  type ResetProfile,
+} from "./reset.ts";
 import {
   isStorageWritable,
   readStateFileOrEmpty,
@@ -115,6 +123,69 @@ export async function appendLeadActivity(
     return { ...current, leads: { ...current.leads, [leadId]: next } };
   });
   return file.leads[leadId];
+}
+
+/* -------------------------------------------------------------------------- */
+/* reset                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export type ResetOutcome = {
+  results: ResetLeadResult[];
+  changedCount: number;
+  /** Filename of the pre-reset snapshot, or `null` on a fresh install. */
+  backupFile: string | null;
+};
+
+/**
+ * Clears test operating state for a batch of leads.
+ *
+ * Ordering is the safety property: the snapshot is taken *before* the write
+ * lock is acquired and the transaction begins, so a failed backup throws
+ * before anything is modified. The mutation itself is a single
+ * `updateStateFile` call, which means one read-modify-write under the per-file
+ * lock and one atomic rename — a batch is all-or-nothing, and a concurrent
+ * PATCH is serialized behind it rather than interleaved.
+ *
+ * `file.roster` is never read or written here. Deleting a lead's *record* is
+ * not deleting the lead.
+ */
+export async function resetLeadOperationalStates(
+  leadIds: readonly string[],
+  profile: ResetProfile,
+): Promise<ResetOutcome> {
+  const ids = normalizeResetIds(leadIds);
+  if (ids.length === 0) {
+    return { results: [], changedCount: 0, backupFile: null };
+  }
+
+  // Fail closed: no snapshot, no reset.
+  const backupFile = await backupBeforeMutation();
+
+  const results: ResetLeadResult[] = [];
+  await updateStateFile(resolveStateFilePath(), (current) => {
+    results.length = 0;
+    const now = nowIso();
+    const leads = { ...current.leads };
+
+    for (const leadId of ids) {
+      const plan = planLeadReset(leads[leadId], leadId, profile, now);
+      results.push(plan.result);
+      if (plan.next === null) delete leads[leadId];
+      else leads[leadId] = plan.next;
+    }
+
+    return {
+      ...current,
+      leads,
+      dailyQueue: removeLeadsFromDailyQueue(current.dailyQueue, ids, now),
+    };
+  });
+
+  return {
+    results,
+    changedCount: results.filter((r) => r.changed).length,
+    backupFile,
+  };
 }
 
 /** Replaces the imported lead roster. */
