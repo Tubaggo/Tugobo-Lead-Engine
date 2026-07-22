@@ -1,371 +1,93 @@
 import { NextResponse } from "next/server";
-import {
-  generateWhatsAppMessage,
-  type LeadForAiInsight,
-} from "@/app/lib/intelligence/ai-insight";
-import {
-  generateLLMOutreachMessage,
-  getLlmProviderStatus,
-} from "@/app/lib/llm/provider";
-import type { BusinessSignal } from "@/app/lib/intelligence/signals";
-import type {
-  OutreachIntelligenceProfile,
-  OutreachStyle,
-  OutreachUrgency,
-  SalesApproach,
-  RecommendedChannel,
-  LeadTemperature,
-} from "@/app/lib/intelligence/outreach-intelligence";
-import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 
-type GenerateMessageBody = {
-  leadId?: string;
-  variationSeed?: string;
-  regenerateNonce?: number;
-  name: string;
-  type: string;
-  location: string;
-  leadScore: number;
-  hotScore: number;
-  followUp?: boolean;
-  intelligenceScore?: number;
-  smartLeadScoreV2?: number;
-  reviewIntelligenceScore?: number;
-  reviewsCount?: number;
-  daysSinceLastReview?: number;
-  bookingFlowStrength?: number;
-  otaDependencyLikelihood?: number;
-  socialDemandStrength?: number;
-  communicationRisk?: number;
-  contactReadinessScore?: number;
-  contactQuality?: "high" | "medium" | "low";
-  hasWhatsAppPath?: boolean;
-  hasInstagram?: boolean;
-  hasOwnWebsite?: boolean;
-  channels?: string[];
-  businessSignals?: BusinessSignal[];
-  painPointSummary?: string[];
-  outreachAngle?: string;
-  outreachIntelligence?: OutreachIntelligenceProfile;
-  websiteIntelligence?: {
-    hasBookingCtaText?: boolean;
-    hasWhatsAppLink?: boolean;
-    hasBookingEngine?: boolean;
-  };
-  acquisitionIntelligence?: unknown;
-  conversionLeak?: unknown;
-  commercialReadiness?: unknown;
-  opportunityProfile?: unknown;
-  whyThisLead?: string[];
+import { withAdminSession } from "@/app/lib/auth/require-admin-session";
+import { generateGroundedOutreach, getLlmProviderStatus } from "@/app/lib/llm/provider";
+import {
+  ANGLE_LABELS_TR,
+  assignAngles,
+  type VariationAngle,
+} from "@/app/lib/outreach/angles";
+import {
+  isTone,
+  makeGenerationId,
+  normalizePreviousMessages,
+  type OutreachGenerationResponse,
+  type Tone,
+} from "@/app/lib/outreach/contract";
+import {
+  generateOutreachMessage,
+  type OutreachProvider,
+} from "@/app/lib/outreach/engine";
+import { buildFallbackMessage } from "@/app/lib/outreach/fallback";
+import { isOutreachStance, type OutreachStance } from "@/app/lib/outreach/lifecycle";
+import { OUTREACH_MESSAGE_SYSTEM } from "@/app/lib/outreach/prompt";
+import { buildOutreachSignals, isLowSignal } from "@/app/lib/outreach/signals";
+import { isDuplicate } from "@/app/lib/outreach/text";
+
+/**
+ * Personalized outreach message generation (v3.7.6).
+ *
+ * Replaces the previous "build a template, then ask the LLM to polish it"
+ * flow. That design was why the three tones read as paraphrases and why
+ * regenerate returned the same copy: the subject was fixed by the template
+ * before the model ever saw it.
+ *
+ * Now the route builds a verified/likely signal split, assigns each tone its
+ * own variation angle, and runs the engine per tone. The engine validates,
+ * retries on a new angle, and falls back to a deterministic bank — so a
+ * response always carries three usable messages.
+ *
+ * Generates nothing automatically and sends nothing. The founder copies or
+ * opens WhatsApp manually.
+ */
+
+export const dynamic = "force-dynamic";
+
+const TONE_ORDER: Tone[] = ["soft", "direct", "consultative"];
+
+/** Legacy style key ↔ tone. The UI and stored queue items still use these. */
+const TONE_TO_STYLE: Record<Tone, "soft" | "direct" | "premium"> = {
+  soft: "soft",
+  direct: "direct",
+  consultative: "premium",
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-const VALID_STYLES: ReadonlySet<OutreachStyle> = new Set<OutreachStyle>([
-  "consultative",
-  "direct",
-  "educational",
-  "relationship",
-  "conversion-focused",
-]);
-
-const VALID_URGENCY: ReadonlySet<OutreachUrgency> = new Set<OutreachUrgency>([
-  "low",
-  "medium",
-  "high",
-]);
-
-const VALID_APPROACH: ReadonlySet<SalesApproach> = new Set<SalesApproach>([
-  "whatsapp-speed",
-  "direct-booking",
-  "conversion-gap",
-  "operational-efficiency",
-  "social-demand",
-  "guest-experience",
-]);
-
-const VALID_CHANNEL: ReadonlySet<RecommendedChannel> = new Set<RecommendedChannel>([
-  "whatsapp",
-  "instagram",
-  "phone",
-  "website-form",
-]);
-
-const VALID_TEMPERATURE: ReadonlySet<LeadTemperature> = new Set<LeadTemperature>([
-  "cold",
-  "warm",
-  "hot",
-]);
-
-function salesApproachLabelTr(approach: SalesApproach | null | undefined): string {
-  switch (approach) {
-    case "direct-booking":
-      return "Doğrudan rezervasyon (OTA bağımlılığı azaltma)";
-    case "conversion-gap":
-      return "Dönüşüm açığı (talep → rezervasyon)";
-    case "social-demand":
-      return "Instagram talebini rezervasyona çevirme";
-    case "whatsapp-speed":
-      return "WhatsApp hız & kaçan talep";
-    case "operational-efficiency":
-      return "Operasyonel verim & düzen";
-    case "guest-experience":
-      return "Misafir deneyimi / yorum sinyalleri";
-    default:
-      return "Danışman yaklaşımı";
-  }
+function readBool(v: unknown): boolean | undefined {
+  return typeof v === "boolean" ? v : undefined;
 }
 
-function makeVariationSeed(params: {
-  leadId: string;
-  provided?: string;
-  nonce: number;
-  followUp: boolean;
-}): string {
-  const base = params.provided?.trim();
-  if (base) return `${base}|${params.nonce}|${params.followUp ? "fu" : "new"}`;
-  return `${params.leadId}|${Date.now()}|${params.nonce}|${params.followUp ? "fu" : "new"}`;
+function readNum(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
-function parseOutreachIntelligence(
-  raw: unknown,
-): OutreachIntelligenceProfile | undefined {
-  if (!isRecord(raw)) return undefined;
-  const style = raw.outreachStyle;
-  const urgency = raw.urgencyLevel;
-  const approach = raw.salesApproach;
-  const channel = raw.recommendedChannel;
-  const temperature = raw.leadTemperature;
-  if (
-    typeof style !== "string" ||
-    typeof urgency !== "string" ||
-    typeof approach !== "string" ||
-    typeof channel !== "string" ||
-    typeof temperature !== "string"
-  ) {
-    return undefined;
-  }
-  if (
-    !VALID_STYLES.has(style as OutreachStyle) ||
-    !VALID_URGENCY.has(urgency as OutreachUrgency) ||
-    !VALID_APPROACH.has(approach as SalesApproach) ||
-    !VALID_CHANNEL.has(channel as RecommendedChannel) ||
-    !VALID_TEMPERATURE.has(temperature as LeadTemperature)
-  ) {
-    return undefined;
-  }
-  const rationale = Array.isArray(raw.rationale)
-    ? raw.rationale.filter((x): x is string => typeof x === "string")
-    : [];
-  return {
-    outreachStyle: style as OutreachStyle,
-    urgencyLevel: urgency as OutreachUrgency,
-    salesApproach: approach as SalesApproach,
-    recommendedChannel: channel as RecommendedChannel,
-    leadTemperature: temperature as LeadTemperature,
-    rationale,
-  };
+function readStrings(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
-function readStringField(rec: Record<string, unknown>, key: string): string | null {
-  const v = rec[key];
-  return typeof v === "string" && v.trim() ? v.trim() : null;
-}
-
-function readNumberField(rec: Record<string, unknown>, key: string): number | null {
-  const v = rec[key];
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-
-function parseAcquisitionContext(input: {
-  acquisitionIntelligence: unknown;
-  conversionLeak: unknown;
-  bookingFlowStrength: number;
-  otaDependencyLikelihood: number;
-  businessSignals: BusinessSignal[];
-  channels: string[];
-}): {
-  otaDependency: string;
-  weakDirectBooking: boolean;
-  instagramLikelihood: string;
-  conversionGaps: string[];
-  acquisitionMaturity: string | null;
-  consultativeFocus: string[];
-} {
-  const rec = isRecord(input.acquisitionIntelligence)
-    ? input.acquisitionIntelligence
-    : null;
-  const discoveryStatus = rec ? readStringField(rec, "instagramDiscoveryStatus") : null;
-  const instagramConfidence = rec ? readStringField(rec, "instagramConfidence") : null;
-  const acquisitionMaturity = rec ? readStringField(rec, "acquisitionMaturity") : null;
-  const suggestedHandlesRaw = rec?.suggestedInstagramHandles;
-  const suggestedInstagramHandles = Array.isArray(suggestedHandlesRaw)
-    ? suggestedHandlesRaw.filter((h): h is string => typeof h === "string").slice(0, 4)
-    : [];
-
-  const otaScore = Number.isFinite(input.otaDependencyLikelihood)
-    ? input.otaDependencyLikelihood
-    : readNumberField(rec ?? {}, "otaDependencyLikelihood") ?? 0;
-  const otaDependency =
-    otaScore >= 72 || input.channels.some((c) => c === "Booking" || c === "Airbnb")
-      ? "high"
-      : otaScore >= 50
-        ? "medium"
-        : "low";
-
-  const weakDirectBooking =
-    (Number.isFinite(input.bookingFlowStrength) && input.bookingFlowStrength < 55) ||
-    input.businessSignals.includes("conversion_gap") ||
-    input.businessSignals.includes("no_booking_flow") ||
-    input.businessSignals.includes("weak_booking_cta") ||
-    input.businessSignals.includes("external_only_booking_dependency");
-
-  const instagramLikelihood =
-    discoveryStatus === "verified"
-      ? "high"
-      : discoveryStatus === "possible" || instagramConfidence === "likely"
-        ? "likely"
-        : discoveryStatus === "broken"
-          ? "weak"
-          : "likely";
-
-  const conversionGaps: string[] = [];
-  if (input.businessSignals.includes("conversion_gap")) {
-    conversionGaps.push("attention_to_booking_gap");
-  }
-  if (input.businessSignals.includes("no_booking_flow")) {
-    conversionGaps.push("no_clear_booking_path");
-  }
-  if (input.businessSignals.includes("weak_booking_cta")) {
-    conversionGaps.push("weak_booking_cta");
-  }
-  if (input.businessSignals.includes("external_only_booking_dependency")) {
-    conversionGaps.push("external_booking_dependency");
-  }
-  if (isRecord(input.conversionLeak)) {
-    const leakLevel = readStringField(input.conversionLeak, "conversionLeakLevel");
-    const leakScore = readNumberField(input.conversionLeak, "conversionLeakScore");
-    if (leakLevel) conversionGaps.push(`conversion_leak:${leakLevel}`);
-    if (typeof leakScore === "number" && leakScore >= 60) {
-      conversionGaps.push("high_conversion_leak_score");
-    }
-  }
-
-  const consultativeFocus: string[] = [];
-  if (otaDependency !== "low") {
-    consultativeFocus.push("reduce OTA-heavy dependency with direct demand capture");
-  }
-  if (weakDirectBooking) {
-    consultativeFocus.push("clarify inquiry-to-booking flow on owned surfaces");
-  }
-  if (instagramLikelihood === "likely" && suggestedInstagramHandles.length > 0) {
-    consultativeFocus.push(
-      `possible instagram discovery (${suggestedInstagramHandles.map((h) => `@${h}`).join(", ")})`,
-    );
-  }
-  if (consultativeFocus.length === 0) {
-    consultativeFocus.push("keep the tone diagnostic and tailored to this property");
-  }
-
-  return {
-    otaDependency,
-    weakDirectBooking,
-    instagramLikelihood,
-    conversionGaps,
-    acquisitionMaturity,
-    consultativeFocus,
-  };
-}
-
-async function handlePOST(req: Request) {
+async function handlePOST(req: Request): Promise<Response> {
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json(
-      { error: "Geçersiz JSON gövdesi" },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "Geçersiz JSON gövdesi" }, { status: 400 });
   }
-
   if (!isRecord(body)) {
     return NextResponse.json({ error: "Geçersiz istek" }, { status: 400 });
   }
 
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  const type = typeof body.type === "string" ? body.type.trim() : "";
-  const location =
-    typeof body.location === "string" ? body.location.trim() : "";
-  const leadScore = Number(body.leadScore);
-  const hotScore = Number(body.hotScore);
-  const followUp = body.followUp === true;
   const leadId = typeof body.leadId === "string" ? body.leadId.trim() : "";
-  const regenerateNonce = Number(body.regenerateNonce ?? 0);
-  const variationSeedRaw =
-    typeof body.variationSeed === "string" ? body.variationSeed.trim() : "";
-  const intelligenceScore = Number(body.intelligenceScore ?? 0);
-  const smartLeadScoreV2 =
-    body.smartLeadScoreV2 === undefined ? undefined : Number(body.smartLeadScoreV2);
-  const reviewIntelligenceScore = Number(body.reviewIntelligenceScore ?? 0);
-  const reviewsCount = Number(body.reviewsCount ?? 0);
-  const daysSinceLastReview = Number(body.daysSinceLastReview ?? 0);
-  const bookingFlowStrength = Number(body.bookingFlowStrength ?? NaN);
-  const otaDependencyLikelihood = Number(body.otaDependencyLikelihood ?? NaN);
-  const socialDemandStrength = Number(body.socialDemandStrength ?? NaN);
-  const communicationRisk = Number(body.communicationRisk ?? NaN);
-  const contactReadinessScore = Number(body.contactReadinessScore ?? NaN);
-  const contactQuality =
-    body.contactQuality === "high" ||
-    body.contactQuality === "medium" ||
-    body.contactQuality === "low"
-      ? body.contactQuality
-      : "medium";
-  const hasWhatsAppPath = body.hasWhatsAppPath === true;
-  const hasInstagram = body.hasInstagram === true;
-  const hasOwnWebsite = body.hasOwnWebsite === true;
-  const channels = Array.isArray(body.channels)
-    ? body.channels.filter((v): v is string => typeof v === "string")
-    : [];
-  const businessSignals = Array.isArray(body.businessSignals)
-    ? body.businessSignals.filter((v): v is BusinessSignal => typeof v === "string")
-    : [];
-  const painPointSummary = Array.isArray(body.painPointSummary)
-    ? body.painPointSummary.filter((v): v is string => typeof v === "string")
-    : [];
-  const outreachAngle =
-    typeof body.outreachAngle === "string" ? body.outreachAngle.trim() : "";
-  const outreachIntelligence = parseOutreachIntelligence(body.outreachIntelligence);
-  const websiteIntelligence = isRecord(body.websiteIntelligence)
-    ? {
-        hasBookingCtaText:
-          typeof body.websiteIntelligence.hasBookingCtaText === "boolean"
-            ? body.websiteIntelligence.hasBookingCtaText
-            : undefined,
-        hasWhatsAppLink:
-          typeof body.websiteIntelligence.hasWhatsAppLink === "boolean"
-            ? body.websiteIntelligence.hasWhatsAppLink
-            : undefined,
-        hasBookingEngine:
-          typeof body.websiteIntelligence.hasBookingEngine === "boolean"
-            ? body.websiteIntelligence.hasBookingEngine
-            : undefined,
-      }
-    : undefined;
-  const whyThisLead = Array.isArray(body.whyThisLead)
-    ? body.whyThisLead.filter((v): v is string => typeof v === "string")
-    : [];
+  const businessName = typeof body.name === "string" ? body.name.trim() : "";
+  const businessType = typeof body.type === "string" ? body.type.trim() : "";
+  const location = typeof body.location === "string" ? body.location.trim() : "";
 
-  if (!name || !type || !location) {
+  if (!businessName || !businessType || !location) {
     return NextResponse.json(
       { error: "name, type ve location zorunludur" },
-      { status: 400 },
-    );
-  }
-  if (!Number.isFinite(leadScore) || !Number.isFinite(hotScore)) {
-    return NextResponse.json(
-      { error: "leadScore ve hotScore sayı olmalıdır" },
       { status: 400 },
     );
   }
@@ -373,122 +95,184 @@ async function handlePOST(req: Request) {
     return NextResponse.json({ error: "leadId zorunludur" }, { status: 400 });
   }
 
-  const variationSeed = makeVariationSeed({
-    leadId,
-    provided: variationSeedRaw || undefined,
-    nonce: Number.isFinite(regenerateNonce) ? regenerateNonce : 0,
-    followUp,
+  // An explicitly supplied tone must be valid; absent means "give me all three
+  // and treat soft as the primary", which is what the modal opens with.
+  if (body.tone !== undefined && !isTone(body.tone)) {
+    return NextResponse.json({ error: "Geçersiz ton" }, { status: 400 });
+  }
+  const requestedTone: Tone = isTone(body.tone) ? body.tone : "soft";
+
+  // `location` arrives as "City, Region"; the city is the part worth using.
+  const city = location.split(",")[0]?.trim() || undefined;
+
+  const signals = buildOutreachSignals({
+    city,
+    businessType,
+    hasWhatsAppPath: readBool(body.hasWhatsAppPath),
+    hasInstagram: readBool(body.hasInstagram),
+    hasOwnWebsite: readBool(body.hasOwnWebsite),
+    channels: readStrings(body.channels),
+    businessSignals: readStrings(body.businessSignals),
+    reviewsCount: readNum(body.reviewsCount),
+    websiteIntelligence: isRecord(body.websiteIntelligence)
+      ? {
+          hasBookingCtaText: readBool(body.websiteIntelligence.hasBookingCtaText),
+          hasWhatsAppLink: readBool(body.websiteIntelligence.hasWhatsAppLink),
+          hasBookingEngine: readBool(body.websiteIntelligence.hasBookingEngine),
+        }
+      : null,
+    bookingFlowStrength: readNum(body.bookingFlowStrength),
+    otaDependencyLikelihood: readNum(body.otaDependencyLikelihood),
+    socialDemandStrength: readNum(body.socialDemandStrength),
+    communicationRisk: readNum(body.communicationRisk),
   });
 
-  const leadInput: LeadForAiInsight = {
-    hotScore,
-    leadScore,
-    intelligenceScore: Number.isFinite(intelligenceScore) ? intelligenceScore : 0,
-    smartLeadScoreV2:
-      typeof smartLeadScoreV2 === "number" && Number.isFinite(smartLeadScoreV2)
-        ? smartLeadScoreV2
-        : undefined,
-    reviewIntelligenceScore: Number.isFinite(reviewIntelligenceScore)
-      ? reviewIntelligenceScore
-      : 0,
-    contactQuality,
-    hasWhatsAppPath,
-    hasInstagram,
-    hasOwnWebsite,
-    channels,
-    businessSignals,
-    heuristicOutreachAngle: outreachAngle || undefined,
-    websiteIntelligence,
-    reviewPainPoints: painPointSummary.map((summary) => ({
-      category: "other",
-      severity: "medium",
-      summary: `${location}: ${summary}`.slice(0, 180),
-    })),
-    outreachIntelligence,
+  const previousMessages = normalizePreviousMessages(body.previousMessages);
+  const regenerate = body.regenerate === true;
+
+  /*
+   * Relationship position. Defaults to first contact on anything unrecognised:
+   * writing "as discussed" to someone we have never messaged is far worse than
+   * introducing ourselves to someone we already have.
+   */
+  const stance: OutreachStance = isOutreachStance(body.stance)
+    ? body.stance
+    : "first_contact";
+
+  // Rotation drives both the angle assignment and the fallback walk, so a
+  // regenerate lands on a different subject rather than a reworded one.
+  const nonceRaw = Number(body.regenerateNonce ?? 0);
+  const rotation = Number.isFinite(nonceRaw) ? Math.max(0, Math.floor(nonceRaw)) : 0;
+  const generationNonce =
+    typeof body.generationNonce === "string" && body.generationNonce.trim()
+      ? body.generationNonce.trim().slice(0, 64)
+      : `${rotation}-${Date.now().toString(36)}`;
+
+  const tugoboFitReasons = readStrings(body.whyThisLead).slice(0, 4);
+  const tugoboFit =
+    tugoboFitReasons.length > 0 ? { reasons: tugoboFitReasons } : undefined;
+
+  const status = getLlmProviderStatus();
+  const provider: OutreachProvider | null = status.llm_enabled
+    ? (p) => generateGroundedOutreach(p)
+    : null;
+
+  const angles = assignAngles(signals, rotation);
+
+  // Per-tone generation. Each tone gets its own angle and its own validation
+  // and fallback, so one weak result cannot drag the other two down.
+  const results = await Promise.all(
+    TONE_ORDER.map((tone) =>
+      generateOutreachMessage({
+        leadId,
+        businessName,
+        city,
+        businessType,
+        tone,
+        angle: angles[tone],
+        signals,
+        tugoboFit,
+        // A tone must also avoid what the *other* tones already said this
+        // round is handled below; here it only avoids prior rounds.
+        previousMessages,
+        generationNonce: `${generationNonce}:${tone}`,
+        rotation: rotation + TONE_ORDER.indexOf(tone),
+        provider,
+        systemPrompt: OUTREACH_MESSAGE_SYSTEM,
+        stance,
+      }),
+    ),
+  );
+
+  const byTone = new Map<Tone, OutreachGenerationResponse>();
+  TONE_ORDER.forEach((tone, i) => byTone.set(tone, results[i]));
+
+  /*
+   * The three tones run concurrently and therefore cannot see each other. If
+   * two land too close, rewrite the later one from the fallback bank on an
+   * unused angle — three near-identical options are worse than two good ones
+   * plus a plainly different third.
+   */
+  let collisionFixed = false;
+  const accepted: string[] = [];
+  const usedAngles: VariationAngle[] = [];
+  for (const tone of TONE_ORDER) {
+    const current = byTone.get(tone)!;
+    if (!isDuplicate(current.message, accepted)) {
+      accepted.push(current.message);
+      usedAngles.push(current.variationAngle);
+      continue;
+    }
+    const replacement = buildFallbackMessage({
+      tone,
+      businessName,
+      city,
+      rotation: rotation + TONE_ORDER.indexOf(tone) + 1,
+      exclude: usedAngles,
+      stance,
+    });
+    collisionFixed = true;
+    byTone.set(tone, {
+      ...current,
+      message: replacement.message,
+      source: "fallback",
+      variationAngle: replacement.variationAngle,
+      duplicateAvoided: true,
+    });
+    accepted.push(replacement.message);
+    usedAngles.push(replacement.variationAngle);
+  }
+
+  const styles = {
+    soft: byTone.get("soft")!.message,
+    direct: byTone.get("direct")!.message,
+    premium: byTone.get("consultative")!.message,
   };
 
-  const pack = generateWhatsAppMessage(leadInput, { followUp, variationSeed });
-  const status = getLlmProviderStatus();
-  const refined =
-    status.llm_enabled
-      ? await generateLLMOutreachMessage(pack, {
-          name,
-          type,
-          location,
-          leadId,
-          followUp,
-          outreachAngle,
-          outreachIntelligence: outreachIntelligence ?? null,
-          businessSignals,
-          painPointSummary,
-          channels,
-          whyThisLead,
-          websiteIntelligence: websiteIntelligence ?? null,
-          acquisitionIntelligence: body.acquisitionIntelligence ?? null,
-          conversionLeak: body.conversionLeak ?? null,
-          commercialReadiness: body.commercialReadiness ?? null,
-          opportunityProfile: body.opportunityProfile ?? null,
-          acquisitionContext: parseAcquisitionContext({
-            acquisitionIntelligence: body.acquisitionIntelligence ?? null,
-            conversionLeak: body.conversionLeak ?? null,
-            bookingFlowStrength,
-            otaDependencyLikelihood,
-            businessSignals,
-            channels,
-          }),
-          messagingGoals: [
-            "consultative_tone",
-            "property_specific_personalization",
-            "avoid_generic_sales_spam",
-          ],
-          leadNumbers: {
-            leadScore,
-            hotScore,
-            intelligenceScore,
-            smartLeadScoreV2,
-            reviewIntelligenceScore,
-            reviewsCount: Number.isFinite(reviewsCount) ? reviewsCount : null,
-            daysSinceLastReview: Number.isFinite(daysSinceLastReview)
-              ? daysSinceLastReview
-              : null,
-            bookingFlowStrength: Number.isFinite(bookingFlowStrength)
-              ? bookingFlowStrength
-              : null,
-            otaDependencyLikelihood: Number.isFinite(otaDependencyLikelihood)
-              ? otaDependencyLikelihood
-              : null,
-            socialDemandStrength: Number.isFinite(socialDemandStrength)
-              ? socialDemandStrength
-              : null,
-            communicationRisk: Number.isFinite(communicationRisk) ? communicationRisk : null,
-            contactReadinessScore: Number.isFinite(contactReadinessScore)
-              ? contactReadinessScore
-              : null,
-          },
-          variationSeed,
-          provider_name: status.provider_name,
-        })
-      : null;
-  const out = refined ?? pack;
-  const variations = [out.styles.soft, out.styles.direct, out.styles.premium];
-  const rationaleNote = `Mesaj açısı: ${salesApproachLabelTr(
-    outreachIntelligence?.salesApproach ?? null,
-  )}`;
+  const primary = byTone.get(requestedTone)!;
+  const anyProvider = results.some((r) => r.source === "provider");
+
   return NextResponse.json({
-    message: out.message,
-    variations,
-    styles: out.styles,
-    weakSignals: out.weakSignals,
-    llm_refined: Boolean(refined),
-    rationaleNote,
+    /* --- v3.7.6 contract (for the requested tone) --- */
+    ok: true,
+    message: primary.message,
+    tone: primary.tone,
+    source: primary.source,
+    variationAngle: primary.variationAngle,
+    variationAngleLabel: ANGLE_LABELS_TR[primary.variationAngle],
+    usedSignalKeys: primary.usedSignalKeys,
+    generationId: makeGenerationId(leadId, generationNonce),
+    duplicateAvoided: collisionFixed || results.some((r) => r.duplicateAvoided),
+
+    /* --- per-tone detail, so the modal can label each tone --- */
+    tones: Object.fromEntries(
+      TONE_ORDER.map((tone) => [
+        tone,
+        {
+          message: byTone.get(tone)!.message,
+          source: byTone.get(tone)!.source,
+          variationAngle: byTone.get(tone)!.variationAngle,
+          variationAngleLabel: ANGLE_LABELS_TR[byTone.get(tone)!.variationAngle],
+        },
+      ]),
+    ),
+
+    /* --- legacy shape, still consumed by the outreach queue --- */
+    styles,
+    variations: [styles.soft, styles.direct, styles.premium],
+    weakSignals: isLowSignal(signals),
+    llm_refined: anyProvider,
+    rationaleNote: `Mesaj açısı: ${ANGLE_LABELS_TR[primary.variationAngle]}`,
     meta: {
-      name,
-      type,
+      name: businessName,
+      type: businessType,
       location,
-      outreachStyle: outreachIntelligence?.outreachStyle ?? null,
-      salesApproach: outreachIntelligence?.salesApproach ?? null,
       provider: status.provider_name,
-      variationSeed,
+      regenerate,
+      stance,
+      verifiedSignalCount: signals.verified.length,
+      likelySignalCount: signals.likely.length,
+      styleKey: TONE_TO_STYLE[requestedTone],
     },
   });
 }

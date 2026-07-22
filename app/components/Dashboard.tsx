@@ -84,6 +84,16 @@ import ImportPanel, {
 import { ICP_SEARCH_CONFIGS, filterLeadsForTargetAudience } from "@/app/lib/places-import";
 import { LocaleToggle, useLocale } from "@/app/components/LocaleProvider";
 import { LogoutButton } from "@/app/components/LogoutButton";
+import LeadMessageEditor from "@/app/components/LeadMessageEditor";
+import { isValidLeadId } from "@/app/lib/operational-state/schema";
+import { generateOutreachStylePack } from "@/app/lib/outreach/generate-client";
+import {
+  computeGuideAction,
+  computeOutreachStance,
+  GUIDE_ACTION_LABELS,
+  type OutreachLifecycleContext,
+  type OutreachStance,
+} from "@/app/lib/outreach/lifecycle";
 import {
   SectionNavigationRail,
   SECTION_ANCHOR_CLS,
@@ -265,6 +275,8 @@ type QueueLeadSource = "latest_import" | "airtable" | "local_pool";
 
 type OutreachEventType =
   | "message_prepared"
+  /** A manually edited draft the founder chose to save. Carries no message text. */
+  | "message_draft_saved"
   | "message_copied"
   | "whatsapp_opened"
   | "contacted"
@@ -3153,22 +3165,16 @@ function IconSpark({ className = "" }: { className?: string }) {
   );
 }
 
-type AiMessageModalState =
-  | null
-  | { lead: ScoredLead; phase: "loading" }
-  | {
-      lead: ScoredLead;
-      phase: "ready";
-      message: string;
-      styles: Record<OutreachMessageStyle, string>;
-      draftByStyle: Record<OutreachMessageStyle, string>;
-      selectedStyle: OutreachMessageStyle;
-      rationaleNote?: string;
-      llmRefined?: boolean;
-      provider?: string | null;
-      regenerateNonce: number;
-    }
-  | { lead: ScoredLead; phase: "error"; error: string };
+/**
+ * The modal no longer owns a draft.
+ *
+ * Tone drafts, generation, editing and persistence all live in
+ * {@link LeadMessageEditor}, which reads and writes the lead's server-side
+ * record. What is left here is which lead is open and, when outreach is
+ * disallowed, why. Two components holding their own copy of "the current
+ * message" was exactly how the modal and the lead detail drifted apart.
+ */
+type AiMessageModalState = null | { lead: ScoredLead; blockedReason?: string };
 
 type ReplyHelperSuggestion = {
   message: string;
@@ -3181,7 +3187,6 @@ type ReplyHelperSuggestion = {
 function AiMessageModal({
   state,
   onClose,
-  onRetry,
   onMarkContacted,
   queuedForOutreach = false,
   queueStatus = null,
@@ -3189,10 +3194,12 @@ function AiMessageModal({
   onMarkOpened,
   onMessageCopied,
   onWhatsappOpened,
+  onDraftSaved,
+  doNotContact,
+  stance,
 }: {
   state: AiMessageModalState;
   onClose: () => void;
-  onRetry: (lead: ScoredLead) => void;
   onMarkContacted: (id: string) => void;
   queuedForOutreach?: boolean;
   queueStatus?: QueueMessageStatus | null;
@@ -3208,51 +3215,15 @@ function AiMessageModal({
     messageVariant: OutreachMessageVariant,
     messagePreview: string,
   ) => void;
+  onDraftSaved: (leadId: string, messageVariant: OutreachMessageVariant) => void;
+  doNotContact: boolean;
+  stance: OutreachStance;
 }) {
   const { locale } = useLocale();
-  const [copied, setCopied] = useState(false);
-  const [selectedStyle, setSelectedStyle] = useState<OutreachMessageStyle>("soft");
-  const [draftByStyle, setDraftByStyle] = useState<Record<OutreachMessageStyle, string>>({
-    soft: "",
-    direct: "",
-    premium: "",
-  });
-
-  useEffect(() => {
-    setCopied(false);
-  }, [state]);
-
-  useEffect(() => {
-    if (state?.phase === "ready") {
-      setSelectedStyle(state.selectedStyle);
-      setDraftByStyle(state.draftByStyle ?? state.styles);
-    }
-  }, [state]);
 
   if (!state) return null;
 
   const { lead } = state;
-  const displayMessage =
-    state.phase === "ready"
-      ? draftByStyle[selectedStyle] || state.styles[selectedStyle] || state.message
-      : "";
-  const messageVariantForLog: OutreachMessageVariant =
-    selectedStyle === "premium" ? "consultative" : selectedStyle;
-  const waReady =
-    state.phase === "ready" ? whatsappLinkWithText(lead.phone, displayMessage) : null;
-
-  const handleCopy = async () => {
-    if (state.phase !== "ready") return;
-    try {
-      await navigator.clipboard.writeText(displayMessage);
-      setCopied(true);
-      onMarkPrepared(lead.id);
-      onMessageCopied(lead.id, messageVariantForLog, displayMessage);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setCopied(false);
-    }
-  };
 
   return (
     <div
@@ -3303,110 +3274,28 @@ function AiMessageModal({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:max-h-[min(60vh,28rem)]">
-          {state.phase === "loading" && (
-            <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
-              <div
-                className="h-8 w-8 animate-spin rounded-full border-2 border-violet-400/30 border-t-violet-400"
-                aria-hidden
-              />
-              <p className="text-sm text-zinc-400">{t("generating_message", locale)}</p>
-            </div>
-          )}
-          {state.phase === "error" && (
-            <div className="space-y-3 py-2">
-              <p className="text-sm text-rose-300">{state.error}</p>
-              <button
-                type="button"
-                onClick={() => onRetry(lead)}
-                className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10"
-              >
-                {t("retry", locale)}
-              </button>
-            </div>
-          )}
-          {state.phase === "ready" && (
-            <div className="space-y-2">
-              <div className="flex flex-wrap gap-2">
-                {(
-                  [
-                    { id: "soft", label: t("style_soft", locale) },
-                    { id: "direct", label: t("style_direct", locale) },
-                    { id: "premium", label: t("style_consultative", locale) },
-                  ] as const
-                ).map((opt) => (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setSelectedStyle(opt.id)}
-                    className={`rounded-md border px-3 py-1.5 text-[11px] font-medium transition ${
-                      selectedStyle === opt.id
-                        ? "border-violet-400/40 bg-violet-500/20 text-violet-100"
-                        : "border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              {state.rationaleNote ? (
-                <p className="text-[11px] text-zinc-500">{state.rationaleNote}</p>
-              ) : null}
-              <textarea
-                value={displayMessage}
-                onChange={(e) => {
-                  const next = e.target.value ?? "";
-                  setDraftByStyle((cur) => ({ ...cur, [selectedStyle]: next }));
-                }}
-                className="min-h-[160px] w-full resize-y rounded-lg border border-white/10 bg-white/5 p-3 text-[15px] leading-relaxed text-zinc-200 outline-none focus:border-violet-400/40 focus:ring-2 focus:ring-violet-500/20 sm:text-sm"
-              />
-              <p className="text-[11px] text-zinc-500">{t("manual_outreach_note", locale)}</p>
-            </div>
+          {state.blockedReason ? (
+            <p className="py-2 text-sm text-rose-300">{state.blockedReason}</p>
+          ) : (
+            /*
+             * Same component the lead detail renders, over the same stored
+             * drafts — so a message generated here is already waiting in the
+             * lead's workspace, and vice versa.
+             */
+            <LeadMessageEditor
+              lead={lead}
+              doNotContact={doNotContact}
+              stance={stance}
+              autoGenerate
+              onMessageCopied={onMessageCopied}
+              onWhatsappOpened={onWhatsappOpened}
+              onDraftSaved={onDraftSaved}
+              onMarkPrepared={onMarkPrepared}
+              onMarkOpened={onMarkOpened}
+              onMarkContacted={queuedForOutreach ? undefined : onMarkContacted}
+            />
           )}
         </div>
-
-        {state.phase === "ready" && (
-          <div className="sticky bottom-0 flex flex-col gap-2 border-t border-white/10 bg-zinc-950/95 px-4 py-3 backdrop-blur sm:flex-row sm:items-center sm:justify-end">
-            <button
-              type="button"
-              onClick={() => onRetry(lead)}
-              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 sm:w-auto sm:py-1.5 sm:text-xs"
-            >
-              Yeniden üret
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleCopy()}
-              className="w-full rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:bg-white/10 sm:w-auto sm:py-1.5 sm:text-xs"
-            >
-              {copied ? t("copied", locale) : t("copy", locale)}
-            </button>
-            {waReady ? (
-              <button
-                type="button"
-                onClick={() => {
-                  openExternal(waReady);
-                  onMarkOpened(lead.id);
-                  onWhatsappOpened(lead.id, messageVariantForLog, displayMessage);
-                  if (!queuedForOutreach) {
-                    onMarkContacted(lead.id);
-                  }
-                }}
-                className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-[#25D366]/35 bg-[#25D366]/15 px-3 py-2 text-sm font-medium text-[#25D366] hover:bg-[#25D366]/25 sm:w-auto sm:py-1.5 sm:text-xs"
-              >
-                <IconWhatsapp className="h-4 w-4" />
-                {t("send_via_whatsapp", locale)}
-              </button>
-            ) : (
-              <span
-                title={t("detail_whatsapp_disabled_title", locale)}
-                className="inline-flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-500 sm:w-auto sm:py-1.5 sm:text-xs"
-              >
-                <IconWhatsapp className="h-4 w-4" />
-                {t("send_via_whatsapp", locale)}
-              </span>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -6359,6 +6248,13 @@ function LeadDetailPanel({
   manualReEnrichBusy,
   manualReEnrichMessage,
   onAiReviewCompleted,
+  onMessageCopied,
+  onWhatsappOpened,
+  onDraftSaved,
+  onMarkMessagePrepared,
+  onMarkMessageOpened,
+  onMarkMessageContacted,
+  focusMessageWorkspace,
 }: {
   selectedLead: LeadTableRow;
   onClose: () => void;
@@ -6387,6 +6283,22 @@ function LeadDetailPanel({
   manualReEnrichBusy: boolean;
   manualReEnrichMessage: string | null;
   onAiReviewCompleted?: () => void;
+  onMessageCopied: (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => void;
+  onWhatsappOpened: (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => void;
+  onDraftSaved: (leadId: string, messageVariant: OutreachMessageVariant) => void;
+  onMarkMessagePrepared: (leadId: string) => void;
+  onMarkMessageOpened: (leadId: string) => void;
+  onMarkMessageContacted: (leadId: string) => void;
+  /** Seeds the initial scroll-to-workspace request from the deep link. */
+  focusMessageWorkspace: boolean;
 }) {
   const { locale } = useLocale();
   return (
@@ -6413,7 +6325,18 @@ function LeadDetailPanel({
         </div>
         <LeadEnrichmentMetaBlock lead={selectedLead} />
         <LeadOpportunityBlock lead={selectedLead} />
-        <OperationGuideSection lead={selectedLead} finder={finderPersisted} now={now} />
+        <OperationGuideSection
+          lead={selectedLead}
+          finder={finderPersisted}
+          now={now}
+          focusOnMount={focusMessageWorkspace}
+          onMessageCopied={onMessageCopied}
+          onWhatsappOpened={onWhatsappOpened}
+          onDraftSaved={onDraftSaved}
+          onMarkMessagePrepared={onMarkMessagePrepared}
+          onMarkMessageOpened={onMarkMessageOpened}
+          onMarkMessageContacted={onMarkMessageContacted}
+        />
         <PipelineStageActions lead={selectedLead} setLeadStatus={setLeadStatus} now={now} />
         <DemoReadinessCard lead={selectedLead} />
         <LeadSignalVerificationBlock lead={selectedLead} />
@@ -9816,13 +9739,58 @@ function CommunicationStrategyCard({
   );
 }
 
+/**
+ * The lead's real contact history, for outreach copy and the Operation Guide.
+ *
+ * `hasPreviousContact` is the load-bearing field, and it is derived only from
+ * evidence that a message actually went out: an attempt counter, a contacted or
+ * replied timestamp, a booked meeting. Queue membership and `lastQueuedAt` are
+ * deliberately excluded — putting a lead on today's list is a decision we made,
+ * not a conversation they had.
+ */
+function buildOutreachLifecycleContext(
+  lead: LeadTableRow,
+  now: number,
+): OutreachLifecycleContext {
+  const s = lead._s;
+  const stamp = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+
+  const contactedAt = stamp(s.lastContactedAt) ?? stamp(s.contactedAt);
+  const hasPreviousContact =
+    (s.contactAttempts ?? 0) > 0 ||
+    contactedAt !== null ||
+    stamp(s.repliedAt) !== null ||
+    stamp(s.meetingAt) !== null;
+
+  return {
+    salesStage: s.pipelineStage ?? s.status,
+    isQueued: Boolean(s.queuedToday),
+    followUpDue: isFollowUpDue(s, now),
+    nextFollowUpAt: stamp(s.nextFollowUpAt)
+      ? new Date(s.nextFollowUpAt as number).toISOString()
+      : null,
+    lastContactAt: contactedAt ? new Date(contactedAt).toISOString() : null,
+    lastContactType: s.channel ?? null,
+    hasPreviousContact,
+  };
+}
+
 // ─── v3.1 Founder Sales Assistant ──────────────────────────────────────────
 
+/**
+ * Guidance only — no message body.
+ *
+ * The four hardcoded outreach templates that used to live here were removed in
+ * v3.7.6: they were a second, generic message source competing with the
+ * personalized engine, and the Operation Guide showed one while the founder
+ * edited the other. Outreach copy now comes from the lead's persisted message
+ * workspace and nowhere else.
+ */
 type SalesAssistantSuggestion = {
   message: string;
   actionLabel: string;
   channelText: string;
-  template: string;
 };
 
 /** v3.1 — Pure deterministic suggestion engine. No AI, no I/O. */
@@ -9874,129 +9842,97 @@ function computeSalesAssistantSuggestion(
     channelText = "Önce iletişim bilgisi doğrulanmalı.";
   }
 
-  // Channel-specific ready-to-use template
-  let template: string;
-  if (rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible") {
-    template =
-      "Merhaba,\n\nİşletmenizin dijital rezervasyon süreçlerini inceledim.\n\nKısa bir görüşme yaparak mevcut operasyon yapınızı anlamak isterim.\n\nUygun olursanız bilgi paylaşabilir misiniz?";
-  } else if (rec.channel === "instagram") {
-    template =
-      "Merhaba,\n\nRezervasyon ve misafir iletişimi süreçleriniz hakkında kısa bir görüşme yapmak isterim.\n\nUygun olursanız bilgi paylaşabilir misiniz?";
-  } else if (rec.channel === "phone") {
-    template =
-      "Arama öncesi not:\n\nİlk amaç satış yapmak değil,\nmevcut operasyon yapısını anlamak.";
-  } else {
-    template =
-      "Merhaba,\n\nİşletmenizin rezervasyon operasyonları hakkında bilgi almak isterim.\n\nUygun olursanız geri dönüş sağlayabilir misiniz?";
-  }
-
-  return { message, actionLabel, channelText, template };
-}
-
-/** v3.1 — "Satış Asistanı" — deterministic sales guidance card for lead detail sidebar. */
-function FounderSalesAssistant({
-  lead,
-  finder,
-  now,
-}: {
-  lead: LeadTableRow;
-  finder: ContactFinderResult | undefined;
-  now: number;
-}) {
-  const { locale } = useLocale();
-  const tr = locale === "tr";
-  const [copied, setCopied] = useState(false);
-
-  const suggestion = computeSalesAssistantSuggestion(lead, finder, now);
-  if (!suggestion) return null;
-
-  function handleCopy() {
-    navigator.clipboard.writeText(suggestion!.template).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2500);
-    });
-  }
-
-  return (
-    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.03] px-3 py-3">
-      {/* Header */}
-      <div className="mb-2.5 flex items-center gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
-          {tr ? "Satış Asistanı" : "Sales Assistant"}
-        </span>
-      </div>
-      <p className="mb-3 text-[11px] text-zinc-500">
-        {tr ? "Bu lead için önerilen ilk aksiyon." : "Recommended first action for this lead."}
-      </p>
-
-      {/* Action guidance */}
-      <div className="mb-3 rounded-md border border-white/8 bg-white/[0.025] px-3 py-2.5">
-        <p className="text-[12px] font-semibold text-emerald-300">{suggestion.actionLabel}</p>
-        <p className="mt-1 text-[12px] text-zinc-300 leading-relaxed">{suggestion.message}</p>
-        <p className="mt-1.5 text-[11px] italic text-zinc-500">{suggestion.channelText}</p>
-      </div>
-
-      {/* Ready-to-use message template */}
-      <div className="mb-3">
-        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-          {tr ? "Önerilen Mesaj" : "Suggested Message"}
-        </p>
-        <div className="rounded-md border border-white/8 bg-zinc-900/40 px-3 py-2.5">
-          <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-zinc-300">
-            {suggestion.template}
-          </p>
-        </div>
-      </div>
-
-      {/* Quick actions */}
-      <div className="flex flex-wrap gap-2">
-        <p className="w-full text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-          {tr ? "Hızlı Aksiyonlar" : "Quick Actions"}
-        </p>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-500/20"
-        >
-          {copied ? (tr ? "Kopyalandı!" : "Copied!") : (tr ? "Mesajı Kopyala" : "Copy Message")}
-        </button>
-        <button
-          type="button"
-          className="rounded-md border border-zinc-700/40 bg-white/[0.03] px-3 py-1.5 text-[11px] font-medium text-zinc-400 transition hover:bg-white/[0.05]"
-        >
-          {tr ? "Lead Detayını Aç" : "Open Lead Detail"}
-        </button>
-      </div>
-    </div>
-  );
+  return { message, actionLabel, channelText };
 }
 
 // ─── end v3.1 ───────────────────────────────────────────────────────────────
 
 // ─── v3.1.1 Operation Guide — Sidebar Consolidation ─────────────────────────
 
-/** v3.1.1 — Unified operational workspace. Merges channel, action, message template and quick
- *  actions into a single card. Replaces standalone CommunicationStrategyCard,
- *  FounderSalesAssistant, and TodayActionCard in the sidebar. No new logic — reuses
- *  computeRecommendedChannel, computeTodayActionStatus, computeSalesAssistantSuggestion. */
+/**
+ * v3.1.1 — Unified operational workspace: channel, action, message and quick
+ * actions in one card. Replaced the standalone CommunicationStrategyCard,
+ * FounderSalesAssistant and TodayActionCard in the sidebar.
+ *
+ * v3.7.6 folded the message editor in as well. The drawer briefly carried both
+ * this card and a separate "Mesaj Çalışma Alanı" section showing the same
+ * draft — one to read it, one to change it. The editor now renders inline here
+ * over the same hook and the same persisted record.
+ */
 function OperationGuideSection({
   lead,
   finder,
   now,
+  onMessageCopied,
+  onWhatsappOpened,
+  onDraftSaved,
+  onMarkMessagePrepared,
+  onMarkMessageOpened,
+  onMarkMessageContacted,
+  focusOnMount = false,
 }: {
   lead: LeadTableRow;
   finder: ContactFinderResult | undefined;
   now: number;
+  onMessageCopied: (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => void;
+  onWhatsappOpened: (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+    messagePreview: string,
+  ) => void;
+  onDraftSaved: (leadId: string, messageVariant: OutreachMessageVariant) => void;
+  onMarkMessagePrepared: (leadId: string) => void;
+  onMarkMessageOpened: (leadId: string) => void;
+  onMarkMessageContacted: (leadId: string) => void;
+  /** Scrolls this card into view — the follow-ups deep link lands here. */
+  focusOnMount?: boolean;
 }) {
   const { locale } = useLocale();
   const tr = locale === "tr";
-  const [copied, setCopied] = useState(false);
   const s = lead._s;
+  const v = lead.signalVerification;
+  const lifecycle = buildOutreachLifecycleContext(lead, now);
+  const stance = computeOutreachStance(lifecycle);
+
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!focusOnMount) return;
+    cardRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [focusOnMount]);
+
+  /*
+   * The editor is rendered inline rather than as its own section.
+   *
+   * It used to live below this card as a separate "Mesaj Çalışma Alanı", which
+   * meant the founder read the message here and then scrolled away to change
+   * it. Same hook, same persisted record, same engine — one surface.
+   */
+  const editor = (
+    <LeadMessageEditor
+      lead={leadTableRowToScoredLead(lead)}
+      doNotContact={Boolean(s.doNotContact)}
+      stance={stance}
+      actionsLabel={tr ? "Hızlı Aksiyonlar" : "Quick Actions"}
+      onMessageCopied={onMessageCopied}
+      onWhatsappOpened={onWhatsappOpened}
+      onDraftSaved={onDraftSaved}
+      onMarkPrepared={onMarkMessagePrepared}
+      onMarkOpened={onMarkMessageOpened}
+      onMarkContacted={onMarkMessageContacted}
+    />
+  );
 
   // Closed lead — compact status card instead of operational actions
   if (s.status === "won" || s.status === "lost") {
     return (
-      <div className="rounded-lg border border-zinc-700/40 bg-zinc-500/[0.03] px-3 py-3">
+      <div
+        ref={cardRef}
+        className="rounded-lg border border-zinc-700/40 bg-zinc-500/[0.03] px-3 py-3"
+      >
         <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
           {tr ? "Operasyon Rehberi" : "Operation Guide"}
         </p>
@@ -10025,52 +9961,59 @@ function OperationGuideSection({
             </>
           )}
         </div>
+        {/*
+          A closed lead keeps its drafts. They are part of the record, not a
+          step in a funnel the lead has left, and this is now the only place
+          they can be reached.
+        */}
+        <div className="mt-3">{editor}</div>
       </div>
     );
   }
 
-  const action = computeTodayActionStatus(lead, s, now);
   const rec = computeRecommendedChannel(lead, finder);
   const suggestion = computeSalesAssistantSuggestion(lead, finder, now);
   const waDigits = queueSessionWhatsAppDigits(lead, finder);
   const waLink = waDigits ? whatsappLink(waDigits) : null;
 
-  // Channel display label
-  const channelLabel =
-    rec.channel === "whatsapp_verified" || rec.channel === "whatsapp_possible"
-      ? "WhatsApp"
-      : rec.channel === "instagram"
-        ? "Instagram"
-        : rec.channel === "website"
-          ? tr ? "Web Formu" : "Website"
-          : rec.channel === "phone"
-            ? tr ? "Telefon" : "Phone"
-            : tr ? "Belirsiz" : "Unknown";
+  /*
+   * A channel counts as recommendable only when it is actually reachable.
+   * `computeRecommendedChannel` returns "whatsapp_possible" for any non-empty
+   * phone field, including landlines — sending the founder to WhatsApp on that
+   * basis wastes the one action they were told to take today.
+   */
+  const whatsappUsable = waLink !== null;
+  const instagramUsable =
+    rec.channel === "instagram" &&
+    (v?.instagramVerification === "verified" ||
+      v?.instagramVerification === "likely" ||
+      Boolean(lead.instagram?.trim()));
+  const websiteUsable =
+    rec.channel === "website" &&
+    (v?.websiteVerification === "verified" ||
+      v?.websiteVerification === "reachable" ||
+      Boolean(lead.website?.trim()));
+  const hasVerifiedChannel = whatsappUsable || instagramUsable || websiteUsable;
 
-  // Short action label for today
-  const actionCopy =
-    s.status === "meeting"
-      ? tr ? "Demo görüşmesini ilerlet" : "Advance demo meeting"
-      : action === "FOLLOW_UP_DUE"
-        ? tr ? "Takip mesajı gönder" : "Send follow-up"
-        : action === "HOT_NOW"
-          ? tr ? "İlk temas kur" : "Make first contact"
-          : action === "DEMO_READY"
-            ? tr ? "Demo görüşmesini ilerlet" : "Advance to demo"
-            : !hasValidOutboundContact(lead, finder).any
-              ? tr ? "İletişim bilgisini doğrula" : "Verify contact info"
-              : tr ? "Tanışma mesajı gönder" : "Send intro message";
+  const channelLabel = whatsappUsable
+    ? "WhatsApp"
+    : instagramUsable
+      ? "Instagram"
+      : websiteUsable
+        ? tr ? "Web Formu" : "Website"
+        : tr ? "Kanalı doğrula" : "Verify channel";
 
-  function handleCopy() {
-    if (!suggestion) return;
-    navigator.clipboard.writeText(suggestion.template).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2500);
-    });
-  }
+  const guideAction = computeGuideAction(lifecycle, {
+    hasVerifiedChannel,
+    doNotContact: Boolean(s.doNotContact),
+  });
+  const actionCopy = GUIDE_ACTION_LABELS[guideAction][tr ? "tr" : "en"];
 
   return (
-    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.03] px-3 py-3">
+    <div
+      ref={cardRef}
+      className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.03] px-3 py-3"
+    >
       <p className="mb-2.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
         {tr ? "Operasyon Rehberi" : "Operation Guide"}
       </p>
@@ -10096,49 +10039,18 @@ function OperationGuideSection({
         <p className="mb-3 text-[12px] leading-relaxed text-zinc-300">{suggestion.message}</p>
       )}
 
-      {/* Önerilen Mesaj */}
-      {suggestion && (
-        <div className="mb-3">
-          <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">
-            {tr ? "Önerilen Mesaj" : "Suggested Message"}
-          </p>
-          <div className="rounded-md border border-white/8 bg-zinc-900/40 px-3 py-2.5">
-            <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-zinc-300">
-              {suggestion.template}
-            </p>
-          </div>
-        </div>
-      )}
+      {/* Önerilen Mesaj — inline editor over the lead's persisted draft */}
+      <div className="mb-3">
+        <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">
+          {tr ? "Önerilen Mesaj" : "Suggested Message"}
+        </p>
+        {editor}
+      </div>
 
-      {/* Hızlı Aksiyonlar */}
-      {(suggestion || waLink) && (
-        <div>
-          <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">
-            {tr ? "Hızlı Aksiyonlar" : "Quick Actions"}
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {suggestion && (
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-300 transition hover:bg-emerald-500/20"
-              >
-                {copied
-                  ? tr ? "Kopyalandı!" : "Copied!"
-                  : tr ? "Mesajı Kopyala" : "Copy Message"}
-              </button>
-            )}
-            {waLink && (
-              <button
-                type="button"
-                onClick={() => openExternal(waLink)}
-                className="rounded-md border border-green-500/30 bg-green-500/10 px-2.5 py-1.5 text-[11px] font-medium text-green-300 transition hover:bg-green-500/20"
-              >
-                {tr ? "WhatsApp Aç" : "Open WhatsApp"}
-              </button>
-            )}
-          </div>
-        </div>
+      {!hasVerifiedChannel && !s.doNotContact && (
+        <p className="text-[10px] text-amber-300">
+          {tr ? "WhatsApp kanalı doğrulanmadı" : "WhatsApp channel not verified"}
+        </p>
       )}
     </div>
   );
@@ -10506,7 +10418,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     "opportunity" | "priority" | "readiness" | "hot" | "lead" | "name"
   >("opportunity");
   const [openId, setOpenId] = useState<string | null>(null);
-  const [drawerSendBusy, setDrawerSendBusy] = useState(false);
   const [draftNote, setDraftNote] = useState("");
   const [ownerReplyDraft, setOwnerReplyDraft] = useState("");
   const [replyHelperBusy, setReplyHelperBusy] = useState(false);
@@ -10679,6 +10590,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       if (dueAt && dueAt <= now) return t("follow_up_due", locale);
       if (!latest) return t("not_contacted", locale);
       if (latest.type === "message_prepared") return t("message_prepared", locale);
+      if (latest.type === "message_draft_saved") return t("message_draft_saved", locale);
       if (latest.type === "message_copied") return t("message_copied", locale);
       if (latest.type === "whatsapp_opened") return t("whatsapp_opened", locale);
       if (latest.type === "contacted") return t("contacted_activity", locale);
@@ -11373,6 +11285,37 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const openLead = openId ? allRowsById.get(openId) ?? null : null;
 
+  /*
+   * Deep link: `/?lead=<id>&panel=message`.
+   *
+   * Follow-ups links here rather than reimplementing a message view of its own.
+   * `panel=message` now lands on the Operation Guide, which owns the editor;
+   * the parameter is kept so links already in circulation keep working.
+   *
+   * The roster arrives asynchronously, so this waits for rows before deciding a
+   * lead is missing; an id that is malformed or genuinely unknown leaves the
+   * dashboard as it is rather than opening an empty drawer.
+   */
+  const [focusMessagePanelLeadId, setFocusMessagePanelLeadId] = useState<string | null>(
+    null,
+  );
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandled.current) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("lead");
+    if (!requested) {
+      deepLinkHandled.current = true;
+      return;
+    }
+    if (allRowsById.size === 0) return; // roster not loaded yet
+    deepLinkHandled.current = true;
+    if (!isValidLeadId(requested) || !allRowsById.has(requested)) return;
+    setOpenId(requested);
+    if (params.get("panel") === "message") setFocusMessagePanelLeadId(requested);
+  }, [allRowsById]);
+
   const manualReEnrichOpenLead = useCallback(async () => {
     if (!openLead) return;
     const before = leadTableRowToScoredLead(openLead);
@@ -11792,89 +11735,6 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return message;
   };
 
-  const generateLeadAiStylePack = async (
-    lead: ScoredLead,
-    followUp = false,
-    regenerateNonce = 0,
-  ): Promise<{
-    styles: { direct: string; soft: string; premium: string };
-    fallback: string;
-    rationaleNote?: string;
-    llmRefined?: boolean;
-    provider?: string | null;
-  }> => {
-    const hasWhatsAppPath = Boolean(whatsappLink(lead.phone));
-    const res = await fetch("/api/generate-message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        leadId: lead.id,
-        name: lead.name,
-        type: lead.type,
-        location: `${lead.city}, ${lead.region}`,
-        leadScore: lead.leadScore,
-        hotScore: lead.hotScore,
-        followUp,
-        regenerateNonce,
-        intelligenceScore: lead.intelligenceScore ?? 0,
-        smartLeadScoreV2: lead.smartLeadScoreV2,
-        reviewIntelligenceScore: lead.reviewIntelligenceScore ?? 0,
-        reviewsCount: lead.reviewsCount,
-        daysSinceLastReview: lead.daysSinceLastReview,
-        bookingFlowStrength: lead.bookingFlowStrength,
-        otaDependencyLikelihood: lead.otaDependencyLikelihood,
-        socialDemandStrength: lead.socialDemandStrength,
-        communicationRisk: lead.communicationRisk,
-        contactReadinessScore: lead.contactReadinessScore,
-        contactQuality: lead.contactQuality,
-        hasWhatsAppPath,
-        hasInstagram: lead.hasInstagram,
-        hasOwnWebsite: lead.hasOwnWebsite,
-        channels: lead.channels,
-        businessSignals: lead.businessSignals ?? [],
-        painPointSummary: lead.painPointSummary ?? [],
-        outreachAngle: lead.outreachAngle ?? "",
-        outreachIntelligence: lead.outreachIntelligence,
-        whyThisLead: lead.whyThisLead ?? [],
-        websiteIntelligence: lead.websiteIntelligence ?? null,
-        acquisitionIntelligence: lead.acquisitionIntelligence ?? null,
-        conversionLeak: lead.conversionLeak ?? null,
-        commercialReadiness: lead.commercialReadiness ?? null,
-        opportunityProfile: lead.opportunityProfile ?? null,
-      }),
-    });
-    const data = (await res.json()) as {
-      styles?: { direct?: string; soft?: string; premium?: string; curiosity?: string };
-      message?: string;
-      error?: string;
-      variations?: string[];
-      rationaleNote?: string;
-      llm_refined?: boolean;
-      meta?: { provider?: string | null };
-    };
-    if (!res.ok) {
-      throw new Error(data.error || `Sunucu hatası (${res.status})`);
-    }
-    const styles = data.styles;
-    const direct = styles?.direct?.trim() ?? "";
-    const soft = styles?.soft?.trim() ?? "";
-    const premium = (styles?.premium?.trim() ?? styles?.curiosity?.trim() ?? "").trim();
-    const fallback =
-      (data.message?.trim() ||
-        (Array.isArray(data.variations) ? data.variations[0]?.trim() : "") ||
-        "") ?? "";
-    if (!direct || !soft || !premium) {
-      throw new Error("AI message styles missing");
-    }
-    return {
-      styles: { direct, soft, premium },
-      fallback,
-      rationaleNote: typeof data.rationaleNote === "string" ? data.rationaleNote : undefined,
-      llmRefined: Boolean(data.llm_refined),
-      provider: data.meta?.provider ?? null,
-    };
-  };
-
   const generateReplyHelperSuggestion = async (lead: LeadTableRow) => {
     const reply = ownerReplyDraft.trim();
     if (!reply) {
@@ -11948,13 +11808,21 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     }
   };
 
-  const startAiMessage = async (lead: ScoredLead) => {
+  /**
+   * Opens the AI message modal for a lead.
+   *
+   * Generation itself belongs to the message workspace inside the modal, which
+   * loads whatever drafts the lead already has and only generates when there
+   * are none. That is what makes reopening the modal show the copy the founder
+   * last worked on instead of silently replacing it.
+   */
+  const startAiMessage = (lead: ScoredLead) => {
     const st = getLeadState(lead.id);
     if (st.doNotContact) {
       setAiMessageModal({
         lead,
-        phase: "error",
-        error: "This lead is marked Do Not Contact. Outreach is disabled.",
+        blockedReason:
+          "Bu lead 'İletişime geçme' olarak işaretli. Yeni mesaj üretimi kapalı.",
       });
       return;
     }
@@ -11964,105 +11832,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       );
       if (!ok) return;
     }
-    const useFollowUpCopy = st.status === "needs_follow_up";
-    setAiMessageModal({ lead, phase: "loading" });
-    try {
-      const pack = await generateLeadAiStylePack(lead, useFollowUpCopy, 0);
-      const message = pack.styles.soft || pack.fallback;
-      appendOutreachEvent(lead.id, "message_prepared", {
-        messageVariant: "soft",
-        messagePreview: message,
-      });
-      setAiMessageModal({
-        lead,
-        phase: "ready",
-        message,
-        styles: pack.styles,
-        draftByStyle: { ...pack.styles },
-        selectedStyle: "soft",
-        rationaleNote: pack.rationaleNote,
-        llmRefined: pack.llmRefined,
-        provider: pack.provider ?? null,
-        regenerateNonce: 0,
-      });
-    } catch (e) {
-      setAiMessageModal({
-        lead,
-        phase: "error",
-        error: e instanceof Error ? e.message : "Bir hata oluştu",
-      });
-    }
+    setAiMessageModal({ lead });
   };
 
-  const regenerateAiMessage = async (lead: ScoredLead) => {
+  const drawerSendMessage = (lead: LeadTableRow) => {
     const st = getLeadState(lead.id);
     if (st.doNotContact) return;
-    const useFollowUpCopy = st.status === "needs_follow_up";
-    const nextNonce =
-      aiMessageModal?.phase === "ready" && aiMessageModal.lead.id === lead.id
-        ? aiMessageModal.regenerateNonce + 1
-        : 1;
-    setAiMessageModal({ lead, phase: "loading" });
-    try {
-      const pack = await generateLeadAiStylePack(lead, useFollowUpCopy, nextNonce);
-      const message = pack.styles.soft || pack.fallback;
-      setAiMessageModal({
-        lead,
-        phase: "ready",
-        message,
-        styles: pack.styles,
-        draftByStyle: { ...pack.styles },
-        selectedStyle: "soft",
-        rationaleNote: pack.rationaleNote,
-        llmRefined: pack.llmRefined,
-        provider: pack.provider ?? null,
-        regenerateNonce: nextNonce,
-      });
-    } catch (e) {
-      setAiMessageModal({
-        lead,
-        phase: "error",
-        error: e instanceof Error ? e.message : "Bir hata oluştu",
-      });
-    }
+    setAiMessageModal({ lead });
   };
 
-  const drawerSendMessage = async (lead: LeadTableRow) => {
-    const st = getLeadState(lead.id);
-    if (st.doNotContact) return;
-    const followUp = st.status === "needs_follow_up";
-    setDrawerSendBusy(true);
-    try {
-      const pack = await generateLeadAiStylePack(lead, followUp, 0);
-      const message = pack.styles.soft || pack.fallback;
-      appendOutreachEvent(lead.id, "message_prepared", {
-        messageVariant: "soft",
-        messagePreview: message,
-      });
-      const msgBase = leadTableRowToScoredLead(lead);
-      applyEnrichedLeadToStore({ ...msgBase, activityTimeline: appendLeadActivity(msgBase.activityTimeline, "whatsapp_message_generated", "WhatsApp mesajı oluşturuldu") });
-      setAiMessageModal({
-        lead,
-        phase: "ready",
-        message,
-        styles: pack.styles,
-        draftByStyle: { ...pack.styles },
-        selectedStyle: "soft",
-        rationaleNote: pack.rationaleNote,
-        llmRefined: pack.llmRefined,
-        provider: pack.provider ?? null,
-        regenerateNonce: 0,
-      });
-    } catch (e) {
-      setAiMessageModal({
-        lead,
-        phase: "error",
-        error: e instanceof Error ? e.message : "Bir hata oluştu",
-      });
-    } finally {
-      setDrawerSendBusy(false);
-    }
-  };
 
   const startFollowUpOutreach = async (lead: ScoredLead) => {
     const st = getLeadState(lead.id);
@@ -12089,8 +11867,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     } catch (e) {
       setAiMessageModal({
         lead,
-        phase: "error",
-        error: e instanceof Error ? e.message : "Bir hata oluştu",
+        blockedReason: e instanceof Error ? e.message : "Bir hata oluştu",
       });
     } finally {
       setFollowUpBusyLeadId(null);
@@ -12723,10 +12500,15 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
   const prepareQueueLeadMessage = async () => {
     if (!queueCurrentId || !queueCurrentLead) return;
-    const followUp = Boolean(outreachQueue.followUpById[queueCurrentId]);
+    // Stance from real contact history, not from the queue's follow-up flag: a
+    // lead can be queued for follow-up without ever having been written to.
+    const queueRow = allRowsById.get(queueCurrentId);
+    const stance = queueRow
+      ? computeOutreachStance(buildOutreachLifecycleContext(queueRow, Date.now()))
+      : "first_contact";
     setOutreachQueue((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      const pack = await generateLeadAiStylePack(queueCurrentLead, followUp);
+      const pack = await generateOutreachStylePack(queueCurrentLead, { stance });
       const message = pack.styles.direct || pack.fallback;
       setOutreachQueue((prev) => ({
         ...prev,
@@ -12774,6 +12556,20 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     messagePreview: string,
   ) => {
     appendOutreachEvent(leadId, "message_copied", { messageVariant, messagePreview });
+  };
+
+  /**
+   * Records that a manually edited draft was saved.
+   *
+   * Deliberately carries no message text: the draft itself already lives in the
+   * lead's message workspace, and copying it into the timeline as well would
+   * leave the founder's outreach copy in two places that can disagree.
+   */
+  const logMessageDraftSaved = (
+    leadId: string,
+    messageVariant: OutreachMessageVariant,
+  ) => {
+    appendOutreachEvent(leadId, "message_draft_saved", { messageVariant });
   };
 
   const logWhatsappOpened = (
@@ -14414,8 +14210,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       <AiMessageModal
         state={aiMessageModal}
         onClose={() => setAiMessageModal(null)}
-        onRetry={(l) => void regenerateAiMessage(l)}
         onMarkContacted={recordWhatsAppOutreach}
+        doNotContact={
+          aiMessageModal
+            ? Boolean(getLeadState(aiMessageModal.lead.id).doNotContact)
+            : false
+        }
+        stance={
+          aiMessageModal && allRowsById.has(aiMessageModal.lead.id)
+            ? computeOutreachStance(
+                buildOutreachLifecycleContext(
+                  allRowsById.get(aiMessageModal.lead.id)!,
+                  renderNow,
+                ),
+              )
+            : "first_contact"
+        }
         queuedForOutreach={
           aiMessageModal ? dailyOutreach.todayQueue.includes(aiMessageModal.lead.id) : false
         }
@@ -14426,6 +14236,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         onMarkOpened={markAiMessageOpened}
         onMessageCopied={logAiMessageCopied}
         onWhatsappOpened={logWhatsappOpened}
+        onDraftSaved={logMessageDraftSaved}
       />
 
       {outreachQueue.open && (outreachQueue.complete || queueCurrentLead) && (
@@ -14723,14 +14534,22 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             <button
               type="button"
               aria-label={t("drawer_close_aria", locale)}
-              onClick={() => setOpenId(null)}
+              onClick={() => {
+                setOpenId(null);
+                setFocusMessagePanelLeadId(null);
+              }}
               className="flex-1 bg-black/60 backdrop-blur-sm"
             />
             <aside className="flex h-full w-full max-w-md flex-col border-l border-white/10 bg-zinc-950 shadow-2xl">
               <LeadDetailPanel
                 key={openLead.id}
                 selectedLead={openLead}
-                onClose={() => setOpenId(null)}
+                onClose={() => {
+                  setOpenId(null);
+                  // The deep link is a one-shot: reopening this lead by hand
+                  // should not scroll the drawer for them again.
+                  setFocusMessagePanelLeadId(null);
+                }}
                 finderPersisted={contactFinderMap[openLead.id]}
                 contactFinderRequest={contactFinderRequest}
                 draftNote={draftNote}
@@ -14739,7 +14558,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 setLeadStatus={setLeadStatus}
                 findBestContact={findBestContact}
                 onSendMessage={() => void drawerSendMessage(openLead)}
-                sendMessageBusy={drawerSendBusy}
+                sendMessageBusy={false}
                 ownerReplyDraft={ownerReplyDraft}
                 setOwnerReplyDraft={setOwnerReplyDraft}
                 onGenerateReplyHelper={() => void generateReplyHelperSuggestion(openLead)}
@@ -14776,6 +14595,13 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                 manualReEnrichBusy={reenrichBusyLeadId === openLead.id}
                 manualReEnrichMessage={reenrichMessage}
                 onAiReviewCompleted={recordAiReviewForOpenLead}
+                onMessageCopied={logAiMessageCopied}
+                onWhatsappOpened={logWhatsappOpened}
+                onDraftSaved={logMessageDraftSaved}
+                onMarkMessagePrepared={markAiMessagePrepared}
+                onMarkMessageOpened={markAiMessageOpened}
+                onMarkMessageContacted={recordWhatsAppOutreach}
+                focusMessageWorkspace={focusMessagePanelLeadId === openLead.id}
               />
             </aside>
           </div>,

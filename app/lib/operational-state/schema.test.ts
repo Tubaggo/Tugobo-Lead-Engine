@@ -283,3 +283,98 @@ describe("normalizeDailyQueue", () => {
     assert.equal(queue?.completedToday, 0);
   });
 });
+
+describe("messageWorkspace persistence", () => {
+  const draft = (message: string) => ({
+    activeTone: "soft" as const,
+    drafts: {
+      soft: {
+        tone: "soft" as const,
+        message,
+        source: "provider" as const,
+        updatedAt: NOW,
+      },
+    },
+    recentMessages: [
+      {
+        id: "soft-1",
+        tone: "soft" as const,
+        message,
+        source: "provider" as const,
+        createdAt: NOW,
+      },
+    ],
+  });
+
+  test("survives a round trip through the state file", () => {
+    const file = parseStateFile({
+      schemaVersion: SCHEMA_VERSION,
+      updatedAt: NOW,
+      leads: { "ant-001": { activity: [], messageWorkspace: draft("merhaba") } },
+    });
+    assert.equal(
+      file?.leads["ant-001"].messageWorkspace?.drafts.soft?.message,
+      "merhaba",
+    );
+  });
+
+  test("is accepted as a patch", () => {
+    const patch = parseLeadStatePatch({ messageWorkspace: draft("merhaba") });
+    assert.equal(patch?.messageWorkspace?.drafts.soft?.message, "merhaba");
+  });
+
+  test("rejects an over-length draft with a 400-shaped null", () => {
+    assert.equal(
+      parseLeadStatePatch({ messageWorkspace: draft("m".repeat(521)) }),
+      null,
+    );
+  });
+
+  test("rejects a non-object workspace", () => {
+    assert.equal(parseLeadStatePatch({ messageWorkspace: "merhaba" }), null);
+  });
+
+  test("merges tone-by-tone instead of replacing the record", () => {
+    const first = applyLeadStatePatch(
+      undefined,
+      "ant-001",
+      { messageWorkspace: draft("yumuşak") },
+      NOW,
+    );
+    const second = applyLeadStatePatch(
+      first,
+      "ant-001",
+      {
+        messageWorkspace: {
+          activeTone: "direct" as const,
+          drafts: {
+            direct: {
+              tone: "direct" as const,
+              message: "direkt",
+              source: "manual" as const,
+              updatedAt: NOW,
+            },
+          },
+          recentMessages: [],
+        },
+      },
+      NOW,
+    );
+
+    assert.equal(second.messageWorkspace?.drafts.soft?.message, "yumuşak");
+    assert.equal(second.messageWorkspace?.drafts.direct?.message, "direkt");
+    assert.equal(second.messageWorkspace?.activeTone, "direct");
+    assert.equal(second.revision, 2);
+  });
+
+  test("leaves the workspace alone when a patch does not mention it", () => {
+    const first = applyLeadStatePatch(
+      undefined,
+      "ant-001",
+      { messageWorkspace: draft("yumuşak") },
+      NOW,
+    );
+    const second = applyLeadStatePatch(first, "ant-001", { queued: true }, NOW);
+    assert.equal(second.messageWorkspace?.drafts.soft?.message, "yumuşak");
+  });
+});

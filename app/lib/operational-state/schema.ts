@@ -12,6 +12,12 @@
  */
 
 import type { LeadStatusUpdate, ScoredLead } from "../leads.ts";
+import {
+  mergeMessageWorkspace,
+  normalizeMessageWorkspace,
+  parseMessageWorkspace,
+  type LeadMessageWorkspaceState,
+} from "../outreach/workspace.ts";
 
 export const SCHEMA_VERSION = 1;
 
@@ -75,6 +81,8 @@ export type LeadOperationalState = {
   workflow?: Partial<LeadStatusUpdate>;
   manualOverrides?: Record<string, unknown>;
   aiSnapshot?: AiSnapshot;
+  /** Outreach drafts per tone. See `outreach/workspace.ts` for the shape. */
+  messageWorkspace?: LeadMessageWorkspaceState;
   activity: ActivityEntry[];
   createdAt: string;
   updatedAt: string;
@@ -309,6 +317,8 @@ export function normalizeLeadState(
   if (overrides) state.manualOverrides = overrides;
   const ai = normalizeAiSnapshot(o.aiSnapshot);
   if (ai) state.aiSnapshot = ai;
+  const workspace = normalizeMessageWorkspace(o.messageWorkspace, fallbackNow);
+  if (workspace) state.messageWorkspace = workspace;
 
   return state;
 }
@@ -436,6 +446,7 @@ export type LeadStatePatch = {
   workflow?: Partial<LeadStatusUpdate>;
   manualOverrides?: Record<string, unknown>;
   aiSnapshot?: AiSnapshot;
+  messageWorkspace?: LeadMessageWorkspaceState;
 };
 
 /**
@@ -469,6 +480,14 @@ export function parseLeadStatePatch(raw: unknown): LeadStatePatch | null {
   if ("aiSnapshot" in o) {
     const ai = normalizeAiSnapshot(o.aiSnapshot);
     if (ai) patch.aiSnapshot = ai;
+  }
+  if ("messageWorkspace" in o) {
+    // Strict on the write path: an over-length draft is rejected rather than
+    // stored truncated, so the founder is never told a message was saved that
+    // is not the message they wrote.
+    const workspace = parseMessageWorkspace(o.messageWorkspace, nowIso());
+    if (!workspace) return null;
+    patch.messageWorkspace = workspace;
   }
 
   return patch;
@@ -512,6 +531,12 @@ export function applyLeadStatePatch(
     next.manualOverrides = { ...(base.manualOverrides ?? {}), ...patch.manualOverrides };
   }
   if (patch.aiSnapshot) next.aiSnapshot = { ...(base.aiSnapshot ?? {}), ...patch.aiSnapshot };
+  if (patch.messageWorkspace) {
+    next.messageWorkspace = mergeMessageWorkspace(
+      base.messageWorkspace,
+      patch.messageWorkspace,
+    );
+  }
 
   return next;
 }

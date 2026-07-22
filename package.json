@@ -9,7 +9,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "pnpm run test:lib && pnpm run test:scripts",
-    "test:lib": "node --test --conditions=react-server app/lib/auth/auth-env.test.ts app/lib/auth/login-rate-limit.test.ts app/lib/auth/login-shared.test.ts app/lib/operational-state/schema.test.ts app/lib/operational-state/file-store.test.ts app/lib/operational-state/repository.test.ts app/lib/operational-state/http.test.ts",
+    "test:lib": "node --test --conditions=react-server app/lib/auth/auth-env.test.ts app/lib/auth/login-rate-limit.test.ts app/lib/auth/login-shared.test.ts app/lib/operational-state/schema.test.ts app/lib/operational-state/file-store.test.ts app/lib/operational-state/repository.test.ts app/lib/operational-state/http.test.ts app/lib/outreach/signals.test.ts app/lib/outreach/validator.test.ts app/lib/outreach/engine.test.ts app/lib/outreach/workspace.test.ts app/lib/outreach/lifecycle.test.ts app/lib/outreach/humanness.test.ts app/lib/outreach/message-surface.test.ts",
     "test:scripts": "node --test scripts/setup-lead-engine-auth.test.mjs scripts/backup-operational-state.test.mjs",
     "auth:setup": "node scripts/setup-lead-engine-auth.mjs",
     "state:backup": "node scripts/backup-operational-state.mjs",

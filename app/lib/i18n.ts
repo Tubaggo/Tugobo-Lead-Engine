@@ -182,6 +182,8 @@ const UI = {
   // Outreach activity labels
   not_contacted: { en: "Not contacted", tr: "İletişim yok" },
   message_prepared: { en: "Message prepared", tr: "Mesaj hazır" },
+  message_draft_saved: { en: "Draft saved", tr: "Taslak kaydedildi" },
+  open_lead_message: { en: "Lead detail / message", tr: "Lead detayı / mesajı" },
   message_copied: { en: "Message copied", tr: "Mesaj kopyalandı" },
   whatsapp_opened: { en: "WhatsApp opened", tr: "WhatsApp açıldı" },
   contacted_activity: { en: "Contacted", tr: "İletişime geçildi" },

@@ -1,6 +1,7 @@
 "use client";
 
 import type { LeadStatusUpdate, ScoredLead } from "../leads.ts";
+import type { LeadMessageWorkspaceState } from "../outreach/workspace.ts";
 import type {
   ActivityEntry,
   DailyQueueState,
@@ -43,6 +44,35 @@ const mirror: Mirror = {
 
 export function isHydrated(): boolean {
   return mirror.hydrated;
+}
+
+/* -------------------------------------------------------------------------- */
+/* change notifications                                                       */
+/* -------------------------------------------------------------------------- */
+
+type LeadStateListener = (leadId: string | null) => void;
+
+const leadStateListeners = new Set<LeadStateListener>();
+
+/**
+ * Subscribes to accepted writes, so two views of the same lead cannot drift.
+ *
+ * The AI message modal and the lead detail workspace can be open over the same
+ * lead at once. Both read their drafts from the mirror; without this channel
+ * the one that did not perform the write would keep rendering the copy it
+ * loaded on mount, and the founder would see two different "current" drafts.
+ *
+ * `null` means "everything changed" (a full hydrate).
+ */
+export function subscribeLeadState(listener: LeadStateListener): () => void {
+  leadStateListeners.add(listener);
+  return () => {
+    leadStateListeners.delete(listener);
+  };
+}
+
+function notifyLeadState(leadId: string | null): void {
+  for (const listener of leadStateListeners) listener(leadId);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -218,6 +248,7 @@ export async function hydrate(): Promise<OperationalStateFile> {
   mirror.roster = Array.isArray(file.roster) ? file.roster : [];
   mirror.dailyQueue = file.dailyQueue ?? null;
   mirror.hydrated = true;
+  notifyLeadState(null);
   return file;
 }
 
@@ -241,6 +272,70 @@ export async function patchLead(
     body: JSON.stringify(toPatchBody(update)),
   })) as LeadOperationalState;
   mirror.leads[leadId] = next;
+  notifyLeadState(leadId);
+}
+
+/* -------------------------------------------------------------------------- */
+/* message workspace                                                          */
+/* -------------------------------------------------------------------------- */
+
+/** The stored outreach drafts for one lead, or `undefined` if it has none. */
+export function readMessageWorkspace(
+  leadId: string,
+): LeadMessageWorkspaceState | undefined {
+  return mirror.leads[leadId]?.messageWorkspace;
+}
+
+/** Re-reads one lead from the server and replaces its mirror entry. */
+export async function refreshLead(leadId: string): Promise<LeadOperationalState | null> {
+  try {
+    const state = (await request(
+      `/api/operational-state/${encodeURIComponent(leadId)}`,
+    )) as LeadOperationalState;
+    mirror.leads[leadId] = state;
+    notifyLeadState(leadId);
+    return state;
+  } catch (err) {
+    // A lead with no server record yet is a 404, not a failure.
+    if (err instanceof OperationalStateError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Persists a lead's outreach drafts.
+ *
+ * Sent with the mirror's revision so a second device editing the same lead is
+ * rejected instead of clobbering. On rejection the server copy is pulled back
+ * into the mirror and the caller is handed it — the founder's unsaved text
+ * lives in component state and is never part of what gets discarded here.
+ */
+export async function patchMessageWorkspace(
+  leadId: string,
+  workspace: LeadMessageWorkspaceState,
+): Promise<LeadMessageWorkspaceState | undefined> {
+  const expectedRevision = mirror.leads[leadId]?.revision;
+  try {
+    const next = (await request(`/api/operational-state/${encodeURIComponent(leadId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        messageWorkspace: workspace,
+        ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+      }),
+    })) as LeadOperationalState;
+    mirror.leads[leadId] = next;
+    notifyLeadState(leadId);
+    return next.messageWorkspace;
+  } catch (err) {
+    if (err instanceof OperationalStateError && err.status === 409) {
+      await refreshLead(leadId);
+      throw new OperationalStateError(
+        "Bu lead başka bir cihazda güncellendi. Sunucudaki hâli yüklendi; metniniz korundu.",
+        409,
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -286,6 +381,7 @@ export async function appendActivity(
     { method: "POST", body: JSON.stringify({ entries }) },
   )) as LeadOperationalState;
   mirror.leads[leadId] = next;
+  notifyLeadState(leadId);
 }
 
 export async function putRoster(roster: ScoredLead[]): Promise<void> {

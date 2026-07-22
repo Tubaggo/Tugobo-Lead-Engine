@@ -8,6 +8,7 @@ import * as operationalState from "@/app/lib/operational-state/client";
 
 type OutreachEventType =
   | "message_prepared"
+  | "message_draft_saved"
   | "message_copied"
   | "whatsapp_opened"
   | "contacted"
@@ -53,10 +54,18 @@ type FollowUpLead = {
   source?: "airtable" | "local";
   /** Present for locally derived rows — used for TR/EN UI labels. */
   lastOutreachEventType?: OutreachEventType;
+  /**
+   * The dashboard lead id, for rows derived from operational state.
+   *
+   * Airtable-only rows have no counterpart in the roster, so they cannot open a
+   * message workspace and do not get the action.
+   */
+  leadId?: string;
 };
 
 function eventLabel(type: OutreachEventType, locale: "tr" | "en"): string {
   if (type === "message_prepared") return t("message_prepared", locale);
+  if (type === "message_draft_saved") return t("message_draft_saved", locale);
   if (type === "message_copied") return t("message_copied", locale);
   if (type === "whatsapp_opened") return t("whatsapp_opened", locale);
   if (type === "contacted") return t("contacted_activity", locale);
@@ -132,6 +141,7 @@ async function loadLocalFollowUps(): Promise<FollowUpLead[]> {
         pipeline_stage: typeof s.status === "string" ? s.status : "new",
         last_outreach_action: eventLabel(latest.type, "en"),
         lastOutreachEventType: latest.type,
+        leadId: lead.id,
         source: "local",
       });
     }
@@ -346,6 +356,19 @@ export default function FollowUpsPage() {
                       · {t("status_word", locale)}: {followUpStatus(lead, locale)}
                     </div>
                     <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                      {/*
+                        Opens the lead's own message workspace on the dashboard
+                        instead of duplicating a draft editor here. One lead,
+                        one place its drafts live.
+                      */}
+                      {lead.leadId ? (
+                        <Link
+                          href={`/?lead=${encodeURIComponent(lead.leadId)}&panel=message`}
+                          className="w-full rounded-md border border-violet-400/30 bg-violet-500/10 px-3 py-2 text-center text-sm font-medium text-violet-100 hover:bg-violet-500/20 sm:w-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
+                        >
+                          {t("open_lead_message", locale)}
+                        </Link>
+                      ) : null}
                       <button
                         type="button"
                         disabled={!wa || busyId === lead.recordId}

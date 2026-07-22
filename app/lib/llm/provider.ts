@@ -454,6 +454,81 @@ export type {
 } from "@/app/lib/intelligence/extracted-signals-interpretation";
 
 /**
+ * Provider adapter for the grounded outreach engine (v3.7.6).
+ *
+ * Distinct from {@link generateLLMOutreachMessage}, which *polishes* a
+ * rule-built draft and therefore inherits its subject. This one takes a fully
+ * built system+user prompt and returns the raw JSON contract, so the engine
+ * controls grounding, angle and tone rather than the template.
+ *
+ * Temperature is higher than the insight paths (0.4 → 0.85) because near-
+ * determinism is exactly what made "regenerate" return the same copy.
+ * Returns `null` on any failure; the engine falls back.
+ */
+export async function generateGroundedOutreach(params: {
+  system: string;
+  user: string;
+}): Promise<{
+  message: string;
+  usedSignalKeys?: string[];
+  ctaType?: string;
+  variationAngle?: string;
+} | null> {
+  const timeoutMs = defaultTimeoutMs();
+  const messages: ChatMessage[] = [
+    { role: "system", content: params.system },
+    { role: "user", content: params.user },
+  ];
+
+  let raw: string | null = null;
+  const dsKey = getDeepSeekApiKey();
+  if (dsKey) {
+    raw = await deepseekChatText({
+      messages,
+      jsonObject: true,
+      temperature: 0.85,
+      timeoutMs,
+    });
+  } else {
+    const oaKey = process.env.OPENAI_API_KEY?.trim();
+    if (!oaKey) return null;
+    const model =
+      process.env.OPENAI_MODEL?.trim().replace(/^["']|["']$/g, "") || "gpt-4o-mini";
+    raw = await openAiCompatibleChatCompletion({
+      url: OPENAI_CHAT_URL,
+      apiKey: oaKey,
+      model,
+      messages,
+      temperature: 0.85,
+      jsonObject: true,
+      timeoutMs,
+    });
+  }
+  if (!raw) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+
+  const message = typeof parsed.message === "string" ? parsed.message.trim() : "";
+  if (!message) return null;
+
+  return {
+    message,
+    usedSignalKeys: Array.isArray(parsed.usedSignalKeys)
+      ? parsed.usedSignalKeys.filter((k): k is string => typeof k === "string")
+      : undefined,
+    ctaType: typeof parsed.ctaType === "string" ? parsed.ctaType : undefined,
+    variationAngle:
+      typeof parsed.variationAngle === "string" ? parsed.variationAngle : undefined,
+  };
+}
+
+/**
  * Single-string Turkish polish (e.g. one-off copy tweaks). Returns null → keep {@link text}.
  */
 export async function refineTurkishSalesCopy(
