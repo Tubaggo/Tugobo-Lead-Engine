@@ -160,6 +160,24 @@ function scrollToSection(id: string, updateHash = true) {
   });
 }
 
+/**
+ * Public wrapper so other parts of the page (e.g. clickable operation KPIs) can
+ * scroll to a section using the exact same offset/hash/focus behavior as the
+ * navigation rail — no parallel navigation system. Deferred one frame so any
+ * state-driven layout change (opening a collapsible section) settles first, and
+ * re-tried once on the next frame when the target has not mounted yet.
+ */
+export function goToSection(id: string) {
+  if (typeof window === "undefined") return;
+  window.requestAnimationFrame(() => {
+    if (document.getElementById(id)) {
+      scrollToSection(id);
+      return;
+    }
+    window.requestAnimationFrame(() => scrollToSection(id));
+  });
+}
+
 export function SectionNavigationRail({
   items,
   revalidateKey,

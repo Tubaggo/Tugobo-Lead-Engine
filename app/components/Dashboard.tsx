@@ -44,6 +44,7 @@ import {
   type LeadLifecycleStatus,
   computeTodayActionStatus,
   type TodayActionStatus,
+  isHotNowLead,
 } from "@/app/lib/leads";
 import type { SignalSourceKey } from "@/app/lib/signal-verification";
 import { normalizePhoneNumber } from "@/app/lib/intelligence/whatsapp-verification";
@@ -98,7 +99,16 @@ import {
   SectionNavigationRail,
   SECTION_ANCHOR_CLS,
   getSectionNavItems,
+  goToSection,
 } from "@/app/components/SectionNavigationRail";
+import {
+  resolveOperationTarget,
+  type OperationNavKey,
+} from "@/app/lib/operation-navigation";
+import {
+  buildOperationUrl,
+  parseOperationFilter,
+} from "@/app/lib/operation-url";
 import {
   acquisitionSignalUiLine,
   acquisitionWeaknessUiLine,
@@ -7035,11 +7045,13 @@ function DailyOperatingBrief({
   now,
   completedToday,
   activeQueueCount,
+  onNavigate,
 }: {
   rows: LeadTableRow[];
   now: number;
   completedToday: number;
   activeQueueCount: number;
+  onNavigate: (key: OperationNavKey) => void;
 }) {
   const { locale } = useLocale();
   const tr = locale === "tr";
@@ -7091,24 +7103,39 @@ function DailyOperatingBrief({
           <div className="text-sm font-medium text-indigo-100">{intel.focus}</div>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+          <button
+            type="button"
+            onClick={() => onNavigate("critical")}
+            aria-label={tr ? "Kritik işleri aç" : "Open critical tasks"}
+            className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center transition hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+          >
             <div className="text-2xl font-bold tabular-nums text-rose-300">{intel.criticalCount}</div>
             <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Kritik İş" : "Critical Tasks"}</div>
-          </div>
+          </button>
           <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
             <div className="text-2xl font-bold tabular-nums text-amber-300">
               {intel.estimatedMinutes > 0 ? `~${intel.estimatedMinutes}` : "0"}
             </div>
             <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Tahmini Dakika" : "Est. Minutes"}</div>
           </div>
-          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+          <button
+            type="button"
+            onClick={() => onNavigate("activeLeads")}
+            aria-label={tr ? "Aktif leadleri aç" : "Open active leads"}
+            className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center transition hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+          >
             <div className="text-2xl font-bold tabular-nums text-sky-300">{intel.activeLeadCount}</div>
             <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Aktif Lead" : "Active Leads"}</div>
-          </div>
-          <div className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate("dailyTarget")}
+            aria-label={tr ? "Satış planını aç" : "Open sales plan"}
+            className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center transition hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+          >
             <div className="text-2xl font-bold tabular-nums text-emerald-300">{completedToday}</div>
             <div className="mt-0.5 text-[11px] text-zinc-500">{tr ? "Günlük Hedef" : "Daily Target"}</div>
-          </div>
+          </button>
         </div>
       </div>
     </section>
@@ -7284,10 +7311,12 @@ function DailyProgressStrip({
   rows,
   completedToday,
   activeQueueCount,
+  onNavigate,
 }: {
   rows: LeadTableRow[];
   completedToday: number;
   activeQueueCount: number;
+  onNavigate: (key: OperationNavKey) => void;
 }) {
   const { locale } = useLocale();
   const tr = locale === "tr";
@@ -7309,24 +7338,33 @@ function DailyProgressStrip({
     return { contacted, followUpClosed, demoPlanned, won, queueRate };
   }, [rows, completedToday, activeQueueCount]);
 
-  const items = [
-    { label: tr ? "Kuyruk Tamamlama" : "Queue Done", value: `${counts.queueRate}%`, cls: "text-indigo-300" },
-    { label: tr ? "İletişim Kuruldu" : "Contacted", value: String(counts.contacted), cls: "text-sky-300" },
-    { label: tr ? "Takip Kapatılan" : "Follow-up Closed", value: String(counts.followUpClosed), cls: "text-amber-300" },
-    { label: tr ? "Demo Planlanan" : "Demo Planned", value: String(counts.demoPlanned), cls: "text-emerald-300" },
-    { label: tr ? "Kazanılan" : "Won", value: String(counts.won), cls: "text-fuchsia-300" },
+  const items: {
+    label: string;
+    value: string;
+    cls: string;
+    navKey: OperationNavKey;
+    aria: string;
+  }[] = [
+    { label: tr ? "Kuyruk Tamamlama" : "Queue Done", value: `${counts.queueRate}%`, cls: "text-indigo-300", navKey: "queueRate", aria: tr ? "Bugünün kuyruğunu aç" : "Open today's queue" },
+    { label: tr ? "İletişim Kuruldu" : "Contacted", value: String(counts.contacted), cls: "text-sky-300", navKey: "contacted", aria: tr ? "İletişim kurulan leadleri aç" : "Open contacted leads" },
+    { label: tr ? "Takip Kapatılan" : "Follow-up Closed", value: String(counts.followUpClosed), cls: "text-amber-300", navKey: "followUpClosed", aria: tr ? "Cevap alınan leadleri aç" : "Open replied leads" },
+    { label: tr ? "Demo Planlanan" : "Demo Planned", value: String(counts.demoPlanned), cls: "text-emerald-300", navKey: "demoPlanned", aria: tr ? "Demo planlanan leadleri aç" : "Open demo-planned leads" },
+    { label: tr ? "Kazanılan" : "Won", value: String(counts.won), cls: "text-fuchsia-300", navKey: "won", aria: tr ? "Kazanılan leadleri aç" : "Open won leads" },
   ];
 
   return (
     <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
       {items.map((item) => (
-        <div
+        <button
           key={item.label}
-          className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center"
+          type="button"
+          onClick={() => onNavigate(item.navKey)}
+          aria-label={item.aria}
+          className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center transition hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
         >
           <div className={`text-xl font-bold tabular-nums ${item.cls}`}>{item.value}</div>
           <div className="mt-0.5 text-[11px] text-zinc-500">{item.label}</div>
-        </div>
+        </button>
       ))}
     </div>
   );
@@ -7361,7 +7399,9 @@ function computeFounderWorkflowStatus(
     if (s.status === "won" || s.status === "lost") continue;
     const action = computeTodayActionStatus(row, s, now);
     if (action === "FOLLOW_UP_DUE") followUpDue++;
-    else if (action === "HOT_NOW") hotNow++;
+    // v3.7.8 — same HOT_NOW selector the destination list filters by, so the
+    // "Sıcak Fırsatları İşle (N)" count and the shown rows are the same lead set.
+    else if (isHotNowLead(row, s, now)) hotNow++;
     if (action === "DEMO_READY" || s.status === "meeting") demoReady++;
   }
 
@@ -7407,9 +7447,11 @@ function resolveWorkflowStepBadge(
 function FounderWorkflowSteps({
   rows,
   now,
+  onNavigate,
 }: {
   rows: LeadTableRow[];
   now: number;
+  onNavigate: (key: OperationNavKey) => void;
 }) {
   const { locale } = useLocale();
   const tr = locale === "tr";
@@ -7444,11 +7486,13 @@ function FounderWorkflowSteps({
     count: number;
     reason: string;
     badge: WorkflowStepBadge;
+    navKey: OperationNavKey;
   };
 
   const steps: StepDef[] = [
     {
       num: 1,
+      navKey: "closeFollowUps",
       title: tr ? "Takipleri Kapat" : "Close Follow-ups",
       count: wf.followUpDue,
       reason:
@@ -7463,6 +7507,7 @@ function FounderWorkflowSteps({
     },
     {
       num: 2,
+      navKey: "engageHot",
       title: tr ? "Sıcak Fırsatları İşle" : "Engage Hot Leads",
       count: wf.hotNow,
       reason:
@@ -7477,6 +7522,7 @@ function FounderWorkflowSteps({
     },
     {
       num: 3,
+      navKey: "advanceDemo",
       title: tr ? "Demo Adaylarını İlerlet" : "Advance Demo Candidates",
       count: wf.demoReady,
       reason:
@@ -7491,6 +7537,7 @@ function FounderWorkflowSteps({
     },
     {
       num: 4,
+      navKey: "generateNew",
       title: tr ? "Yeni Fırsat Üret" : "Generate New Opportunities",
       count: wf.step4Count,
       reason: wf.pipelineLow
@@ -7513,9 +7560,12 @@ function FounderWorkflowSteps({
       </div>
       <div className="divide-y divide-white/5">
         {steps.map((step) => (
-          <div
+          <button
             key={step.num}
-            className="flex items-center justify-between gap-3 px-4 py-3"
+            type="button"
+            onClick={() => onNavigate(step.navKey)}
+            aria-label={tr ? `${step.title} — aç` : `${step.title} — open`}
+            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-400/50"
           >
             <div className="flex min-w-0 items-center gap-3">
               <span
@@ -7544,7 +7594,7 @@ function FounderWorkflowSteps({
             >
               {step.badge}
             </span>
-          </div>
+          </button>
         ))}
       </div>
       <div className="border-t border-white/5 px-4 py-3">
@@ -10543,6 +10593,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   const [allLeadsTimeFilter, setAllLeadsTimeFilter] =
     useState<AllLeadsTimeFilter>("all_time");
   const [allLeadsTab, setAllLeadsTab] = useState<"focused" | "new" | "hot" | "all">("focused");
+  // v3.7.8 — exact operational filter (e.g. "hot_now") overriding the filter chain.
+  const [operationFilter, setOperationFilter] = useState<"hot_now" | null>(null);
   const [aiMessageModal, setAiMessageModal] = useState<AiMessageModalState>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [dailyOutreach, setDailyOutreach] = useState<DailyOutreachPersisted>({
@@ -11213,12 +11265,36 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     return new Map(allRows.map((r) => [r.id, r]));
   }, [allRows]);
 
+  // v3.7.8 — true when no lead sits in any pipeline stage. Used to give the
+  // "Satış Boru Hattı / Demo Adayları" anchor a visible empty state so a click
+  // on "Demo Adaylarını İlerlet" with 0 demo candidates never collapses the
+  // anchor and visually bleeds into the next section (Lead Havuzu).
+  const pipelineEmpty = useMemo(
+    () =>
+      !allRows.some((r) => {
+        const st = r._s.status;
+        return (
+          st === "contacted" ||
+          st === "needs_follow_up" ||
+          st === "replied" ||
+          st === "meeting" ||
+          st === "won" ||
+          st === "lost"
+        );
+      }),
+    [allRows],
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const now = renderNow;
     const dayAgo = now - 24 * 60 * 60 * 1000;
     const latestImportIdSet = new Set(latestImportLeads.map((l) => l.id));
     const list = allRows.filter((r) => {
+      // v3.7.8 — exact operational filter short-circuits the whole chain so the
+      // list is precisely the HOT_NOW lead set the card counted; no other filter
+      // may narrow it.
+      if (operationFilter === "hot_now") return isHotNowLead(r, r._s, now);
       const createdAt = r.createdAt ?? 0;
       const fu = isFollowUpDue(r._s, now);
       if (allLeadsTimeFilter === "today_work") {
@@ -11286,6 +11362,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     contactChannelFilter,
     contactFinderMap,
     allLeadsTimeFilter,
+    operationFilter,
     latestImportLeads,
     sort,
     recentlyImportedLeadIds,
@@ -11325,6 +11402,8 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
   }, [hotLeadsSource, allRowsById]);
 
   const tabFiltered = useMemo(() => {
+    // Exact operational filter owns the result — tab must not narrow it.
+    if (operationFilter === "hot_now") return filtered;
     if (allLeadsTab === "focused") {
       return filtered.filter(
         (r) => !r._s.doNotContact && r._s.status === "new" && r.hotScore >= 60,
@@ -11337,19 +11416,137 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       return filtered.filter((r) => !r._s.doNotContact && r.hotScore >= 70);
     }
     return filtered;
-  }, [filtered, allLeadsTab]);
+  }, [filtered, allLeadsTab, operationFilter]);
 
   const focusFiltered = useMemo(() => {
+    // Exact operational filter owns the result — focus mode must not narrow it.
+    if (operationFilter === "hot_now") return tabFiltered;
     if (!focusMode) return tabFiltered;
     return tabFiltered.filter(
       (r) => !r._s.doNotContact && r._s.status === "new" && r.hotScore >= 70,
     );
-  }, [tabFiltered, focusMode]);
+  }, [tabFiltered, focusMode, operationFilter]);
 
   const visibleAllLeads = useMemo(() => {
-    if (showAllLeadsRows) return focusFiltered;
+    // Show every matching row for an exact operational filter so the visible
+    // count equals the card count N.
+    if (operationFilter === "hot_now" || showAllLeadsRows) return focusFiltered;
     return focusFiltered.slice(0, 15);
-  }, [focusFiltered, showAllLeadsRows]);
+  }, [focusFiltered, showAllLeadsRows, operationFilter]);
+
+  /**
+   * v3.7.8 — Clickable Operation Flow & Direct Navigation.
+   *
+   * Turns a "Bugünün Operasyonu" KPI / "Operasyon Akışı" row into a jump to the
+   * existing section that holds those leads, applying the existing All-Leads
+   * filter state so the target list surfaces the same records. Uses the shared
+   * scroll helper (same offset/hash/focus as the section rail) — no parallel
+   * navigation and no new filter system.
+   */
+  /**
+   * v3.7.8 — Applies the exact HOT_NOW filter state. Shared by the click
+   * handler, the refresh-restore effect and back/forward (popstate) so all
+   * three routes land on identical state.
+   */
+  const applyHotNowFilterState = useCallback(() => {
+    setAllLeadsOpen(true);
+    setFocusMode(false);
+    setTypeFilter("all");
+    setContactChannelFilter("all");
+    setQuery("");
+    setOperationFilter("hot_now");
+    setStatusFilter("all");
+    setAllLeadsTimeFilter("all_time");
+    setAllLeadsTab("all");
+    setShowAllLeadsRows(true);
+  }, []);
+
+  /** Leaves HOT_NOW mode and drops the `?operation` query (keeps the section). */
+  const exitHotNowMode = useCallback(() => {
+    setOperationFilter(null);
+    if (typeof window !== "undefined") {
+      history.replaceState(null, "", buildOperationUrl(window.location.href, null));
+    }
+  }, []);
+
+  /**
+   * Any interaction with the standard All-Leads filter controls explicitly
+   * leaves HOT_NOW mode (rule: filters must never be silently inert). Runs on
+   * capture so it clears the mode before the control's own handler applies.
+   */
+  const leaveHotNowOnInteraction = useCallback(() => {
+    if (operationFilter === "hot_now") exitHotNowMode();
+  }, [operationFilter, exitHotNowMode]);
+
+  const handleOperationNavigate = useCallback(
+    (key: OperationNavKey) => {
+      const target = resolveOperationTarget(key);
+      const hasWindow = typeof window !== "undefined";
+      if (target.openAllLeads && target.operationFilter === "hot_now") {
+        // Exact HOT_NOW parity + URL persistence. pushState so browser back
+        // returns to the pre-hot state and forward restores it.
+        applyHotNowFilterState();
+        if (hasWindow) {
+          history.pushState(
+            null,
+            "",
+            buildOperationUrl(window.location.href, "hot_now", target.sectionId),
+          );
+        }
+      } else if (target.openAllLeads) {
+        // Reset noise filters so the bound filter is what the user lands on.
+        setAllLeadsOpen(true);
+        setFocusMode(false);
+        setTypeFilter("all");
+        setContactChannelFilter("all");
+        setQuery("");
+        setOperationFilter(null);
+        setShowAllLeadsRows(false);
+        if (target.timeFilter) setAllLeadsTimeFilter(target.timeFilter);
+        if (target.statusFilter) setStatusFilter(target.statusFilter);
+        if (target.tab) setAllLeadsTab(target.tab);
+        if (hasWindow) {
+          history.replaceState(null, "", buildOperationUrl(window.location.href, null));
+        }
+      } else {
+        // Section-only jumps must not leave an exact operational filter armed.
+        setOperationFilter(null);
+        if (hasWindow) {
+          history.replaceState(null, "", buildOperationUrl(window.location.href, null));
+        }
+      }
+      goToSection(target.sectionId);
+    },
+    [applyHotNowFilterState],
+  );
+
+  // Restore the exact HOT_NOW filter from `?operation=hot_now` on load. The
+  // All-Leads table is collapsed by default, so nothing wrong flashes before
+  // this opens it already filtered.
+  const operationRestoreHandled = useRef(false);
+  useEffect(() => {
+    if (operationRestoreHandled.current) return;
+    if (typeof window === "undefined") return;
+    operationRestoreHandled.current = true;
+    if (parseOperationFilter(window.location.search) === "hot_now") {
+      applyHotNowFilterState();
+    }
+  }, [applyHotNowFilterState]);
+
+  // Keep filter state in sync with browser back/forward — never leave stale
+  // HOT_NOW state when the URL no longer carries it.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onPop = () => {
+      if (parseOperationFilter(window.location.search) === "hot_now") {
+        applyHotNowFilterState();
+      } else {
+        setOperationFilter(null);
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [applyHotNowFilterState]);
 
   const latestImportRows = useMemo(() => {
     const rows = latestImportLeads
@@ -13229,6 +13426,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
             now={renderNow || Date.now()}
             completedToday={safeCompletedToday}
             activeQueueCount={safeActiveQueueCount}
+            onNavigate={handleOperationNavigate}
           />
         </div>
       )}
@@ -13239,6 +13437,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
           rows={allRows}
           completedToday={safeCompletedToday}
           activeQueueCount={safeActiveQueueCount}
+          onNavigate={handleOperationNavigate}
         />
       )}
 
@@ -13247,6 +13446,7 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
         <FounderWorkflowSteps
           rows={allRows}
           now={renderNow || Date.now()}
+          onNavigate={handleOperationNavigate}
         />
       )}
 
@@ -13357,7 +13557,27 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       {/* v1.9 Pipeline Counters — Temas Kuruldu / Takipte / Demo Aşamasında / Kazanıldı */}
       {mounted && allRows.length > 0 && (
         <div id="satis-boru-hatti" tabIndex={-1} className={`${SECTION_ANCHOR_CLS} focus:outline-none`}>
-          <PipelineCounters rows={allRows} />
+          {pipelineEmpty ? (
+            // Empty state so "Demo Adaylarını İlerlet" always lands on a real
+            // target here — never a blank anchor that scrolls into Lead Havuzu.
+            <div className="rounded-xl border border-indigo-500/15 bg-indigo-500/[0.02] px-4 py-6 text-center">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-indigo-200">
+                {locale === "tr" ? "Satış Boru Hattı" : "Sales Pipeline"}
+              </h2>
+              <p className="mt-2 text-sm font-medium text-zinc-300">
+                {locale === "tr"
+                  ? "Satış boru hattında henüz lead yok."
+                  : "No leads in the sales pipeline yet."}
+              </p>
+              <p className="mt-1 text-xs text-zinc-500">
+                {locale === "tr"
+                  ? "Demo adayı bulunmuyor."
+                  : "No demo candidates."}
+              </p>
+            </div>
+          ) : (
+            <PipelineCounters rows={allRows} />
+          )}
         </div>
       )}
 
@@ -13887,12 +14107,36 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
 
         {allLeadsOpen && (
           <>
-            <section className="flex flex-col gap-3 border-b border-white/5 p-3 md:flex-row md:items-center md:justify-between">
+            {operationFilter === "hot_now" && (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-orange-400/25 bg-orange-500/[0.06] px-4 py-2.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
+                  <span className="font-medium text-orange-200">
+                    {locale === "tr" ? "Bugünün Sıcak Fırsatları" : "Today's Hot Opportunities"}
+                  </span>
+                  <span className="tabular-nums text-orange-300/80">({focusFiltered.length})</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={exitHotNowMode}
+                  className="rounded-md border border-orange-400/30 bg-orange-500/10 px-2 py-1 text-[11px] font-medium text-orange-100 transition hover:bg-orange-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400/50"
+                >
+                  {locale === "tr" ? "Filtreyi Temizle" : "Clear filter"}
+                </button>
+              </div>
+            )}
+            <section
+              onClickCapture={leaveHotNowOnInteraction}
+              className="flex flex-col gap-3 border-b border-white/5 p-3 md:flex-row md:items-center md:justify-between"
+            >
               <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
                 <div className="relative flex-1">
                   <input
                     value={query}
-                    onChange={(e) => setQuery(e.target.value)}
+                    onChange={(e) => {
+                      leaveHotNowOnInteraction();
+                      setQuery(e.target.value);
+                    }}
                     placeholder={t("search_placeholder", locale)}
                     className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400/40 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                   />
@@ -13992,7 +14236,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
               </div>
             </section>
 
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-white/5 px-4 py-2">
+            <div
+              onClickCapture={leaveHotNowOnInteraction}
+              className="flex flex-wrap items-center gap-1.5 border-b border-white/5 px-4 py-2"
+            >
               <FilterChip
                 label={t("filter_last_import", locale)}
                 active={allLeadsTimeFilter === "last_import"}
@@ -14322,7 +14569,11 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
                   {focusFiltered.length === 0 && (
                     <tr>
                       <td colSpan={7} className="px-4 py-10 text-center text-sm text-zinc-500">
-                        {t("no_leads_filters", locale)}
+                        {operationFilter === "hot_now"
+                          ? locale === "tr"
+                            ? "Bugünün sıcak fırsatı bulunmuyor."
+                            : "No hot opportunities today."
+                          : t("no_leads_filters", locale)}
                       </td>
                     </tr>
                   )}
