@@ -115,7 +115,7 @@ export const GUIDE_ACTION_LABELS: Record<GuideAction, { tr: string; en: string }
  */
 export const STANCE_BRIEFS_TR: Record<OutreachStance, string> = {
   first_contact:
-    "Bu ilk temas. Daha önce hiç yazışmadınız. Önceki bir görüşmeye, mesaja veya konuşmaya ASLA atıf yapma. Kendini kısaca tanıt.",
+    "Bu ilk temas. Daha önce hiç yazışmadınız. Önceki bir görüşmeye, mesaja veya konuşmaya ASLA atıf yapma. Kendini kısaca tanıt. Amacın satış yapmak değil, doğal bir cevap almak: tek doğrulanmış kamusal sinyale dayanan, teşhis koymayan TEK bir açık uçlu operasyon sorusu sor. Demo, örnek veya görüşme teklif etme; ürünü anlatma.",
   follow_up:
     "Daha önce bu işletmeye yazdınız ve yanıt gelmedi. Kısa bir hatırlatma yaz. Israrcı olma, suçlayıcı olma, ilk mesajın içeriğini tekrar anlatma. Yeni ve tek bir açı ekle.",
   demo_confirm:

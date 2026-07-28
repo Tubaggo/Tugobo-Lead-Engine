@@ -12846,6 +12846,12 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
     setOutreachQueue((prev) => ({ ...prev, loading: true, error: null }));
     try {
       const pack = await generateOutreachStylePack(queueCurrentLead, { stance });
+      // No account-specific evidence yet: say so instead of preparing a
+      // message that could go to any hotel (v3.7.9).
+      if (pack.status === "needs_research") {
+        setOutreachQueue((prev) => ({ ...prev, loading: false, error: pack.notice }));
+        return;
+      }
       const message = pack.styles.direct || pack.fallback;
       setOutreachQueue((prev) => ({
         ...prev,

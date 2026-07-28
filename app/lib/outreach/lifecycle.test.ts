@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { buildPersonalizationEvidence, selectEvidence } from "./evidence.ts";
 import { buildFallbackMessage } from "./fallback.ts";
 import {
   computeGuideAction,
@@ -157,7 +158,7 @@ describe("stance in the generated copy", () => {
       city: "Antalya",
       businessType: "otel",
       tone: "soft",
-      angle: "channel-consolidation",
+      angle: "single-screen-visibility",
       signals,
       previousMessages: [],
       generationNonce: "n1",
@@ -178,7 +179,7 @@ describe("stance in the generated copy", () => {
     const prompt = buildOutreachUserPrompt({
       businessName: "Kaş Konak",
       tone: "soft",
-      angle: "channel-consolidation",
+      angle: "single-screen-visibility",
       signals,
       previousMessages: [],
       generationNonce: "n1",
@@ -189,10 +190,14 @@ describe("stance in the generated copy", () => {
 
 describe("stance in the fallback bank", () => {
   const base = { tone: "soft" as const, businessName: "Kaş Konak", city: "Antalya" };
+  // First contact needs an evidence selection to have anything to say (v6).
+  const evidence = selectEvidence(
+    buildPersonalizationEvidence({ websiteIntelligence: { hasWhatsAppLink: true } }),
+  )!;
 
   it("never references a prior message on first contact", () => {
     for (let rotation = 0; rotation < 8; rotation += 1) {
-      const { message } = buildFallbackMessage({ ...base, rotation });
+      const { message } = buildFallbackMessage({ ...base, rotation, evidence });
       assert.ok(
         !/önceki|yazmıştım|görüşmemiz/i.test(message),
         `rotation ${rotation}: ${message}`,
@@ -216,9 +221,12 @@ describe("stance in the fallback bank", () => {
   });
 
   it("still produces distinct first-contact bodies across rotations", () => {
+    // Three angles for a lone WhatsApp hook, so a fourth rotation wraps.
     const seen = new Set(
-      [0, 1, 2, 3].map((rotation) => buildFallbackMessage({ ...base, rotation }).message),
+      [0, 1, 2].map(
+        (rotation) => buildFallbackMessage({ ...base, rotation, evidence }).message,
+      ),
     );
-    assert.equal(seen.size, 4);
+    assert.equal(seen.size, 3);
   });
 });

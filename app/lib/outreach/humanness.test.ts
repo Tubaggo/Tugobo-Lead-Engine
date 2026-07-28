@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { TONES } from "./contract.ts";
-import { buildFallbackMessage, FALLBACK_ANGLES } from "./fallback.ts";
+import { buildFallbackMessage, REPLY_FALLBACK_ANGLES } from "./fallback.ts";
 import { OUTREACH_MESSAGE_SYSTEM } from "./prompt.ts";
 import { buildOutreachSignals } from "./signals.ts";
 import { normalizeMessage } from "./text.ts";
@@ -58,13 +58,13 @@ function sentenceCount(text: string): number {
 
 describe("warm-tone length band", () => {
   it("prefers a short WhatsApp note, not a paragraph", () => {
-    assert.equal(PREFERRED_MIN, 160);
-    assert.equal(PREFERRED_MAX, 300);
-    assert.equal(MAX_LENGTH, 380);
+    assert.equal(PREFERRED_MIN, 140);
+    assert.equal(PREFERRED_MAX, 240);
+    assert.equal(MAX_LENGTH, 300);
   });
 
   it("rejects a message over the hard cap", () => {
-    const long = `Merhaba, Kaş Konak için kısa bir fikir paylaşmak istedim. ${"Talep takibi zorlaşabiliyor. ".repeat(
+    const long = `Merhaba, Kaş Konak için kısa bir fikir paylaşmak istedim. ${"TUGOBO talepleri tek yerde topluyor. ".repeat(
       14,
     )}Uygun olursa kısa bir örnek gönderebilirim.`;
     const result = check(long);
@@ -74,7 +74,7 @@ describe("warm-tone length band", () => {
 
   it("rejects an explanation dressed up as a note", () => {
     const wordy =
-      "Merhaba, Kaş Konak için yazıyorum. Talep takibi zorlaşabiliyor. Bu da zaman alıyor. Sonra takip gecikiyor. Uygun olursa kısa bir örnek gönderebilirim.";
+      "Merhaba, Kaş Konak için yazıyorum. TUGOBO talepleri tek yerde topluyor. Bu da işi sadeleştiriyor. Kurulum birkaç dakika sürüyor. Uygun olursa kısa bir örnek gönderebilirim.";
     const result = check(wordy);
     assert.equal(result.ok, false);
     if (!result.ok) assert.ok(result.failures.includes("too_many_sentences"));
@@ -120,6 +120,7 @@ describe("consultant jargon", () => {
   it("accepts the same message in plain Turkish", () => {
     const result = check(
       "Merhaba, Kaş Konak için kısa bir fikir paylaşmak istedim. Gelen talepleri tek yerde toplamak için TUGOBO üzerinde çalışıyoruz. Uygun olursa size kısa bir örnek gönderebilirim.",
+      { stance: "follow_up" },
     );
     assert.equal(result.ok, true);
   });
@@ -156,28 +157,27 @@ describe("fake previous contact", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("CTA variety", () => {
+  const PRIOR =
+    "Merhaba, Kaş Konak için kısa bir fikir paylaşmak istedim. TUGOBO gelen talepleri tek ekranda topluyor. Uygun olursa size kısa bir örnek gönderebilirim.";
+
   it("rejects a new observation closed with the previous ask", () => {
-    const prior =
-      "Merhaba, Kaş Konak için kısa bir fikir paylaşmak istedim. Talepler dağılabiliyor. Uygun olursa size kısa bir örnek gönderebilirim.";
     const repeat =
-      "Merhaba, Kaş Konak tarafında dönüş hızı düşündürdü. Bekleyen talep görünür kalıyor. Uygun olursa size kısa bir örnek gönderebilirim.";
-    const result = check(repeat, { previousMessages: [prior] });
+      "Merhaba, Kaş Konak için kısa bir not bırakmak istedim. Cevap bekleyen talep TUGOBO'da görünür kalıyor. Uygun olursa size kısa bir örnek gönderebilirim.";
+    const result = check(repeat, { previousMessages: [PRIOR] });
     assert.equal(result.ok, false);
     if (!result.ok) assert.ok(result.failures.includes("repeated_cta"));
   });
 
   it("accepts the same observation closed a different way", () => {
-    const prior =
-      "Merhaba, Kaş Konak için kısa bir fikir paylaşmak istedim. Talepler dağılabiliyor. Uygun olursa size kısa bir örnek gönderebilirim.";
     const varied =
-      "Merhaba, Kaş Konak tarafında dönüş hızı düşündürdü. Bekleyen talep görünür kalıyor. Nasıl çalıştığını 2 dakikada gösterebilirim.";
-    const result = check(varied, { previousMessages: [prior] });
+      "Merhaba, Kaş Konak için kısa bir not bırakmak istedim. Cevap bekleyen talep TUGOBO'da görünür kalıyor. Nasıl çalıştığını 2 dakikada gösterebilirim.";
+    const result = check(varied, { previousMessages: [PRIOR], stance: "follow_up" });
     assert.equal(result.ok, true);
   });
 
   it("offers several distinct closings across the fallback bank", () => {
     const ctas = new Set(
-      FALLBACK_ANGLES.map(
+      REPLY_FALLBACK_ANGLES.map(
         (_, rotation) =>
           extractCta(
             buildFallbackMessage({
@@ -185,6 +185,7 @@ describe("CTA variety", () => {
               businessName: "Kaş Konak",
               city: "Antalya",
               rotation,
+              stance: "follow_up",
             }).message,
           ),
       ),
@@ -197,20 +198,21 @@ describe("CTA variety", () => {
 /* the fallback bank itself                                                   */
 /* -------------------------------------------------------------------------- */
 
-describe("fallback bank warmth", () => {
+describe("fallback bank warmth (reply stage)", () => {
   const all = TONES.flatMap((tone) =>
-    FALLBACK_ANGLES.map((_, rotation) =>
+    REPLY_FALLBACK_ANGLES.map((_, rotation) =>
       buildFallbackMessage({
         tone,
         businessName: "Kaş Konak",
         city: "Antalya",
         rotation,
+        stance: "follow_up",
       }),
     ),
   );
 
   it("covers three tones across five angles", () => {
-    assert.equal(FALLBACK_ANGLES.length, 5);
+    assert.equal(REPLY_FALLBACK_ANGLES.length, 5);
     assert.equal(all.length, 15);
   });
 
@@ -226,7 +228,7 @@ describe("fallback bank warmth", () => {
 
   it("passes the humanness validator without exception", () => {
     for (const { message } of all) {
-      const result = check(message);
+      const result = check(message, { stance: "follow_up" });
       assert.equal(result.ok, true, `${message}\n${JSON.stringify(result)}`);
     }
   });
@@ -241,7 +243,7 @@ describe("fallback bank warmth", () => {
     // Either a first-person offer ("…gönderebilirim") or a direct question
     // ("…anlamlı olur mu?"). Both are a person talking; neither is a brochure.
     const firstPersonOffer =
-      /(paylaşmak istedim|üzerinde çalış|geliştiriyoruz|gönderebilirim|gösterebilirim|paylaşabilirim|anlatabilirim)/i;
+      /(paylaşmak istedim|üzerinde çalış|geliştiriyor|gönderebilirim|gösterebilirim|paylaşabilirim|anlatabilirim|bırakabilirim)/i;
     const directQuestion = /(anlamlı olur mu|faydalı olur mu|ilginizi çeker mi)\s*\?/i;
     for (const { message } of all) {
       assert.ok(
@@ -257,12 +259,14 @@ describe("fallback bank warmth", () => {
       businessName: "Kaş Konak",
       city: "Antalya",
       rotation: 0,
+      stance: "follow_up",
     }).message;
     const next = buildFallbackMessage({
       tone: "soft",
       businessName: "Kaş Konak",
       city: "Antalya",
       rotation: 1,
+      stance: "follow_up",
     }).message;
 
     assert.notEqual(normalizeMessage(first), normalizeMessage(next));
@@ -283,11 +287,14 @@ describe("provider persona", () => {
 
   it("asks for curiosity rather than a product explanation", () => {
     assert.match(OUTREACH_MESSAGE_SYSTEM, /merak uyandırmak/);
+    // OUTREACH_MESSAGE_SYSTEM is the first-contact variant (the default). Its
+    // sentence ceiling matches the reply stage since v6 — an account-specific
+    // hook needs a sentence of its own — but its character band is tighter.
     assert.match(OUTREACH_MESSAGE_SYSTEM, /2–3 kısa cümle/);
   });
 
-  it("states the one-signal rule and bans the jargon list", () => {
-    assert.match(OUTREACH_MESSAGE_SYSTEM, /Tek sinyal/);
+  it("states the evidence-only rule and bans the jargon list", () => {
+    assert.match(OUTREACH_MESSAGE_SYSTEM, /Yalnızca EVIDENCE'taki sinyaller/);
     assert.match(OUTREACH_MESSAGE_SYSTEM, /operasyonel kaldıraç/);
     assert.match(OUTREACH_MESSAGE_SYSTEM, /Tek fayda/);
   });
@@ -311,7 +318,7 @@ describe("copy versioning", () => {
       now: NOW,
     });
     assert.equal(state.drafts.soft?.copyVersion, CURRENT_COPY_VERSION);
-    assert.equal(CURRENT_COPY_VERSION, 2);
+    assert.equal(CURRENT_COPY_VERSION, 6);
   });
 
   it("flags a generated draft written before the rewrite", () => {
@@ -321,6 +328,19 @@ describe("copy versioning", () => {
         message: "eski uzun mesaj",
         source: "fallback",
         updatedAt: NOW,
+      }),
+      true,
+    );
+  });
+
+  it("flags a v2 draft, written under the diagnosing copy contract", () => {
+    assert.equal(
+      isStaleCopyDraft({
+        tone: "soft",
+        message: "yoğun günlerde takip atlanabiliyor",
+        source: "provider",
+        updatedAt: NOW,
+        copyVersion: 2,
       }),
       true,
     );

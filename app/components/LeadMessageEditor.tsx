@@ -13,8 +13,17 @@ import {
   type StyleKey,
 } from "@/app/lib/outreach/generate-client";
 import {
+  GENERATION_FAILED_MESSAGE,
+  MANUAL_SAVE_FAILED_MESSAGE,
+  persistWorkspaceChange,
+  PERSIST_FAILED_MESSAGE,
+  staleRefreshEntries,
+  type DraftPersistOutcome,
+} from "@/app/lib/outreach/draft-persistence";
+import {
   applyGeneratedDrafts,
   applyManualDraft,
+  draftSourceLabel,
   emptyMessageWorkspace,
   isStaleCopyDraft,
   MAX_WORKSPACE_MESSAGE_LENGTH,
@@ -69,19 +78,23 @@ function readWorkspace(leadId: string): LeadMessageWorkspaceState {
   return operationalState.readMessageWorkspace(leadId) ?? emptyMessageWorkspace();
 }
 
-/** Founder-facing label for where a stored draft came from. */
-function draftSourceLabel(
-  source: "provider" | "fallback" | "manual" | undefined,
-): string | null {
-  if (source === "provider") return "AI üretimi";
-  if (source === "manual") return "Manuel düzenleme";
-  if (source === "fallback") return "Güvenli şablon";
-  return null;
-}
-
 /* -------------------------------------------------------------------------- */
 /* hook                                                                       */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * A generation that is on screen but not yet on the server.
+ *
+ * Everything needed to store it, and nothing that would require asking the
+ * provider again — that is the whole point of holding it.
+ */
+type PendingGeneration = {
+  entries: GeneratedDraftInput[];
+  activeTone: Tone;
+  /** The instant the copy was produced, kept across retries. */
+  now: string;
+  generationId?: string;
+};
 
 export type UseLeadMessageWorkspaceInput = {
   lead: ScoredLead;
@@ -136,8 +149,26 @@ export function useLeadMessageWorkspace({
   const [editing, setEditing] = useState<Partial<Record<Tone, string>>>({});
   const [busy, setBusy] = useState<null | "generating" | "saving">(null);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  /**
+   * "We have not seen enough about this business to write to it yet."
+   *
+   * Held apart from `generateError` because it is not an error: nothing failed,
+   * and the founder's next action is to verify a channel rather than to retry.
+   * Rendering it in red next to "Mesaj üretilemedi" would teach them to retry.
+   */
+  const [researchNotice, setResearchNotice] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  /**
+   * A generation that succeeded but could not be stored.
+   *
+   * Held so the founder can retry the *save* alone. Discarding it — which is
+   * what the editor used to do — means the only way out of a failed write is
+   * another provider request, which returns a different message and quietly
+   * charges for copy that was already written.
+   */
+  const [pendingGeneration, setPendingGeneration] =
+    useState<PendingGeneration | null>(null);
 
   const nonceRef = useRef(0);
   const savedDraft = persisted.drafts[activeTone];
@@ -151,43 +182,77 @@ export function useLeadMessageWorkspace({
    *
    * `build` takes the base state rather than a finished object so a revision
    * conflict can be resolved by replaying the founder's change onto the copy
-   * the other device wrote, instead of dropping either one.
+   * the other device wrote, instead of dropping either one. The retry budget
+   * and the conflict semantics live in `outreach/draft-persistence.ts`.
    */
   const persist = useCallback(
-    async (
+    (
       build: (base: LeadMessageWorkspaceState) => LeadMessageWorkspaceState,
-    ): Promise<void> => {
-      try {
-        await operationalState.patchMessageWorkspace(leadId, build(readWorkspace(leadId)));
-      } catch (err) {
-        if (err instanceof OperationalStateError && err.status === 409) {
-          // The client already pulled the server copy back into the mirror.
-          await operationalState.patchMessageWorkspace(
-            leadId,
-            build(readWorkspace(leadId)),
-          );
-          return;
-        }
-        throw err;
-      }
-    },
+    ): Promise<DraftPersistOutcome> =>
+      persistWorkspaceChange(build, {
+        read: () => readWorkspace(leadId),
+        write: (next) => operationalState.patchMessageWorkspace(leadId, next),
+        // The transport has already pulled the server copy into the mirror by
+        // the time it reports a conflict, so the replay reads canonical state.
+        isConflict: (err) =>
+          err instanceof OperationalStateError && err.status === 409,
+      }),
     [leadId],
   );
 
+  /**
+   * Stores a generation, keeping it in hand if the write does not land.
+   *
+   * Shared by the first attempt and by the retry button, so a retry replays the
+   * *same* candidate: no second provider request, and the message the founder
+   * is looking at is the message that gets stored.
+   */
+  const storeGeneration = useCallback(
+    async (candidate: PendingGeneration): Promise<DraftPersistOutcome> => {
+      const outcome = await persist((current) =>
+        applyGeneratedDrafts(current, {
+          entries: candidate.entries,
+          activeTone: candidate.activeTone,
+          now: candidate.now,
+          generationId: candidate.generationId,
+        }),
+      );
+
+      if (outcome.status === "saved") {
+        setPendingGeneration(null);
+        setSaveError(null);
+        // A fresh generation replaces what is on screen for the tones it
+        // returned; an unsaved edit the founder made before asking for new
+        // copy is exactly what they were replacing.
+        setEditing({});
+      } else {
+        // The stored draft, its badge and its timestamp all stay as they were.
+        setPendingGeneration(candidate);
+        setSaveError(PERSIST_FAILED_MESSAGE);
+      }
+      return outcome;
+    },
+    [persist],
+  );
+
   const generate = useCallback(
-    async (mode: "generate" | "regenerate") => {
+    async (mode: "generate" | "regenerate" | "refresh") => {
       if (!guard.canGenerate) return;
       // Double-click guard: a request already in flight owns the workspace.
       if (busy !== null) return;
 
       setBusy("generating");
       setGenerateError(null);
+      setResearchNotice(null);
+      setSaveError(null);
+
+      let candidate: PendingGeneration;
       try {
         const base = readWorkspace(leadId);
         nonceRef.current =
-          mode === "regenerate"
-            ? nonceRef.current + 1
-            : Math.max(nonceRef.current, base.recentMessages.length);
+          mode === "generate"
+            ? Math.max(nonceRef.current, base.recentMessages.length)
+            : nonceRef.current + 1;
 
         const pack = await generateOutreachStylePack(lead, {
           stance,
@@ -195,6 +260,17 @@ export function useLeadMessageWorkspace({
           previousMessages: previousWorkspaceMessages(base),
           tone: activeTone,
         });
+
+        /*
+         * Nothing account-specific to say yet. The stored draft — including a
+         * hand-written one — stays exactly as it is: this outcome is a reason
+         * not to write, never a reason to overwrite.
+         */
+        if (pack.status === "needs_research") {
+          setResearchNotice(pack.notice);
+          setBusy(null);
+          return;
+        }
 
         const entries: GeneratedDraftInput[] = (
           Object.keys(pack.styles) as StyleKey[]
@@ -206,31 +282,43 @@ export function useLeadMessageWorkspace({
           usedSignalKeys:
             toneOf(style) === activeTone ? pack.usedSignalKeys : undefined,
           generationId: pack.generationId,
+          personalization: pack.personalizationByStyle[style],
         }));
 
-        await persist((current) =>
-          applyGeneratedDrafts(current, {
-            entries,
-            activeTone,
-            now: new Date().toISOString(),
-            generationId: pack.generationId,
-          }),
-        );
-        // A fresh generation replaces what is on screen for every tone; an
-        // unsaved edit the founder made before asking for new copy is exactly
-        // what they were replacing.
-        setEditing({});
-      } catch (err) {
-        // The stored draft is untouched, so the founder keeps a usable message.
-        setGenerateError(
-          err instanceof Error ? err.message : "Mesaj oluşturulamadı.",
-        );
+        candidate = {
+          entries:
+            mode === "refresh" ? staleRefreshEntries(entries, activeTone) : entries,
+          activeTone,
+          now: new Date().toISOString(),
+          generationId: pack.generationId,
+        };
+      } catch {
+        // Nothing was written, so the founder keeps a usable message. The
+        // reason is deliberately not the transport's — see draft-persistence.
+        setGenerateError(GENERATION_FAILED_MESSAGE);
+        setBusy(null);
+        return;
+      }
+
+      try {
+        await storeGeneration(candidate);
       } finally {
         setBusy(null);
       }
     },
-    [activeTone, busy, guard.canGenerate, lead, leadId, persist, stance],
+    [activeTone, busy, guard.canGenerate, lead, leadId, stance, storeGeneration],
   );
+
+  /** Replays the held generation. Never calls the provider again. */
+  const retryPendingSave = useCallback(async () => {
+    if (busy !== null || !pendingGeneration) return;
+    setBusy("saving");
+    try {
+      await storeGeneration(pendingGeneration);
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, pendingGeneration, storeGeneration]);
 
   const saveManual = useCallback(async () => {
     if (busy !== null || !dirty) return;
@@ -243,9 +331,16 @@ export function useLeadMessageWorkspace({
     setBusy("saving");
     setSaveError(null);
     try {
-      await persist((current) =>
+      const outcome = await persist((current) =>
         applyManualDraft(current, activeTone, text, new Date().toISOString()),
       );
+      if (outcome.status !== "saved") {
+        setSaveError(MANUAL_SAVE_FAILED_MESSAGE);
+        return;
+      }
+      // A hand-written draft supersedes any generated one still waiting to be
+      // stored; replaying it afterwards would overwrite the founder's words.
+      setPendingGeneration(null);
       // Only now is the local copy redundant; on failure it stays put so the
       // founder can retry without retyping.
       setEditing((current) => {
@@ -256,12 +351,8 @@ export function useLeadMessageWorkspace({
       setSavedFlash(true);
       window.setTimeout(() => setSavedFlash(false), 2500);
       onDraftSaved?.(leadId, activeTone);
-    } catch (err) {
-      setSaveError(
-        err instanceof Error
-          ? err.message
-          : "Taslak kaydedilemedi. Metniniz korundu, tekrar deneyebilirsiniz.",
-      );
+    } catch {
+      setSaveError(MANUAL_SAVE_FAILED_MESSAGE);
     } finally {
       setBusy(null);
     }
@@ -282,6 +373,7 @@ export function useLeadMessageWorkspace({
     setActiveToneState(tone);
     setSaveError(null);
     setGenerateError(null);
+    setResearchNotice(null);
   }, []);
 
   /*
@@ -312,10 +404,14 @@ export function useLeadMessageWorkspace({
     savedDraft,
     busy,
     generateError,
+    researchNotice,
     saveError,
     savedFlash,
     generate,
     saveManual,
+    /** True while a produced message is waiting to be stored. */
+    hasPendingGeneration: pendingGeneration !== null,
+    retryPendingSave,
     hasAnyDraft: TONES.some((tone) => Boolean(persisted.drafts[tone])),
   };
 }
@@ -509,7 +605,7 @@ function LeadMessageEditorBody({
             </p>
             <button
               type="button"
-              onClick={() => void ws.generate("regenerate")}
+              onClick={() => void ws.generate("refresh")}
               disabled={busyAny}
               className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-100 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -545,15 +641,37 @@ function LeadMessageEditorBody({
           </span>
         </div>
 
+        {/*
+          Two failures, two sentences. A message that was never produced and a
+          message that was produced but not stored need different next actions,
+          and only the second one has something to retry.
+        */}
         {ws.generateError ? (
-          <p className="text-[11px] text-rose-300">
-            {ws.generateError} Mevcut taslak korundu.
+          <p className="text-[11px] text-rose-300">{ws.generateError}</p>
+        ) : null}
+        {/*
+          Amber, not red: nothing broke. There is simply nothing verified and
+          business-specific to open with yet, and the next move is verification.
+        */}
+        {ws.researchNotice ? (
+          <p className="rounded-md border border-amber-400/25 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+            {ws.researchNotice}
           </p>
         ) : null}
         {ws.saveError ? (
-          <p className="text-[11px] text-rose-300">
-            {ws.saveError} Metniniz ekranda duruyor, tekrar deneyebilirsiniz.
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] text-rose-300">{ws.saveError}</p>
+            {ws.hasPendingGeneration ? (
+              <button
+                type="button"
+                onClick={() => void ws.retryPendingSave()}
+                disabled={busyAny}
+                className="rounded border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {ws.busy === "saving" ? "Kaydediliyor…" : "Kaydetmeyi yeniden dene"}
+              </button>
+            ) : null}
+          </div>
         ) : null}
         {!guard.canOpenWhatsApp && guard.whatsAppBlockedReason && !doNotContact ? (
           <p className="text-[11px] text-amber-200">{guard.whatsAppBlockedReason}</p>

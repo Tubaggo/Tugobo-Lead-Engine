@@ -129,7 +129,7 @@ export function buildOutreachSignals(input: SignalInput): SignalSet {
   if (wi?.hasBookingCtaText === true) {
     verified.push({
       key: "booking_cta",
-      label: "Sitede rezervasyon çağrısı var",
+      label: "Sitede rezervasyon butonu var",
       value: true,
       confidence: "verified",
       source: "website",

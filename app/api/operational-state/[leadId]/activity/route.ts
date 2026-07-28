@@ -3,10 +3,12 @@ import {
   errorJson,
   errorResponse,
   json,
+  leadIdRejection,
   readJsonBody,
 } from "@/app/lib/operational-state/http";
+import { validateLeadId } from "@/app/lib/operational-state/lead-id";
 import { appendLeadActivity } from "@/app/lib/operational-state/repository";
-import { isValidLeadId, MAX_ACTIVITY_PER_LEAD } from "@/app/lib/operational-state/schema";
+import { MAX_ACTIVITY_PER_LEAD } from "@/app/lib/operational-state/schema";
 
 /**
  * Append timeline entries for a lead.
@@ -21,7 +23,8 @@ type Ctx = { params: Promise<{ leadId: string }> };
 
 async function handlePOST(request: Request, ctx: Ctx): Promise<Response> {
   const { leadId } = await ctx.params;
-  if (!isValidLeadId(leadId)) return errorJson("invalid lead id", 400);
+  const valid = validateLeadId(leadId);
+  if (!valid.ok) return leadIdRejection(valid.reason);
 
   const body = await readJsonBody(request);
   if (body instanceof Response) return body;
@@ -38,7 +41,7 @@ async function handlePOST(request: Request, ctx: Ctx): Promise<Response> {
   }
 
   try {
-    return json(await appendLeadActivity(leadId, entries));
+    return json(await appendLeadActivity(valid.leadId, entries));
   } catch (err) {
     return errorResponse(err);
   }

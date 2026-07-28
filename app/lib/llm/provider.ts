@@ -15,6 +15,7 @@ import {
   EXTRACTED_WEBSITE_SIGNALS_INTERPRETATION_SYSTEM,
 } from "./prompts";
 import { openAiCompatibleChatCompletion, type ChatMessage } from "./openai-compat";
+import { getProviderReadiness } from "./readiness";
 import {
   buildRuleBasedWebsiteSignalsInterpretation,
   type ExtractedSignalsInterpretationInput,
@@ -34,13 +35,9 @@ function defaultTimeoutMs(): number {
 }
 
 export function getLlmProviderStatus(): LlmProviderStatus {
-  if (getDeepSeekApiKey()) {
-    return { llm_enabled: true, provider_name: "deepseek" };
-  }
-  if (process.env.OPENAI_API_KEY?.trim()) {
-    return { llm_enabled: true, provider_name: "openai" };
-  }
-  return { llm_enabled: false, provider_name: null };
+  // Single source of truth with the readiness helper; shape kept for callers.
+  const readiness = getProviderReadiness();
+  return { llm_enabled: readiness.configured, provider_name: readiness.provider };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

@@ -31,7 +31,21 @@ export const TONE_TO_STYLE: Record<Tone, StyleKey> = {
   consultative: "premium",
 };
 
+/**
+ * No account-specific evidence, so no drafts.
+ *
+ * A separate variant rather than a thrown error: nothing went wrong, and the
+ * caller's job is to show the founder what to verify — not to render a failure.
+ */
+export type OutreachNeedsResearchPack = {
+  status: "needs_research";
+  reason: string;
+  /** Founder-facing Turkish sentence, supplied by the server. */
+  notice: string;
+};
+
 export type OutreachStylePack = {
+  status: "generated";
   styles: Record<StyleKey, string>;
   fallback: string;
   rationaleNote?: string;
@@ -43,6 +57,17 @@ export type OutreachStylePack = {
   usedSignalKeys: string[];
   generationId?: string;
   duplicateAvoided: boolean;
+  /** Explainability for the requested tone's draft. Absent at reply stages. */
+  personalizationByStyle: Partial<Record<StyleKey, DraftPersonalization>>;
+};
+
+export type OutreachGenerationOutcome = OutreachStylePack | OutreachNeedsResearchPack;
+
+type DraftPersonalization = {
+  primaryEvidenceId: string;
+  supportingEvidenceId?: string;
+  angleId: string;
+  qualityScore: number;
 };
 
 type ToneDetail = {
@@ -50,6 +75,7 @@ type ToneDetail = {
   source?: "provider" | "fallback";
   variationAngle?: string;
   variationAngleLabel?: string;
+  personalization?: DraftPersonalization;
 };
 
 export type GenerateStylePackOptions = {
@@ -71,7 +97,7 @@ export type GenerateStylePackOptions = {
 export async function generateOutreachStylePack(
   lead: ScoredLead,
   options: GenerateStylePackOptions = {},
-): Promise<OutreachStylePack> {
+): Promise<OutreachGenerationOutcome> {
   const {
     stance = "first_contact",
     regenerateNonce = 0,
@@ -127,6 +153,9 @@ export async function generateOutreachStylePack(
   });
 
   const data = (await res.json()) as {
+    status?: string;
+    reason?: string;
+    notice?: string;
     styles?: { direct?: string; soft?: string; premium?: string; curiosity?: string };
     message?: string;
     error?: string;
@@ -144,6 +173,22 @@ export async function generateOutreachStylePack(
     throw new Error(data.error || `Sunucu hatası (${res.status})`);
   }
 
+  /*
+   * Checked before the styles are read: a needs-research response carries no
+   * styles by design, and treating that as "styles missing" would report a
+   * server fault for something that is a correct, deliberate outcome.
+   */
+  if (data.status === "needs_research") {
+    return {
+      status: "needs_research",
+      reason: typeof data.reason === "string" ? data.reason : "no_relevant_verified_evidence",
+      notice:
+        typeof data.notice === "string" && data.notice.length > 0
+          ? data.notice
+          : "Bu lead için işletmeye özel ilk temas mesajı üretilemedi.",
+    };
+  }
+
   const styles = data.styles;
   const direct = styles?.direct?.trim() ?? "";
   const soft = styles?.soft?.trim() ?? "";
@@ -158,6 +203,7 @@ export async function generateOutreachStylePack(
 
   const tones = data.tones;
   return {
+    status: "generated",
     styles: { direct, soft, premium },
     fallback,
     rationaleNote: typeof data.rationaleNote === "string" ? data.rationaleNote : undefined,
@@ -178,5 +224,12 @@ export async function generateOutreachStylePack(
       : [],
     generationId: typeof data.generationId === "string" ? data.generationId : undefined,
     duplicateAvoided: Boolean(data.duplicateAvoided),
+    personalizationByStyle: {
+      ...(tones?.soft?.personalization ? { soft: tones.soft.personalization } : {}),
+      ...(tones?.direct?.personalization ? { direct: tones.direct.personalization } : {}),
+      ...(tones?.consultative?.personalization
+        ? { premium: tones.consultative.personalization }
+        : {}),
+    },
   };
 }

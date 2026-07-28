@@ -4,17 +4,30 @@ import assert from "node:assert/strict";
 import { assignAngles, availableAngles, VARIATION_ANGLES } from "./angles.ts";
 import { isTone, normalizePreviousMessages, TONES, type Tone } from "./contract.ts";
 import {
-  generateOutreachMessage,
+  expectGeneratedOutreach,
+  generateOutreachMessage as generateRaw,
+  type GenerateParams,
   type OutreachProvider,
   type ProviderOutput,
 } from "./engine.ts";
+
+/**
+ * Every generation in this file is reply-stage, so every one of them returns a
+ * message. Narrowing once here keeps the assertions about *orchestration* —
+ * retry, dedup, fallback — instead of about the result union; the
+ * `needs_research` branch is covered in `account-specific-outreach.test.ts`,
+ * which is where the first-contact contract lives.
+ */
+const generateOutreachMessage = (params: GenerateParams) =>
+  generateRaw(params).then(expectGeneratedOutreach);
 import {
   buildFallbackMessage,
   deClitic,
-  FALLBACK_ANGLES,
-  FALLBACK_VARIANT_COUNT,
+  possessive,
+  REPLY_FALLBACK_ANGLES,
+  REPLY_FALLBACK_VARIANT_COUNT,
 } from "./fallback.ts";
-import { OUTREACH_MESSAGE_SYSTEM } from "./prompt.ts";
+import { buildOutreachMessageSystem } from "./prompt.ts";
 import { buildOutreachSignals } from "./signals.ts";
 import { normalizeMessage, similarity } from "./text.ts";
 import { validateOutreachMessage } from "./validator.ts";
@@ -33,20 +46,29 @@ const SIGNALS = buildOutreachSignals({
 
 const SPARSE = buildOutreachSignals({ city: "Bodrum", businessType: "Hotel" });
 
-function baseParams(overrides: Partial<Parameters<typeof generateOutreachMessage>[0]> = {}) {
+/*
+ * Defaults to `stance: "follow_up"` deliberately. This file tests the
+ * engine's orchestration mechanics — retry, dedup, fallback, prompt plumbing —
+ * using capability-language fixtures (VALID_PROVIDER_MESSAGE, INVENTED,
+ * etc.) written for the reply-stage contract. Those mechanics are stance-
+ * agnostic; pinning the stance keeps the fixtures valid without duplicating
+ * what `pain-discovery-outreach.test.ts` already covers for `first_contact`.
+ */
+function baseParams(overrides: Partial<GenerateParams> = {}): GenerateParams {
   return {
     leadId: "gmaps-abc",
     businessName: "Lara Sunset Boutique",
     city: "Antalya",
     businessType: "Boutique Hotel",
     tone: "soft" as Tone,
-    angle: "channel-consolidation" as const,
+    angle: "single-screen-visibility" as const,
     signals: SIGNALS,
     previousMessages: [] as string[],
     generationNonce: "n1",
     rotation: 0,
     provider: null as OutreachProvider | null,
-    systemPrompt: OUTREACH_MESSAGE_SYSTEM,
+    systemPrompt: buildOutreachMessageSystem("follow_up"),
+    stance: "follow_up" as const,
     ...overrides,
   };
 }
@@ -65,8 +87,8 @@ function fakeProvider(outputs: Array<ProviderOutput | null>) {
 }
 
 const VALID_PROVIDER_MESSAGE =
-  "Merhaba, Lara Sunset Boutique için kısa bir not bırakayım. Farklı kanallardan gelen " +
-  "mesajların tek yerden takibi zaman içinde zorlaşabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.";
+  "Merhaba, Lara Sunset Boutique için kısa bir fikir paylaşmak istedim. TUGOBO, gelen " +
+  "rezervasyon taleplerini tek ekranda topluyor. Uygun olursa çok kısa bir örnek paylaşabilirim.";
 
 describe("tone contract", () => {
   test("accepts the three supported tones", () => {
@@ -98,18 +120,26 @@ describe("previous message handling", () => {
   });
 });
 
-describe("fallback bank", () => {
+/*
+ * Reply-stage bank only (`stance: "follow_up"`). Mechanics that are shared
+ * with the first-contact bank — vowel harmony, token replacement, city
+ * omission — are proven once here; the first-contact bank's own content
+ * safety (one question, no product pitch) is covered in
+ * `pain-discovery-outreach.test.ts`.
+ */
+describe("fallback bank (reply stage)", () => {
   test("offers 15 distinct variants (3 tones x 5 angles)", () => {
-    assert.equal(FALLBACK_VARIANT_COUNT, 15);
+    assert.equal(REPLY_FALLBACK_VARIANT_COUNT, 15);
 
     const seen = new Set<string>();
     for (const tone of TONES) {
-      for (let r = 0; r < FALLBACK_ANGLES.length; r += 1) {
+      for (let r = 0; r < REPLY_FALLBACK_ANGLES.length; r += 1) {
         const { message } = buildFallbackMessage({
           tone,
           businessName: "Test Otel",
           city: "Antalya",
           rotation: r,
+          stance: "follow_up",
         });
         seen.add(normalizeMessage(message));
       }
@@ -119,17 +149,19 @@ describe("fallback bank", () => {
 
   test("every fallback variant passes the quality validator", () => {
     for (const tone of TONES) {
-      for (let r = 0; r < FALLBACK_ANGLES.length; r += 1) {
+      for (let r = 0; r < REPLY_FALLBACK_ANGLES.length; r += 1) {
         const { message } = buildFallbackMessage({
           tone,
           businessName: "Lara Sunset Boutique",
           city: "Antalya",
           rotation: r,
+          stance: "follow_up",
         });
         const verdict = validateOutreachMessage({
           message,
           signals: SPARSE,
           businessName: "Lara Sunset Boutique",
+          stance: "follow_up",
         });
         assert.equal(
           verdict.ok,
@@ -143,8 +175,8 @@ describe("fallback bank", () => {
   });
 
   test("rotation changes the angle", () => {
-    const a = buildFallbackMessage({ tone: "soft", businessName: "X", rotation: 0 });
-    const b = buildFallbackMessage({ tone: "soft", businessName: "X", rotation: 1 });
+    const a = buildFallbackMessage({ tone: "soft", businessName: "X", rotation: 0, stance: "follow_up" });
+    const b = buildFallbackMessage({ tone: "soft", businessName: "X", rotation: 1, stance: "follow_up" });
     assert.notEqual(a.variationAngle, b.variationAngle);
   });
 
@@ -153,9 +185,10 @@ describe("fallback bank", () => {
       tone: "soft",
       businessName: "X",
       rotation: 0,
-      exclude: ["channel-consolidation"],
+      stance: "follow_up",
+      exclude: ["single-screen-visibility"],
     });
-    assert.notEqual(result.variationAngle, "channel-consolidation");
+    assert.notEqual(result.variationAngle, "single-screen-visibility");
   });
 
   test("applies Turkish vowel harmony to the de/da clitic", () => {
@@ -165,15 +198,14 @@ describe("fallback bank", () => {
     assert.equal(deClitic("Bodrum Marina Suites"), "de");
     assert.equal(deClitic("Alanya Otel"), "de");
     assert.equal(deClitic("Çeşme Marina"), "da");
+  });
 
-    const backVowel = buildFallbackMessage({
-      tone: "soft",
-      businessName: "Kaş Konak",
-      city: "Kaş",
-      rotation: 2,
-    });
-    assert.ok(backVowel.message.includes("Kaş Konak da dikkatimi çekti"));
-    assert.equal(backVowel.message.includes("Konak de dikkatimi çekti"), false);
+  test("harmonises the genitive suffix, with the buffer n after a vowel", () => {
+    assert.equal(possessive("Türkay Otel"), "Türkay Otel'in");
+    assert.equal(possessive("Kaş Konak"), "Kaş Konak'ın");
+    assert.equal(possessive("Çeşme Marina"), "Çeşme Marina'nın");
+    assert.equal(possessive("Bodrum Konfor"), "Bodrum Konfor'un");
+    assert.equal(possessive("Ürgüp Köşk"), "Ürgüp Köşk'ün");
   });
 
   test("leaves no unreplaced template token", () => {
@@ -184,6 +216,7 @@ describe("fallback bank", () => {
           businessName: "Kaş Konak",
           city: "Kaş",
           rotation: r,
+          stance: "follow_up",
         });
         assert.equal(/\{[a-z]+\}/.test(message), false, `token left in: ${message}`);
       }
@@ -195,13 +228,45 @@ describe("fallback bank", () => {
       tone: "soft",
       businessName: "Test Otel",
       rotation: 2,
+      stance: "follow_up",
     });
     assert.equal(message.includes("{city}"), false);
     assert.equal(message.includes("  "), false, "no double space from an empty city");
   });
 });
 
-describe("variation angles", () => {
+describe("variation angles — reply stage", () => {
+  test("assigns a different angle to each tone when signals allow", () => {
+    const angles = assignAngles(SIGNALS, 0, "follow_up");
+    const unique = new Set([angles.soft, angles.direct, angles.consultative]);
+    assert.equal(unique.size, 3);
+  });
+
+  test("regenerating rotates every tone onto a new angle", () => {
+    const first = assignAngles(SIGNALS, 0, "follow_up");
+    const second = assignAngles(SIGNALS, 1, "follow_up");
+    assert.notEqual(first.soft, second.soft);
+    assert.notEqual(first.direct, second.direct);
+  });
+
+  test("a low-signal lead still gets usable ungated angles", () => {
+    const angles = availableAngles(SPARSE, "follow_up");
+    assert.ok(angles.length > 0);
+    assert.ok(angles.includes("founder-note"));
+    assert.ok(angles.includes("short-demo-invitation"));
+    assert.ok(
+      angles.every((a) => (VARIATION_ANGLES as readonly string[]).includes(a)),
+    );
+  });
+
+  test("evidence-gated angles are withheld from a low-signal lead", () => {
+    const angles = availableAngles(SPARSE, "follow_up");
+    assert.equal(angles.includes("verified-channel-observation"), false);
+    assert.equal(angles.includes("direct-booking-clarity"), false);
+  });
+});
+
+describe("variation angles — first contact (default)", () => {
   test("assigns a different angle to each tone when signals allow", () => {
     const angles = assignAngles(SIGNALS, 0);
     const unique = new Set([angles.soft, angles.direct, angles.consultative]);
@@ -215,10 +280,12 @@ describe("variation angles", () => {
     assert.notEqual(first.direct, second.direct);
   });
 
-  test("a low-signal lead still gets usable ungated angles", () => {
+  test("a low-signal lead still gets usable ungated question angles", () => {
     const angles = availableAngles(SPARSE);
     assert.ok(angles.length > 0);
-    assert.ok(angles.includes("missed-follow-up"));
+    assert.ok(angles.includes("open-request-question"));
+    assert.ok(angles.includes("ownership-question"));
+    assert.ok(angles.includes("follow-up-method-question"));
     assert.ok(
       angles.every((a) => (VARIATION_ANGLES as readonly string[]).includes(a)),
     );
@@ -226,8 +293,14 @@ describe("variation angles", () => {
 
   test("evidence-gated angles are withheld from a low-signal lead", () => {
     const angles = availableAngles(SPARSE);
-    assert.equal(angles.includes("direct-booking"), false);
-    assert.equal(angles.includes("multi-channel-visibility"), false);
+    assert.equal(angles.includes("channel-workflow-question"), false);
+    assert.equal(angles.includes("multi-channel-visibility-question"), false);
+  });
+
+  test("multi-channel question needs both a website and a WhatsApp path", () => {
+    const websiteOnly = buildOutreachSignals({ city: "Bodrum", hasOwnWebsite: true });
+    assert.equal(availableAngles(websiteOnly).includes("multi-channel-visibility-question"), false);
+    assert.ok(availableAngles(SIGNALS).includes("multi-channel-visibility-question"));
   });
 });
 
@@ -338,7 +411,7 @@ describe("generation with a provider", () => {
       {
         message:
           "Merhaba, Bodrum'daki işletmeniz için yazıyorum. Booking.com üzerinden gelen " +
-          "rezervasyonların komisyonu yüksek olabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.",
+          "talepleri TUGOBO tek ekranda topluyor. Uygun olursa kısa bir örnek paylaşabilirim.",
       },
     ]);
     const result = await generateOutreachMessage(
@@ -349,8 +422,8 @@ describe("generation with a provider", () => {
 
   test("retries once on a new angle when the first result is a duplicate", async () => {
     const alternative =
-      "Merhaba, Lara Sunset Boutique özelinde kısaca yazmak istedim. İlk mesajdan sonraki " +
-      "takip yoğun günlerde kolayca atlanabiliyor. İsterseniz 10 dakikada özetleyebilirim.";
+      "Merhaba, Lara Sunset Boutique için kısa bir not bırakmak istedim. TUGOBO'yu, cevap " +
+      "bekleyen talebin görünür kalması için geliştiriyoruz. İsterseniz 10 dakikada özetleyebilirim.";
     const { provider, callCount } = fakeProvider([
       { message: VALID_PROVIDER_MESSAGE },
       { message: alternative },
@@ -429,5 +502,61 @@ describe("response contract", () => {
     assert.ok((VARIATION_ANGLES as readonly string[]).includes(result.variationAngle));
     assert.ok(result.source === "provider" || result.source === "fallback");
     assert.equal(typeof result.duplicateAvoided, "boolean");
+  });
+});
+
+describe("sender identity guard", () => {
+  // Passes every other validator rule; the ONLY defect is the invented name.
+  const INVENTED =
+    "Merhaba, ben Tuğrul. Lara Sunset Boutique için kısa bir fikir paylaşmak istedim; TUGOBO " +
+    "gelen rezervasyon taleplerini tek ekranda topluyor. Uygun olursa çok kısa bir örnek gönderebilirim.";
+
+  test("the invented message is rejected only for the sender identity", () => {
+    const verdict = validateOutreachMessage({
+      message: INVENTED,
+      signals: SIGNALS,
+      businessName: "Lara Sunset Boutique",
+      stance: "follow_up",
+    });
+    assert.equal(verdict.ok, false);
+    if (!verdict.ok) {
+      assert.deepEqual(verdict.failures, ["invented_sender_identity"]);
+    }
+  });
+
+  test("10. retries once after an invented name, then uses the clean result", async () => {
+    const { provider, callCount } = fakeProvider([
+      { message: INVENTED },
+      { message: VALID_PROVIDER_MESSAGE },
+    ]);
+    const result = await generateOutreachMessage(baseParams({ provider }));
+    assert.equal(callCount(), 2, "retried exactly once");
+    assert.equal(result.source, "provider");
+    assert.equal(result.message, VALID_PROVIDER_MESSAGE);
+  });
+
+  test("11. falls back when both attempts invent a name", async () => {
+    const { provider } = fakeProvider([{ message: INVENTED }]);
+    const result = await generateOutreachMessage(baseParams({ provider }));
+    assert.equal(result.source, "fallback");
+    // 12. the badge stays truthful — a fallback is never labelled provider.
+    assert.notEqual(result.source, "provider");
+    // 9. and the fallback body itself carries no invented identity.
+    assert.equal(validateOutreachMessage({
+      message: result.message,
+      signals: SIGNALS,
+      businessName: "Lara Sunset Boutique",
+      stance: "follow_up",
+    }).ok, true);
+  });
+
+  test("a configured sender name passes the exact name through the provider", async () => {
+    const named =
+      "Merhaba, ben Ayşe. Lara Sunset Boutique için kısa bir fikir paylaşmak istedim; TUGOBO " +
+      "gelen rezervasyon taleplerini tek ekranda topluyor. Uygun olursa çok kısa bir örnek gönderebilirim.";
+    const { provider } = fakeProvider([{ message: named }]);
+    const result = await generateOutreachMessage(baseParams({ provider, senderName: "Ayşe" }));
+    assert.equal(result.source, "provider");
+    assert.equal(result.message, named);
   });
 });

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { withAdminSession } from "@/app/lib/auth/require-admin-session";
 import { generateGroundedOutreach, getLlmProviderStatus } from "@/app/lib/llm/provider";
 import {
+  accountAngleFor,
   ANGLE_LABELS_TR,
   assignAngles,
   type VariationAngle,
@@ -10,6 +11,8 @@ import {
 import {
   isTone,
   makeGenerationId,
+  NEEDS_RESEARCH_MESSAGE_TR,
+  NEEDS_RESEARCH_REASON,
   normalizePreviousMessages,
   type OutreachGenerationResponse,
   type Tone,
@@ -18,9 +21,15 @@ import {
   generateOutreachMessage,
   type OutreachProvider,
 } from "@/app/lib/outreach/engine";
+import {
+  buildPersonalizationEvidence,
+  selectEvidence,
+  type EvidenceSelection,
+} from "@/app/lib/outreach/evidence";
 import { buildFallbackMessage } from "@/app/lib/outreach/fallback";
 import { isOutreachStance, type OutreachStance } from "@/app/lib/outreach/lifecycle";
-import { OUTREACH_MESSAGE_SYSTEM } from "@/app/lib/outreach/prompt";
+import { buildOutreachMessageSystem } from "@/app/lib/outreach/prompt";
+import { getConfiguredSenderName } from "@/app/lib/outreach/sender-identity";
 import { buildOutreachSignals, isLowSignal } from "@/app/lib/outreach/signals";
 import { isDuplicate } from "@/app/lib/outreach/text";
 
@@ -69,6 +78,21 @@ function readStrings(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+function readString(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+/**
+ * Which tones may carry a second, coherent evidence item.
+ *
+ * Only the direct tone. Its shape is a binary question ("bu iki kanaldan gelen
+ * talepler aynı yerde mi ilerliyor, ayrı ayrı mı?") and that question needs
+ * two channels to exist at all. Soft and consultative stay on one signal, so
+ * the three options differ in structure rather than in adjectives — which is
+ * the whole reason to offer three.
+ */
+const SUPPORTING_EVIDENCE_TONES = new Set<Tone>(["direct"]);
+
 async function handlePOST(req: Request): Promise<Response> {
   let body: unknown;
   try {
@@ -105,6 +129,8 @@ async function handlePOST(req: Request): Promise<Response> {
   // `location` arrives as "City, Region"; the city is the part worth using.
   const city = location.split(",")[0]?.trim() || undefined;
 
+  const wi = isRecord(body.websiteIntelligence) ? body.websiteIntelligence : null;
+
   const signals = buildOutreachSignals({
     city,
     businessType,
@@ -114,11 +140,11 @@ async function handlePOST(req: Request): Promise<Response> {
     channels: readStrings(body.channels),
     businessSignals: readStrings(body.businessSignals),
     reviewsCount: readNum(body.reviewsCount),
-    websiteIntelligence: isRecord(body.websiteIntelligence)
+    websiteIntelligence: wi
       ? {
-          hasBookingCtaText: readBool(body.websiteIntelligence.hasBookingCtaText),
-          hasWhatsAppLink: readBool(body.websiteIntelligence.hasWhatsAppLink),
-          hasBookingEngine: readBool(body.websiteIntelligence.hasBookingEngine),
+          hasBookingCtaText: readBool(wi.hasBookingCtaText),
+          hasWhatsAppLink: readBool(wi.hasWhatsAppLink),
+          hasBookingEngine: readBool(wi.hasBookingEngine),
         }
       : null,
     bookingFlowStrength: readNum(body.bookingFlowStrength),
@@ -152,24 +178,103 @@ async function handlePOST(req: Request): Promise<Response> {
   const tugoboFit =
     tugoboFitReasons.length > 0 ? { reasons: tugoboFitReasons } : undefined;
 
+  /*
+   * The account-specific evidence pack, and the gate it guards (v3.7.9).
+   *
+   * A first message is only worth sending when it opens on something we
+   * actually observed about *this* business. With nothing observed there is no
+   * honest message to write — only a respectful, grounded circular that reads
+   * as one — so the request ends here: no provider call, no fallback draft, no
+   * write. The founder gets an instruction instead of a message.
+   */
+  const evidencePack = buildPersonalizationEvidence({
+    businessType,
+    businessSignals: readStrings(body.businessSignals),
+    channels: readStrings(body.channels),
+    hasInstagram: readBool(body.hasInstagram),
+    hasOwnWebsite: readBool(body.hasOwnWebsite),
+    websiteIntelligence: wi
+      ? {
+          hasWhatsAppLink: readBool(wi.hasWhatsAppLink),
+          hasBookingCtaText: readBool(wi.hasBookingCtaText),
+          hasBookingEngine: readBool(wi.hasBookingEngine),
+          // The crawler's field is `hasInquiryForm`; the evidence model calls
+          // the same observation a contact form.
+          hasContactForm: readBool(wi.hasContactForm) ?? readBool(wi.hasInquiryForm),
+          languages: readStrings(wi.languages),
+          roomTypeCount: readNum(wi.roomTypeCount),
+          offerCount: readNum(wi.offerCount),
+          positioning: readStrings(wi.positioning),
+          serviceCategories: readStrings(wi.serviceCategories),
+          url: readString(wi.url),
+          capturedAt: readString(wi.capturedAt),
+        }
+      : null,
+  });
+
+  if (stance === "first_contact" && evidencePack.length === 0) {
+    return NextResponse.json({
+      ok: true,
+      status: "needs_research",
+      reason: NEEDS_RESEARCH_REASON,
+      notice: NEEDS_RESEARCH_MESSAGE_TR,
+      weakSignals: true,
+      llm_refined: false,
+      meta: {
+        name: businessName,
+        type: businessType,
+        location,
+        provider: getLlmProviderStatus().provider_name,
+        regenerate,
+        stance,
+        verifiedSignalCount: signals.verified.length,
+        likelySignalCount: signals.likely.length,
+        evidenceCount: 0,
+      },
+    });
+  }
+
   const status = getLlmProviderStatus();
   const provider: OutreachProvider | null = status.llm_enabled
     ? (p) => generateGroundedOutreach(p)
     : null;
 
-  const angles = assignAngles(signals, rotation);
+  // Server-side only; never returned to the client or logged. Default null →
+  // the nameless founder voice (no invented sender name can appear).
+  const senderName = getConfiguredSenderName();
+
+  const angles = assignAngles(signals, rotation, stance);
+  const systemPrompt = buildOutreachMessageSystem(stance);
+
+  /*
+   * All three tones share one primary hook — it is the strongest observation
+   * we have, and offering three messages built on three different observations
+   * would ask the founder to pick an *observation*, which is not a choice they
+   * have any basis to make. They differ in the question they ask off it, and
+   * the direct tone additionally gets the coherent supporting item.
+   */
+  const evidenceFor = (tone: Tone): EvidenceSelection | null =>
+    stance === "first_contact"
+      ? selectEvidence(evidencePack, {
+          rotation,
+          allowSupporting: SUPPORTING_EVIDENCE_TONES.has(tone),
+        })
+      : null;
 
   // Per-tone generation. Each tone gets its own angle and its own validation
   // and fallback, so one weak result cannot drag the other two down.
   const results = await Promise.all(
-    TONE_ORDER.map((tone) =>
-      generateOutreachMessage({
+    TONE_ORDER.map((tone) => {
+      const evidence = evidenceFor(tone);
+      return generateOutreachMessage({
         leadId,
         businessName,
         city,
         businessType,
         tone,
-        angle: angles[tone],
+        angle: evidence
+          ? accountAngleFor(evidence, rotation + TONE_ORDER.indexOf(tone))
+          : angles[tone],
         signals,
         tugoboFit,
         // A tone must also avoid what the *other* tones already said this
@@ -178,14 +283,36 @@ async function handlePOST(req: Request): Promise<Response> {
         generationNonce: `${generationNonce}:${tone}`,
         rotation: rotation + TONE_ORDER.indexOf(tone),
         provider,
-        systemPrompt: OUTREACH_MESSAGE_SYSTEM,
+        systemPrompt,
         stance,
-      }),
-    ),
+        senderName,
+        evidence,
+      });
+    }),
   );
 
   const byTone = new Map<Tone, OutreachGenerationResponse>();
-  TONE_ORDER.forEach((tone, i) => byTone.set(tone, results[i]));
+  TONE_ORDER.forEach((tone, i) => {
+    const result = results[i];
+    /*
+     * Unreachable: the gate above already returned for an empty pack, so every
+     * first-contact call below carries evidence. Handled rather than asserted
+     * because a `needs_research` result has no message, and quietly indexing
+     * past that would put `undefined` on the founder's screen.
+     */
+    if (result.status === "generated") byTone.set(tone, result);
+  });
+  if (byTone.size !== TONE_ORDER.length) {
+    return NextResponse.json({
+      ok: true,
+      status: "needs_research",
+      reason: NEEDS_RESEARCH_REASON,
+      notice: NEEDS_RESEARCH_MESSAGE_TR,
+      weakSignals: true,
+      llm_refined: false,
+      meta: { name: businessName, type: businessType, location, stance, evidenceCount: 0 },
+    });
+  }
 
   /*
    * The three tones run concurrently and therefore cannot see each other. If
@@ -203,14 +330,26 @@ async function handlePOST(req: Request): Promise<Response> {
       usedAngles.push(current.variationAngle);
       continue;
     }
-    const replacement = buildFallbackMessage({
-      tone,
-      businessName,
-      city,
-      rotation: rotation + TONE_ORDER.indexOf(tone) + 1,
-      exclude: usedAngles,
-      stance,
-    });
+    const evidence = evidenceFor(tone);
+    const replacement = evidence
+      ? buildFallbackMessage({
+          tone,
+          businessName,
+          city,
+          rotation: rotation + TONE_ORDER.indexOf(tone) + 1,
+          exclude: usedAngles,
+          evidence,
+        })
+      : buildFallbackMessage({
+          tone,
+          businessName,
+          city,
+          rotation: rotation + TONE_ORDER.indexOf(tone) + 1,
+          exclude: usedAngles,
+          // Narrowed for the discriminated union; first contact took the
+          // branch above, and the gate guarantees it has evidence.
+          stance: stance === "demo_confirm" ? "demo_confirm" : "follow_up",
+        });
     collisionFixed = true;
     byTone.set(tone, {
       ...current,
@@ -230,11 +369,13 @@ async function handlePOST(req: Request): Promise<Response> {
   };
 
   const primary = byTone.get(requestedTone)!;
-  const anyProvider = results.some((r) => r.source === "provider");
+  const generated = [...byTone.values()];
+  const anyProvider = generated.some((r) => r.source === "provider");
 
   return NextResponse.json({
     /* --- v3.7.6 contract (for the requested tone) --- */
     ok: true,
+    status: "generated",
     message: primary.message,
     tone: primary.tone,
     source: primary.source,
@@ -242,7 +383,7 @@ async function handlePOST(req: Request): Promise<Response> {
     variationAngleLabel: ANGLE_LABELS_TR[primary.variationAngle],
     usedSignalKeys: primary.usedSignalKeys,
     generationId: makeGenerationId(leadId, generationNonce),
-    duplicateAvoided: collisionFixed || results.some((r) => r.duplicateAvoided),
+    duplicateAvoided: collisionFixed || generated.some((r) => r.duplicateAvoided),
 
     /* --- per-tone detail, so the modal can label each tone --- */
     tones: Object.fromEntries(
@@ -253,6 +394,7 @@ async function handlePOST(req: Request): Promise<Response> {
           source: byTone.get(tone)!.source,
           variationAngle: byTone.get(tone)!.variationAngle,
           variationAngleLabel: ANGLE_LABELS_TR[byTone.get(tone)!.variationAngle],
+          personalization: byTone.get(tone)!.personalization,
         },
       ]),
     ),
@@ -272,6 +414,7 @@ async function handlePOST(req: Request): Promise<Response> {
       stance,
       verifiedSignalCount: signals.verified.length,
       likelySignalCount: signals.likely.length,
+      evidenceCount: evidencePack.length,
       styleKey: TONE_TO_STYLE[requestedTone],
     },
   });

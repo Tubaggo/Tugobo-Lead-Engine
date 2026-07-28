@@ -34,8 +34,24 @@ export type OutreachGenerationInput = {
   generationNonce?: string;
 };
 
+/**
+ * Why a draft looks the way it does, carried alongside it.
+ *
+ * Stored on the draft so "why was this hotel written to like this?" is
+ * answerable later without re-running the engine. The founder-facing UI shows
+ * the angle label it already showed; the ids and the score are for debugging
+ * and for the tests that assert the message used the evidence it was given.
+ */
+export type OutreachPersonalization = {
+  primaryEvidenceId: string;
+  supportingEvidenceId?: string;
+  angleId: string;
+  qualityScore: number;
+};
+
 export type OutreachGenerationResponse = {
   ok: true;
+  status: "generated";
   message: string;
   tone: Tone;
   source: "provider" | "fallback";
@@ -43,7 +59,41 @@ export type OutreachGenerationResponse = {
   usedSignalKeys: string[];
   generationId: string;
   duplicateAvoided: boolean;
+  personalization?: OutreachPersonalization;
 };
+
+/** The single reason a first-contact generation is refused. */
+export const NEEDS_RESEARCH_REASON = "no_relevant_verified_evidence" as const;
+
+/**
+ * What the founder sees instead of a message.
+ *
+ * States the gap and the way out, and says nothing about the hotel — the whole
+ * point of this state is that we have not observed enough to say anything
+ * about the hotel.
+ */
+export const NEEDS_RESEARCH_MESSAGE_TR =
+  "Bu lead için işletmeye özel ilk temas mesajı üretecek yeterli doğrulanmış sinyal bulunamadı. " +
+  "Kanal veya web sitesi doğrulaması tamamlandıktan sonra mesaj üretilebilir.";
+
+/**
+ * No account-specific evidence, so no message.
+ *
+ * Deliberately not an error: nothing failed. There is simply nothing truthful
+ * and specific to say yet, and the honest response to that is silence plus an
+ * instruction, not a generic message dressed up as a personalised one.
+ */
+export type OutreachNeedsResearch = {
+  ok: true;
+  status: "needs_research";
+  reason: typeof NEEDS_RESEARCH_REASON;
+  tone: Tone;
+  generationId: string;
+};
+
+export type OutreachGenerationResult =
+  | OutreachGenerationResponse
+  | OutreachNeedsResearch;
 
 export type OutreachGenerationError = { ok: false; error: "generation_failed" };
 

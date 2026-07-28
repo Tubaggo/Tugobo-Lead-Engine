@@ -4,6 +4,15 @@ import assert from "node:assert/strict";
 import { buildOutreachSignals } from "./signals.ts";
 import { MAX_LENGTH, validateOutreachMessage } from "./validator.ts";
 
+/*
+ * This file covers the generic quality gate — length, formatting, jargon,
+ * grounding, duplicates — using capability-language fixtures. Those rules are
+ * shared across every relationship stage, so `check()` pins `stance:
+ * "follow_up"` to keep the fixtures out of the first-contact-only rules
+ * (single question required, no product pitch, no demo offer). Those rules
+ * get their own dedicated coverage in `pain-discovery-outreach.test.ts`.
+ */
+
 const RICH = buildOutreachSignals({
   city: "Antalya",
   businessType: "Boutique Hotel",
@@ -18,15 +27,15 @@ const SPARSE = buildOutreachSignals({ city: "Bodrum", businessType: "Hotel" });
 
 /** A message that passes every rule; individual tests mutate one thing. */
 const GOOD =
-  "Merhaba, Lara Sunset Boutique için kısa bir not bırakayım. Farklı kanallardan gelen " +
-  "mesajların tek yerden takibi zaman içinde zorlaşabiliyor. Uygun olursa bunu nasıl " +
-  "toparladığımıza dair kısa bir örnek paylaşabilirim.";
+  "Merhaba, Lara Sunset Boutique için kısa bir fikir paylaşmak istedim. TUGOBO, gelen " +
+  "rezervasyon taleplerini tek ekranda topluyor. Uygun olursa çok kısa bir örnek paylaşabilirim.";
 
 function check(message: string, signals = RICH) {
   return validateOutreachMessage({
     message,
     signals,
     businessName: "Lara Sunset Boutique",
+    stance: "follow_up",
   });
 }
 
@@ -55,8 +64,8 @@ describe("length", () => {
     if (!result.ok) assert.ok(result.failures.includes("too_long"));
   });
 
-  test("the hard cap is 380 characters", () => {
-    assert.equal(MAX_LENGTH, 380);
+  test("the hard cap is 300 characters", () => {
+    assert.equal(MAX_LENGTH, 300);
   });
 });
 
@@ -113,8 +122,8 @@ describe("formatting rules", () => {
 describe("CTA", () => {
   test("rejects a message with no offer", () => {
     const result = check(
-      "Merhaba, Lara Sunset Boutique için kısa bir not bırakayım. Farklı kanallardan " +
-        "gelen mesajların tek yerden takibi zaman içinde zorlaşabiliyor. İyi günler dilerim efendim.",
+      "Merhaba, Lara Sunset Boutique için kısa bir not bırakayım. TUGOBO, gelen " +
+        "rezervasyon taleplerini tek ekranda topluyor. İyi günler dilerim efendim.",
     );
     assert.equal(result.ok, false);
     if (!result.ok) assert.ok(result.failures.includes("no_cta"));
@@ -125,7 +134,7 @@ describe("grounding", () => {
   test("rejects a WhatsApp claim when WhatsApp is unverified", () => {
     const result = check(
       "Merhaba, Bodrum tarafındaki işletmeniz için yazıyorum. WhatsApp'ınızdan gelen " +
-        "talepleri takip etmek zorlaşabiliyor diye düşündüm. Uygun olursa kısa bir örnek paylaşabilirim.",
+        "talepleri TUGOBO tek ekranda topluyor. Uygun olursa kısa bir örnek paylaşabilirim.",
       SPARSE,
     );
     assert.equal(result.ok, false);
@@ -134,8 +143,8 @@ describe("grounding", () => {
 
   test("allows a WhatsApp mention when WhatsApp is verified", () => {
     const result = check(
-      "Merhaba, Lara Sunset Boutique için kısa yazıyorum. WhatsApp'ınızdan gelen " +
-        "taleplerin takibi yoğun günlerde zorlaşabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.",
+      "Merhaba, Lara Sunset Boutique için kısaca yazıyorum. WhatsApp'ınızdan gelen " +
+        "talepleri TUGOBO tek ekranda topluyor. Uygun olursa kısa bir örnek paylaşabilirim.",
       RICH,
     );
     assert.equal(result.ok, true);
@@ -144,7 +153,7 @@ describe("grounding", () => {
   test("rejects an OTA claim with no listing evidence", () => {
     const result = check(
       "Merhaba, Bodrum tarafındaki işletmeniz için yazıyorum. Booking.com üzerinden gelen " +
-        "rezervasyonların komisyonu ciddi yer tutabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.",
+        "talepleri TUGOBO tek ekranda topluyor. Uygun olursa kısa bir örnek paylaşabilirim.",
       SPARSE,
     );
     assert.equal(result.ok, false);
@@ -153,8 +162,8 @@ describe("grounding", () => {
 
   test("rejects a website claim when there is no website", () => {
     const result = check(
-      "Merhaba, Bodrum tarafındaki işletmeniz için yazıyorum. Web siteniz üzerinden gelen " +
-        "taleplerin rezervasyona dönmesi zorlaşabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.",
+      "Merhaba, Bodrum tarafındaki işletmeniz için yazıyorum. Web sitenizden gelen " +
+        "talepleri TUGOBO tek ekranda topluyor. Uygun olursa kısa bir örnek paylaşabilirim.",
       SPARSE,
     );
     assert.equal(result.ok, false);
@@ -163,7 +172,7 @@ describe("grounding", () => {
 
   test("rejects a definite-loss assertion even with rich signals", () => {
     const result = check(
-      "Merhaba, Lara Sunset Boutique için yazıyorum. Yoğun saatlerde taleplerinizi " +
+      "Merhaba, Lara Sunset Boutique için yazıyorum. Taleplerinizi " +
         "kaçırıyorsunuz ve rezervasyon kaybediyorsunuz. Uygun olursa kısa bir örnek paylaşabilirim.",
       RICH,
     );
@@ -171,21 +180,31 @@ describe("grounding", () => {
     if (!result.ok) assert.ok(result.failures.includes("unverified_claim"));
   });
 
-  test("accepts hedged language about the same topic", () => {
+  /*
+   * v3.7.9 reversal. Hedging used to make this acceptable: "dönüş süresi
+   * uzayabiliyor" asserts nothing we can be caught out on. It is still a
+   * statement about how they answer their messages, made to a stranger who
+   * never asked, and that is the thing the calibration removes.
+   */
+  test("rejects hedged operational language about their reply speed", () => {
     const result = check(
       "Merhaba, Lara Sunset Boutique için yazıyorum. Yoğun saatlerde gelen taleplere " +
-        "dönüş süresi uzayabiliyor ve bu ilgiyi soğutabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.",
+        "dönüş süresi uzayabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.",
       RICH,
     );
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.ok(result.failures.includes("condescending_diagnosis"));
+      assert.ok(result.failures.includes("unsupported_operational_claim"));
+    }
   });
 });
 
 describe("specificity", () => {
   test("rejects a message that names neither the property nor its city", () => {
     const result = check(
-      "Merhaba, konaklama sektöründe çalışan pek çok yerde talep takibi zorlaşabiliyor " +
-        "ve dönüşler gecikebiliyor. Uygun olursa kısa bir örnek paylaşabilirim size.",
+      "Merhaba, kısa bir fikir paylaşmak istedim. TUGOBO, gelen rezervasyon " +
+        "taleplerini tek ekranda topluyor. Uygun olursa çok kısa bir örnek paylaşabilirim.",
       RICH,
     );
     assert.equal(result.ok, false);
@@ -194,8 +213,8 @@ describe("specificity", () => {
 
   test("accepts a message that addresses the property generically", () => {
     const result = check(
-      "Merhaba, işletmenizi incelerken bir şey dikkatimi çekti. Farklı kanallardan gelen " +
-        "mesajların takibi zaman içinde zorlaşabiliyor. Uygun olursa kısa bir örnek paylaşabilirim.",
+      "Merhaba, işletmeniz için kısa bir fikir paylaşmak istedim. TUGOBO, gelen " +
+        "rezervasyon taleplerini tek ekranda topluyor. Uygun olursa kısa bir örnek gönderebilirim.",
       RICH,
     );
     assert.equal(result.ok, true);
@@ -209,6 +228,7 @@ describe("duplicates", () => {
       signals: RICH,
       businessName: "Lara Sunset Boutique",
       previousMessages: [GOOD],
+      stance: "follow_up",
     });
     assert.equal(result.ok, false);
     if (!result.ok) assert.ok(result.failures.includes("duplicate"));
@@ -217,11 +237,12 @@ describe("duplicates", () => {
   test("accepts a genuinely different message", () => {
     const result = validateOutreachMessage({
       message:
-        "Merhaba, Lara Sunset Boutique özelinde kısaca yazmak istedim. İlk mesajdan " +
-        "sonraki takip yoğun günlerde kolayca atlanabiliyor. İsterseniz 10 dakikada özetleyebilirim.",
+        "Merhaba, Lara Sunset Boutique için kısa bir not bırakmak istedim. TUGOBO'yu, " +
+        "cevap bekleyen talebin görünür kalması için geliştiriyoruz. Bu düzen sizin için faydalı olur mu?",
       signals: RICH,
       businessName: "Lara Sunset Boutique",
       previousMessages: [GOOD],
+      stance: "follow_up",
     });
     assert.equal(result.ok, true);
   });

@@ -15,7 +15,7 @@
  * This module stores and shapes messages. It never sends one.
  */
 
-import { isTone, TONES, type Tone } from "./contract.ts";
+import { isTone, TONES, type OutreachPersonalization, type Tone } from "./contract.ts";
 
 /** Hard cap on a stored draft. Outreach copy longer than this is not outreach. */
 export const MAX_WORKSPACE_MESSAGE_LENGTH = 520;
@@ -24,6 +24,7 @@ export const MAX_RECENT_MESSAGES = 5;
 /** Bounds the signal-key list carried alongside a generated draft. */
 const MAX_USED_SIGNAL_KEYS = 12;
 const MAX_ANGLE_LENGTH = 60;
+const MAX_EVIDENCE_ID_LENGTH = 60;
 const MAX_GENERATION_ID_LENGTH = 140;
 const MAX_RECENT_ID_LENGTH = 120;
 
@@ -31,16 +32,45 @@ const MAX_RECENT_ID_LENGTH = 120;
  * Copy generation the draft was written under.
  *
  * v1 is everything produced before the warm-tone rewrite: long, hedged, and
- * consultant-voiced. Stored so the workspace can offer to refresh an old draft
- * instead of silently replacing copy the founder may already have sent.
+ * consultant-voiced. v2 is the warm rewrite — shorter and human, but still
+ * diagnosing the recipient's operation. v3 is the respectful, curiosity-first
+ * contract: one verified public signal, one plain benefit, one low-pressure
+ * invitation, and no claim about how the business runs. v4 adds the Product
+ * Capability Truth Guard: no claim about the *product* beyond what it actually
+ * does — no auto-send, no autonomous reply, no guaranteed conversion, revenue
+ * lift or loss prevention. v5 is Conversation-First Pain Discovery: a first
+ * message no longer explains the product or offers a demo at all — it asks
+ * one respectful operational question and stops, because a message that
+ * explains TUGOBO is trying to close a conversation that never opened. v6 is
+ * High-Relevance Account-Specific Outreach: the question must now follow from
+ * a verified, business-specific public signal, so the message cannot be sent
+ * unchanged to a different hotel — v5's questions were respectful and could
+ * go to anyone, which is why they went unanswered.
+ *
+ * Stored so the workspace can offer to refresh an old draft instead of
+ * silently replacing copy the founder may already have sent.
  */
-export const CURRENT_COPY_VERSION = 2;
+export const CURRENT_COPY_VERSION = 6;
 
 export const DRAFT_SOURCES = ["provider", "fallback", "manual"] as const;
 export type DraftSource = (typeof DRAFT_SOURCES)[number];
 
 export function isDraftSource(value: unknown): value is DraftSource {
   return typeof value === "string" && (DRAFT_SOURCES as readonly string[]).includes(value);
+}
+
+/**
+ * Founder-facing Turkish label for where a stored draft came from.
+ *
+ * The critical invariant (v3.7.9): ONLY a `provider` draft may read "AI
+ * üretimi". A `fallback` draft must read "Güvenli şablon" so the founder is
+ * never told a safe-template message was written by the AI.
+ */
+export function draftSourceLabel(source: DraftSource | undefined): string | null {
+  if (source === "provider") return "AI üretimi";
+  if (source === "manual") return "Manuel düzenleme";
+  if (source === "fallback") return "Güvenli şablon";
+  return null;
 }
 
 export type PersistedOutreachDraft = {
@@ -55,6 +85,16 @@ export type PersistedOutreachDraft = {
   manuallyEditedAt?: string;
   /** Absent means v1 — written before the warm-tone rewrite. */
   copyVersion?: number;
+  /**
+   * Why this draft says what it says (v6).
+   *
+   * Explainability, not UI: the founder already sees the angle label badge.
+   * This answers "which observation was this built on, and how did it grade"
+   * when a message needs auditing weeks later. Absent on pre-v6 drafts and on
+   * reply-stage copy, which is grounded in a relationship rather than in a
+   * public signal.
+   */
+  personalization?: OutreachPersonalization;
 };
 
 export type RecentWorkspaceMessage = {
@@ -156,8 +196,36 @@ function normalizeDraft(
   if (typeof raw.copyVersion === "number" && Number.isFinite(raw.copyVersion)) {
     draft.copyVersion = Math.max(1, Math.floor(raw.copyVersion));
   }
+  const personalization = normalizePersonalization(raw.personalization);
+  if (personalization) draft.personalization = personalization;
 
   return draft;
+}
+
+/**
+ * Parses the explainability record, dropping anything malformed.
+ *
+ * Never a reason to reject a draft: a message with unreadable metadata is
+ * still a message the founder may have sent, and losing the audit trail is a
+ * far smaller cost than losing the copy.
+ */
+function normalizePersonalization(raw: unknown): OutreachPersonalization | undefined {
+  if (!isRecord(raw)) return undefined;
+  const primaryEvidenceId = shortString(raw.primaryEvidenceId, MAX_EVIDENCE_ID_LENGTH);
+  const angleId = shortString(raw.angleId, MAX_ANGLE_LENGTH);
+  if (!primaryEvidenceId || !angleId) return undefined;
+
+  const score = typeof raw.qualityScore === "number" && Number.isFinite(raw.qualityScore)
+    ? Math.min(100, Math.max(0, Math.round(raw.qualityScore)))
+    : 0;
+  const supportingEvidenceId = shortString(raw.supportingEvidenceId, MAX_EVIDENCE_ID_LENGTH);
+
+  return {
+    primaryEvidenceId,
+    ...(supportingEvidenceId ? { supportingEvidenceId } : {}),
+    angleId,
+    qualityScore: score,
+  };
 }
 
 function normalizeRecent(
@@ -292,6 +360,7 @@ export type GeneratedDraftInput = {
   variationAngle?: string;
   usedSignalKeys?: string[];
   generationId?: string;
+  personalization?: OutreachPersonalization;
 };
 
 function pushRecent(
@@ -355,6 +424,8 @@ export function applyGeneratedDrafts(
       MAX_GENERATION_ID_LENGTH,
     );
     if (generationId) draft.generationId = generationId;
+    const personalization = normalizePersonalization(entry.personalization);
+    if (personalization) draft.personalization = personalization;
     drafts[entry.tone] = draft;
 
     recentMessages = pushRecent(recentMessages, {
@@ -416,7 +487,7 @@ export function applyManualDraft(
 }
 
 /**
- * True when this draft predates the warm-tone rewrite and is safe to refresh.
+ * True when this draft predates the current copy contract and is safe to refresh.
  *
  * Manual drafts are never stale: the founder wrote those words, and replacing
  * them because the generator changed would discard the one version of the

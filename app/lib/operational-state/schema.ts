@@ -18,6 +18,9 @@ import {
   parseMessageWorkspace,
   type LeadMessageWorkspaceState,
 } from "../outreach/workspace.ts";
+import { isValidLeadId, MAX_LEAD_ID_LENGTH } from "./lead-id.ts";
+
+export { isValidLeadId, MAX_LEAD_ID_LENGTH };
 
 export const SCHEMA_VERSION = 1;
 
@@ -26,27 +29,15 @@ export const MAX_NOTE_LENGTH = 5_000;
 export const MAX_ACTIVITY_PER_LEAD = 200;
 export const MAX_ACTIVITY_TITLE_LENGTH = 200;
 export const MAX_ACTIVITY_DETAIL_LENGTH = 1_000;
-export const MAX_LEAD_ID_LENGTH = 200;
 export const MAX_LEADS = 20_000;
 export const MAX_AI_SUMMARY_LENGTH = 4_000;
 
 /**
  * A lead id is used only as an object key, never as a path segment, but it is
- * still constrained so a hostile value cannot smuggle traversal-looking text
- * into the file or the logs. Matches the real id shapes: `ant-001`,
- * `gmaps-ChIJ...`.
+ * still constrained so neither a hostile value nor a stringified `undefined`
+ * can become a record. The rules live in `lead-id.ts` and are re-exported
+ * above, so this module, the routes and the browser client all agree.
  */
-const LEAD_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_:.-]*$/;
-
-export function isValidLeadId(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= MAX_LEAD_ID_LENGTH &&
-    LEAD_ID_PATTERN.test(value) &&
-    !value.includes("..")
-  );
-}
 
 /**
  * One timeline event.

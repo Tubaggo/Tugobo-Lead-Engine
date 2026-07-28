@@ -2,6 +2,7 @@
 
 import type { LeadStatusUpdate, ScoredLead } from "../leads.ts";
 import type { LeadMessageWorkspaceState } from "../outreach/workspace.ts";
+import { isValidLeadId, validateLeadId } from "./lead-id.ts";
 import type {
   ActivityEntry,
   DailyQueueState,
@@ -180,6 +181,30 @@ export class OperationalStateError extends Error {
   }
 }
 
+/**
+ * Refuses to build a URL out of a lead id that is not one.
+ *
+ * The stray `leads["undefined"]` record came from here: a caller with an
+ * undefined lead handed it to a template literal, which turned it into the
+ * string "undefined", which the server then accepted. Stopping it before the
+ * fetch means the bad request never reaches the network at all, and the same
+ * validator the route uses decides — one rule, two enforcement points.
+ *
+ * Throws a 400 `OperationalStateError`, so every caller that already handles a
+ * failed write keeps its existing behaviour: the founder's text stays on
+ * screen, a held draft stays retryable, and nothing is regenerated.
+ */
+export function assertValidLeadIdForMutation(leadId: unknown): string {
+  const valid = validateLeadId(leadId);
+  if (!valid.ok) {
+    throw new OperationalStateError(
+      "Bu lead kaydı tanımlanamadı. Değişiklik kaydedilmedi.",
+      400,
+    );
+  }
+  return valid.leadId;
+}
+
 /* -------------------------------------------------------------------------- */
 /* failure reporting                                                          */
 /* -------------------------------------------------------------------------- */
@@ -267,6 +292,7 @@ export async function patchLead(
   leadId: string,
   update: Partial<LeadStatusUpdate>,
 ): Promise<void> {
+  assertValidLeadIdForMutation(leadId);
   const next = (await request(`/api/operational-state/${encodeURIComponent(leadId)}`, {
     method: "PATCH",
     body: JSON.stringify(toPatchBody(update)),
@@ -288,6 +314,9 @@ export function readMessageWorkspace(
 
 /** Re-reads one lead from the server and replaces its mirror entry. */
 export async function refreshLead(leadId: string): Promise<LeadOperationalState | null> {
+  // A read, so an unusable id is "no such lead" rather than an error to raise:
+  // the callers all treat null as "nothing to adopt".
+  if (!isValidLeadId(leadId)) return null;
   try {
     const state = (await request(
       `/api/operational-state/${encodeURIComponent(leadId)}`,
@@ -314,6 +343,7 @@ export async function patchMessageWorkspace(
   leadId: string,
   workspace: LeadMessageWorkspaceState,
 ): Promise<LeadMessageWorkspaceState | undefined> {
+  assertValidLeadIdForMutation(leadId);
   const expectedRevision = mirror.leads[leadId]?.revision;
   try {
     const next = (await request(`/api/operational-state/${encodeURIComponent(leadId)}`, {
@@ -359,6 +389,9 @@ export async function patchLeads(
   stateMap: Record<string, Partial<LeadStatusUpdate>>,
 ): Promise<void> {
   const changed = Object.entries(stateMap).filter(([leadId, update]) => {
+    // Skipped rather than thrown: this is the bulk autosave, and one unusable
+    // key must not stop every other lead on the board from being saved.
+    if (!isValidLeadId(leadId)) return false;
     const current = mirror.leads[leadId];
     if (!current) return true;
     return (
@@ -376,6 +409,7 @@ export async function appendActivity(
   entries: ActivityEntry[],
 ): Promise<void> {
   if (entries.length === 0) return;
+  assertValidLeadIdForMutation(leadId);
   const next = (await request(
     `/api/operational-state/${encodeURIComponent(leadId)}/activity`,
     { method: "POST", body: JSON.stringify({ entries }) },
@@ -427,11 +461,18 @@ export async function resetLeads(
   leadIds: string[],
   profile: ResetProfileName,
 ): Promise<ResetResponse> {
+  // A reset takes a backup and deletes records; an unusable id must not be
+  // part of what the founder is told was reset.
+  const validIds = leadIds.filter(isValidLeadId);
+  if (validIds.length === 0) {
+    throw new OperationalStateError("Sıfırlanacak geçerli lead bulunamadı.", 400);
+  }
+
   let response: ResetResponse;
   try {
     response = (await request("/api/operational-state/reset", {
       method: "POST",
-      body: JSON.stringify({ leadIds, profile, confirm: true }),
+      body: JSON.stringify({ leadIds: validIds, profile, confirm: true }),
     })) as ResetResponse;
   } catch (err) {
     // The one failure the founder can act on: the snapshot did not happen, so

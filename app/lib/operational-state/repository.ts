@@ -3,6 +3,8 @@ import "server-only";
 import type { ScoredLead } from "../leads.ts";
 import { backupBeforeMutation } from "./backup.ts";
 import { resolveDataDir, resolveStateFilePath } from "./env.ts";
+import { isValidLeadId } from "./lead-id.ts";
+import { SEED_LEAD_IDS } from "./seed-lead-ids.ts";
 import {
   normalizeResetIds,
   planLeadReset,
@@ -47,6 +49,75 @@ export class RevisionConflictError extends Error {
   }
 }
 
+/** Raised when a write names a well-formed id the workspace has never seen. */
+export class UnknownLeadError extends Error {
+  constructor() {
+    super("unknown lead");
+    this.name = "UnknownLeadError";
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* lead membership                                                            */
+/* -------------------------------------------------------------------------- */
+
+const SEED_IDS = new Set(SEED_LEAD_IDS);
+
+/**
+ * Whether the workspace has any basis for judging membership at all.
+ *
+ * A fresh install has no roster, no records and no queue. Refusing writes there
+ * would mean the first save after the very first import can never land, so an
+ * empty workspace accepts any well-formed id and the roster takes over as soon
+ * as one exists.
+ */
+function canJudgeMembership(file: OperationalStateFile): boolean {
+  return (
+    file.roster.length > 0 ||
+    Object.keys(file.leads).length > 0 ||
+    file.dailyQueue !== null
+  );
+}
+
+/**
+ * True when this lead is one the workspace already knows.
+ *
+ * Four sources, because a lead legitimately appears in any of them first: the
+ * imported roster, an existing operational record, today's queue, or the seed
+ * catalogue. What is *not* a source is the request itself — that is the whole
+ * point.
+ */
+export function isKnownLead(file: OperationalStateFile, leadId: string): boolean {
+  if (!canJudgeMembership(file)) return true;
+  if (file.leads[leadId]) return true;
+  if (file.roster.some((lead) => lead.id === leadId)) return true;
+
+  const queue = file.dailyQueue;
+  if (
+    queue &&
+    (queue.todayQueue.includes(leadId) ||
+      queue.todayLog.includes(leadId) ||
+      Object.hasOwn(queue.queueItems, leadId))
+  ) {
+    return true;
+  }
+
+  return SEED_IDS.has(leadId);
+}
+
+/**
+ * The guard every mutation runs *inside* its transaction.
+ *
+ * Checked against the state the write is about to modify rather than in the
+ * route, so there is no window between "the lead exists" and "the record is
+ * written", and a refusal throws before `updateStateFile` produces a new file.
+ */
+function assertWritableLead(file: OperationalStateFile, leadId: string): void {
+  if (!isValidLeadId(leadId) || !isKnownLead(file, leadId)) {
+    throw new UnknownLeadError();
+  }
+}
+
 export async function getState(): Promise<OperationalStateFile> {
   return readStateFileOrEmpty(resolveStateFilePath());
 }
@@ -71,6 +142,7 @@ export async function patchLeadState(
   expectedRevision?: number,
 ): Promise<LeadOperationalState> {
   const file = await updateStateFile(resolveStateFilePath(), (current) => {
+    assertWritableLead(current, leadId);
     const existing = current.leads[leadId];
     if (
       expectedRevision !== undefined &&
@@ -101,6 +173,7 @@ export async function appendLeadActivity(
     .filter((entry): entry is ActivityEntry => entry !== null);
 
   const file = await updateStateFile(resolveStateFilePath(), (current) => {
+    assertWritableLead(current, leadId);
     const existing: LeadOperationalState = current.leads[leadId] ?? {
       leadId,
       activity: [],
@@ -153,7 +226,15 @@ export async function resetLeadOperationalStates(
   leadIds: readonly string[],
   profile: ResetProfile,
 ): Promise<ResetOutcome> {
-  const ids = normalizeResetIds(leadIds);
+  // Filtered before the snapshot, not inside the transaction: a batch of
+  // unusable ids must cost nothing at all — no backup file, no write, no
+  // revision.
+  //
+  // Only the *format* is filtered here. A well-formed id the store has never
+  // seen stays in the batch and comes back as a reported no-op, because a
+  // reset deletes rather than creates: "that lead had nothing to clear" is an
+  // answer the founder asked for, not an error.
+  const ids = normalizeResetIds(leadIds.filter(isValidLeadId));
   if (ids.length === 0) {
     return { results: [], changedCount: 0, backupFile: null };
   }
@@ -246,6 +327,10 @@ export async function migrateLegacyState(input: {
     const leads = { ...current.leads };
 
     for (const [leadId, value] of Object.entries(input.leads ?? {})) {
+      // Legacy browser state is untrusted input like any other body: it is
+      // where a stringified `undefined` would have been keyed years ago, and
+      // adopting it would rebuild exactly the record this guard removes.
+      if (!isValidLeadId(leadId)) continue;
       if (leads[leadId]) continue; // server wins
       const patch = value as LeadStatePatch;
       leads[leadId] = applyLeadStatePatch(undefined, leadId, patch, now);
@@ -253,6 +338,7 @@ export async function migrateLegacyState(input: {
     }
 
     for (const [leadId, rawEntries] of Object.entries(input.activity ?? {})) {
+      if (!isValidLeadId(leadId)) continue;
       if (!Array.isArray(rawEntries)) continue;
       const incoming = rawEntries
         .map((entry) => normalizeActivityEntry(entry, now))

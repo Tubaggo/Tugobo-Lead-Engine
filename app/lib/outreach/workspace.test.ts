@@ -5,6 +5,7 @@ import {
   applyGeneratedDrafts,
   applyManualDraft,
   clampWorkspaceMessage,
+  draftSourceLabel,
   emptyMessageWorkspace,
   MAX_RECENT_MESSAGES,
   MAX_WORKSPACE_MESSAGE_LENGTH,
@@ -372,5 +373,46 @@ describe("workspaceActivityType", () => {
     assert.equal(workspaceActivityCarriesMessage("manual_save"), false);
     assert.equal(workspaceActivityCarriesMessage("generate"), false);
     assert.equal(workspaceActivityCarriesMessage("copy"), true);
+  });
+});
+
+describe("draftSourceLabel — v3.7.9 source badge", () => {
+  it("5. a provider draft is labelled 'AI üretimi'", () => {
+    assert.equal(draftSourceLabel("provider"), "AI üretimi");
+  });
+
+  it("15. a fallback draft is NEVER labelled as AI generated", () => {
+    const label = draftSourceLabel("fallback");
+    assert.equal(label, "Güvenli şablon");
+    assert.notEqual(label, "AI üretimi");
+  });
+
+  it("14. a manual draft is labelled 'Manuel düzenleme'", () => {
+    assert.equal(draftSourceLabel("manual"), "Manuel düzenleme");
+  });
+
+  it("only a provider source ever yields the AI label", () => {
+    for (const source of ["fallback", "manual", undefined] as const) {
+      assert.notEqual(draftSourceLabel(source), "AI üretimi");
+    }
+  });
+
+  it("an unknown/absent source has no label", () => {
+    assert.equal(draftSourceLabel(undefined), null);
+  });
+});
+
+describe("applyManualDraft — v3.7.9 source integrity", () => {
+  it("14. a hand-edited draft is stored with source 'manual'", () => {
+    const ws = applyGeneratedDrafts(emptyMessageWorkspace(), {
+      entries: pack("gen"),
+      activeTone: "soft",
+      now: NOW,
+    });
+    // Provider draft starts labelled as AI generation.
+    assert.equal(draftSourceLabel(ws.drafts.soft?.source), "AI üretimi");
+    const edited = applyManualDraft(ws, "soft", "kurucudan elle yazılmış mesaj", LATER);
+    assert.equal(edited.drafts.soft?.source, "manual");
+    assert.equal(draftSourceLabel(edited.drafts.soft?.source), "Manuel düzenleme");
   });
 });

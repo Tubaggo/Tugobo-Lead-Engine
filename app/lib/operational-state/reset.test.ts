@@ -401,14 +401,16 @@ describe("resetLeadOperationalStates", () => {
 
   test("resets a batch without touching the leads outside it", async () => {
     await seedWorkedLead("ant-001");
-    await patchLeadState("ant-002", { queued: true, founderNotes: "kalmalı" });
-    await patchLeadState("ant-003", { queued: true });
+    // `bod-002` / `kap-003` are bundled leads rather than invented ids: the
+    // write path only accepts leads the workspace already knows about.
+    await patchLeadState("bod-002", { queued: true, founderNotes: "kalmalı" });
+    await patchLeadState("kap-003", { queued: true });
 
-    await resetLeadOperationalStates(["ant-001", "ant-003"], "untouched");
+    await resetLeadOperationalStates(["ant-001", "kap-003"], "untouched");
 
     assert.equal(await getLeadState("ant-001"), null);
-    assert.equal(await getLeadState("ant-003"), null);
-    assert.equal((await getLeadState("ant-002"))?.founderNotes, "kalmalı");
+    assert.equal(await getLeadState("kap-003"), null);
+    assert.equal((await getLeadState("bod-002"))?.founderNotes, "kalmalı");
   });
 
   test("an empty request changes nothing and takes no snapshot", async () => {
@@ -423,11 +425,11 @@ describe("resetLeadOperationalStates", () => {
 
   test("concurrent resets are serialized, not interleaved", async () => {
     await seedWorkedLead("ant-001");
-    await patchLeadState("ant-002", { queued: true });
+    await patchLeadState("bod-002", { queued: true });
 
     await Promise.all([
       resetLeadOperationalStates(["ant-001"], "untouched"),
-      resetLeadOperationalStates(["ant-002"], "untouched"),
+      resetLeadOperationalStates(["bod-002"], "untouched"),
     ]);
 
     const file = await getState();

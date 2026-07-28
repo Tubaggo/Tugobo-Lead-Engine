@@ -1,7 +1,8 @@
 import "server-only";
 
 import { CorruptStateFileError } from "./file-store.ts";
-import { RevisionConflictError } from "./repository.ts";
+import { leadIdRejectionStatus, type LeadIdRejection } from "./lead-id.ts";
+import { RevisionConflictError, UnknownLeadError } from "./repository.ts";
 
 /**
  * Shared response helpers for the operational-state routes.
@@ -65,11 +66,25 @@ export async function readJsonBody(
 }
 
 /**
+ * The one response for a lead id a route refuses to act on.
+ *
+ * 400 says the request was malformed; 404 says the id was well-formed but names
+ * no lead this workspace has. Neither body says which rule tripped — the
+ * distinction the caller can act on is the status, and a validator that
+ * narrates its reasoning is a probe for anyone who finds the endpoint.
+ */
+export function leadIdRejection(reason: LeadIdRejection): Response {
+  const status = leadIdRejectionStatus(reason);
+  return errorJson(status === 404 ? "not found" : "invalid lead id", status);
+}
+
+/**
  * Maps a thrown error to a response without leaking detail.
  *
- * Only the two errors the client can act on are distinguished: a revision
- * conflict (retry with fresh state) and a quarantined file (storage needs
- * attention). Everything else is an opaque 500.
+ * Only the errors the client can act on are distinguished: a revision conflict
+ * (retry with fresh state), an unknown lead (the id names nothing, so stop
+ * retrying), and a quarantined file (storage needs attention). Everything else
+ * is an opaque 500.
  */
 export function errorResponse(err: unknown): Response {
   if (err instanceof RevisionConflictError) {
@@ -77,6 +92,9 @@ export function errorResponse(err: unknown): Response {
       { error: "revision conflict", currentRevision: err.currentRevision },
       409,
     );
+  }
+  if (err instanceof UnknownLeadError) {
+    return errorJson("not found", 404);
   }
   if (err instanceof CorruptStateFileError) {
     return errorJson("storage unavailable", 503);
