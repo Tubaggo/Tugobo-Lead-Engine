@@ -9,7 +9,12 @@
  * This is the one documented, ranked, tested precedence in either codeline, and
  * the reconciliation discovery named rewriting it as the duplication risk to
  * avoid. So it is not rewritten. What changes is only where its inputs come
- * from: durable Hermes records instead of in-memory registries.
+ * from: durable Hermes records instead of in-memory registries — plus one
+ * targeted v3.8.1 amendment to `actionStageOf` itself, documented at its own
+ * definition: a terminal sales outcome now resolves before any transient
+ * signal, instead of after every other one. That is a precedence *fix*, not a
+ * second ladder — the 15-value `ActionStage` union, every other branch, and
+ * `ACTION_STAGE_RANK` are unchanged.
  *
  * Follow-up candidates and sales outcomes are not persisted in Milestone 1, so
  * they arrive as optional structural inputs defaulting to empty. That keeps the
@@ -197,12 +202,25 @@ export type ActionStageInputs = {
 /**
  * The mission's current position on the ladder.
  *
- * Branch order is the Hermes original's, including the two subtleties its
- * comment calls out: `demo_pending` / `follow_up_required` / `outcome_required`
- * are checked independently of whether a reply is still in the (aging) reply
- * feed, because those items live in their own records and outlive the reply
- * that created them; and `won` / `lost` are checked last, so every more urgent
- * stage still wins even for an already-decided mission.
+ * Branch order is the Hermes original's, with one deliberate, minimal
+ * amendment made in v3.8.1 rather than the rewrite the reconciliation
+ * discovery warned against: a **terminal** sales outcome (`won` / `lost`) is
+ * now resolved *first*, before any transient signal. The original checked
+ * `won`/`lost` last, on the theory that "every more urgent stage still wins
+ * even for an already-decided mission" — but a decided mission has nothing
+ * left to be urgent *about*. A stale `sent`/`read`/`delivered` receipt, an
+ * unresolved reply, or a follow-up that should already have been superseded
+ * is exactly the kind of transient debris a terminal decision is supposed to
+ * settle; showing the founder "Gönderildi" for a lead that is already won is
+ * not a lower-priority truth, it is a wrong one. Every other branch —
+ * `outcome_required` for a merely *open* outcome, the whole transient
+ * ladder below it — is untouched.
+ *
+ * Everything else about branch order is the Hermes original's, including the
+ * one remaining subtlety its comment calls out: `demo_pending` /
+ * `follow_up_required` / `outcome_required` are checked independently of
+ * whether a reply is still in the (aging) reply feed, because those items
+ * live in their own records and outlive the reply that created them.
  *
  * Signature changed from seven positional arguments to one options object —
  * the only deviation, and a mechanical one: with follow-ups and outcomes
@@ -221,6 +239,10 @@ export function actionStageOf(
     salesOutcomes = [],
   } = inputs;
 
+  const outcome = outcomeForMission(mission.missionId, salesOutcomes);
+  if (outcome?.status === "won") return "won";
+  if (outcome?.status === "lost") return "lost";
+
   const delivery = latestDeliveryForMission(mission.missionId, deliveries);
   if (delivery?.status === "failed") return "failed";
 
@@ -230,7 +252,6 @@ export function actionStageOf(
   if (hasPendingDemoForMission(mission.missionId, demos)) return "demo_pending";
   if (hasActiveFollowUpForMission(mission.missionId, followUps)) return "follow_up_required";
 
-  const outcome = outcomeForMission(mission.missionId, salesOutcomes);
   if (outcome?.status === "open") return "outcome_required";
 
   if (reply) {
@@ -243,9 +264,6 @@ export function actionStageOf(
   if (delivery?.status === "delivered") return "delivered";
   if (delivery?.status === "sent") return "sent";
   if (mission.stage === "execution-ready") return "ready";
-
-  if (outcome?.status === "won") return "won";
-  if (outcome?.status === "lost") return "lost";
 
   return "unknown";
 }

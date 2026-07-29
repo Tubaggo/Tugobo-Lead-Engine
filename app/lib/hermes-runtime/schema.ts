@@ -37,13 +37,29 @@ import { isValidLeadId } from "../operational-state/lead-id.ts";
 
 export { isValidLeadId };
 
-export const HERMES_SCHEMA_VERSION = 1;
+/**
+ * v3.8.1 — Hermes Daily Loop Wiring.
+ *
+ * Bumped from 1 to 2 to add three new durable sections (`followUps`,
+ * `salesOutcomes`, `dailyRuns`) that Milestone 1 explicitly deferred. A file
+ * written under version 1 is still valid input — {@link parseHermesRuntimeFile}
+ * accepts either version and always writes the current one back, so opening an
+ * old file only ever adds empty sections, never rejects it.
+ */
+export const HERMES_SCHEMA_VERSION = 2;
+
+/** Schema versions this reader accepts without quarantining. */
+export const SUPPORTED_HERMES_SCHEMA_VERSIONS: readonly number[] = [1, 2];
 
 /** Caps. Chosen to bound file growth, not to express product limits. */
 export const MAX_MISSIONS = 5_000;
 export const MAX_REPLIES = 2_000;
 export const MAX_DEMOS = 2_000;
 export const MAX_DELIVERIES = 2_000;
+export const MAX_FOLLOW_UPS = 2_000;
+export const MAX_SALES_OUTCOMES = 2_000;
+export const MAX_DAILY_RUNS = 400;
+export const MAX_ITEM_IDS_PER_RUN = 500;
 export const MAX_TIMELINE_PER_MISSION = 100;
 export const MAX_TASKS_PER_MISSION = 40;
 export const MAX_TEXT_PREVIEW = 160;
@@ -774,6 +790,391 @@ export function normalizeDeliveryRecord(
 }
 
 /* -------------------------------------------------------------------------- */
+/* follow-up record (v3.8.1)                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Ported from the Hermes line's `FollowUpStatus`
+ * (`app/lib/follow-up-runtime.ts` on `main`). `not_needed` is not persisted —
+ * a follow-up record is simply not created when none is needed — but stays in
+ * the union so a normalizer reading an old/foreign value has somewhere
+ * conservative to fall back to.
+ */
+export type FollowUpStatus =
+  | "not_needed"
+  | "candidate"
+  | "approval_required"
+  | "approved"
+  | "dismissed"
+  | "completed"
+  | "expired"
+  | "unknown";
+
+const FOLLOW_UP_STATUSES: readonly FollowUpStatus[] = [
+  "not_needed",
+  "candidate",
+  "approval_required",
+  "approved",
+  "dismissed",
+  "completed",
+  "expired",
+  "unknown",
+];
+
+export const FOLLOW_UP_STATUS_LABELS_TR: Record<FollowUpStatus, string> = {
+  not_needed: "Gerekli Değil",
+  candidate: "Planlandı",
+  approval_required: "Onay Bekliyor",
+  approved: "Onaylandı",
+  dismissed: "Vazgeçildi",
+  completed: "Tamamlandı",
+  expired: "Süresi Doldu",
+  unknown: "Bilinmiyor",
+};
+
+/**
+ * Ported from the Hermes line's `FollowUpReason`. `manual` is v3.8.1's own
+ * addition — a founder-initiated `PLAN_FOLLOW_UP` with no upstream signal —
+ * and is treated exactly like `later_requested` by
+ * {@link followUpDelayMsFor}, which is the Hermes policy's own fallback rule
+ * for a founder-picked follow-up.
+ */
+export type FollowUpReason =
+  | "read_no_reply"
+  | "delivered_no_reply"
+  | "hot_reply_needs_action"
+  | "demo_not_scheduled"
+  | "demo_no_show"
+  | "failed_delivery_recovery"
+  | "later_requested"
+  | "manual"
+  | "unknown";
+
+const FOLLOW_UP_REASONS: readonly FollowUpReason[] = [
+  "read_no_reply",
+  "delivered_no_reply",
+  "hot_reply_needs_action",
+  "demo_not_scheduled",
+  "demo_no_show",
+  "failed_delivery_recovery",
+  "later_requested",
+  "manual",
+  "unknown",
+];
+
+export const FOLLOW_UP_REASON_LABELS_TR: Record<FollowUpReason, string> = {
+  read_no_reply: "Okundu, cevap yok",
+  delivered_no_reply: "Teslim edildi, cevap yok",
+  hot_reply_needs_action: "Sıcak cevap aksiyon bekliyor",
+  demo_not_scheduled: "Demo planlanmadı",
+  demo_no_show: "Demoya gelinmedi",
+  failed_delivery_recovery: "Teslimat hatası kurtarma",
+  later_requested: "Daha sonra istendi",
+  manual: "Founder planladı",
+  unknown: "Bilinmiyor",
+};
+
+export function isFollowUpReason(value: unknown): value is FollowUpReason {
+  return (FOLLOW_UP_REASONS as readonly unknown[]).includes(value);
+}
+
+export type FollowUpRecord = {
+  followUpId: string;
+  missionId: string;
+  leadId: string;
+  reason: FollowUpReason;
+  status: FollowUpStatus;
+  /** Epoch ms. The one canonical due instant — nothing else computes a second. */
+  dueAt: number;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: number | null;
+  cancelledAt: number | null;
+  revision: number;
+};
+
+export function normalizeFollowUpRecord(
+  followUpId: string,
+  raw: unknown,
+  fallbackNow: string,
+): FollowUpRecord | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (!isValidRecordId(o.missionId)) return null;
+  if (!isValidLeadId(o.leadId)) return null;
+
+  const fallbackAt = Date.parse(fallbackNow);
+  return {
+    followUpId,
+    missionId: o.missionId,
+    leadId: o.leadId,
+    reason: (FOLLOW_UP_REASONS as readonly unknown[]).includes(o.reason)
+      ? (o.reason as FollowUpReason)
+      : "unknown",
+    status: (FOLLOW_UP_STATUSES as readonly unknown[]).includes(o.status)
+      ? (o.status as FollowUpStatus)
+      : "candidate",
+    dueAt: coerceEpoch(o.dueAt, fallbackAt),
+    note: coerceString(o.note, MAX_LABEL_LENGTH),
+    createdAt: coerceIso(o.createdAt, fallbackNow),
+    updatedAt: coerceIso(o.updatedAt, fallbackNow),
+    completedAt: coerceNullableEpoch(o.completedAt),
+    cancelledAt: coerceNullableEpoch(o.cancelledAt),
+    revision: coerceCount(o.revision),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* sales outcome record (v3.8.1)                                             */
+/* -------------------------------------------------------------------------- */
+
+/** Ported from the Hermes line's `SalesOutcomeStatus` (`sales-outcome-runtime.ts`). */
+export type SalesOutcomeStatus = "open" | "won" | "lost" | "paused" | "no_decision" | "unknown";
+
+const SALES_OUTCOME_STATUSES: readonly SalesOutcomeStatus[] = [
+  "open",
+  "won",
+  "lost",
+  "paused",
+  "no_decision",
+  "unknown",
+];
+
+export const SALES_OUTCOME_STATUS_LABELS_TR: Record<SalesOutcomeStatus, string> = {
+  open: "Açık",
+  won: "Kazanıldı",
+  lost: "Kaybedildi",
+  paused: "Duraklatıldı",
+  no_decision: "Karar Yok",
+  unknown: "Bilinmiyor",
+};
+
+/** Ported from the Hermes line's `SalesLostReason`. */
+export type SalesLostReason =
+  | "budget"
+  | "timing"
+  | "competitor"
+  | "no_response"
+  | "wrong_fit"
+  | "not_decision_maker"
+  | "already_has_solution"
+  | "price_objection"
+  | "hotel_closed"
+  | "other"
+  | "unknown";
+
+const SALES_LOST_REASONS: readonly SalesLostReason[] = [
+  "budget",
+  "timing",
+  "competitor",
+  "no_response",
+  "wrong_fit",
+  "not_decision_maker",
+  "already_has_solution",
+  "price_objection",
+  "hotel_closed",
+  "other",
+  "unknown",
+];
+
+/** Ported from the Hermes line's `SalesPackage`. */
+export type SalesPackage = "starter" | "professional" | "growth" | "enterprise" | "custom" | "unknown";
+
+const SALES_PACKAGES: readonly SalesPackage[] = [
+  "starter",
+  "professional",
+  "growth",
+  "enterprise",
+  "custom",
+  "unknown",
+];
+
+export function isSalesOutcomeStatus(value: unknown): value is SalesOutcomeStatus {
+  return (SALES_OUTCOME_STATUSES as readonly unknown[]).includes(value);
+}
+
+export function isSalesLostReason(value: unknown): value is SalesLostReason {
+  return (SALES_LOST_REASONS as readonly unknown[]).includes(value);
+}
+
+export function isSalesPackage(value: unknown): value is SalesPackage {
+  return (SALES_PACKAGES as readonly unknown[]).includes(value);
+}
+
+export type SalesOutcomeRecord = {
+  outcomeId: string;
+  missionId: string;
+  leadId: string;
+  status: SalesOutcomeStatus;
+  package: SalesPackage | null;
+  estimatedMrr: number | null;
+  lostReason: SalesLostReason | null;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: number | null;
+  revision: number;
+};
+
+export function normalizeSalesOutcomeRecord(
+  outcomeId: string,
+  raw: unknown,
+  fallbackNow: string,
+): SalesOutcomeRecord | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (!isValidRecordId(o.missionId)) return null;
+  if (!isValidLeadId(o.leadId)) return null;
+
+  const pkg = (SALES_PACKAGES as readonly unknown[]).includes(o.package)
+    ? (o.package as SalesPackage)
+    : null;
+  const lostReason = (SALES_LOST_REASONS as readonly unknown[]).includes(o.lostReason)
+    ? (o.lostReason as SalesLostReason)
+    : null;
+  const estimatedMrr =
+    typeof o.estimatedMrr === "number" && Number.isFinite(o.estimatedMrr) && o.estimatedMrr >= 0
+      ? o.estimatedMrr
+      : null;
+
+  return {
+    outcomeId,
+    missionId: o.missionId,
+    leadId: o.leadId,
+    status: (SALES_OUTCOME_STATUSES as readonly unknown[]).includes(o.status)
+      ? (o.status as SalesOutcomeStatus)
+      : "open",
+    package: pkg,
+    estimatedMrr,
+    lostReason,
+    note: coerceString(o.note, MAX_LABEL_LENGTH),
+    createdAt: coerceIso(o.createdAt, fallbackNow),
+    updatedAt: coerceIso(o.updatedAt, fallbackNow),
+    closedAt: coerceNullableEpoch(o.closedAt),
+    revision: coerceCount(o.revision),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* daily run record (v3.8.1)                                                 */
+/* -------------------------------------------------------------------------- */
+
+export type HermesDailyRunStatus = "idle" | "running" | "waiting_founder" | "completed";
+
+const DAILY_RUN_STATUSES: readonly HermesDailyRunStatus[] = [
+  "idle",
+  "running",
+  "waiting_founder",
+  "completed",
+];
+
+export const DAILY_RUN_STATUS_LABELS_TR: Record<HermesDailyRunStatus, string> = {
+  idle: "Başlamadı",
+  running: "Taranıyor",
+  waiting_founder: "Karar Bekliyor",
+  completed: "Tamamlandı",
+};
+
+export type HermesDailyRunSummary = {
+  scanned: number;
+  actionable: number;
+  waitingFounder: number;
+  followUpDue: number;
+  replyAttention: number;
+  demoPending: number;
+  completed: number;
+};
+
+export function emptyDailyRunSummary(): HermesDailyRunSummary {
+  return {
+    scanned: 0,
+    actionable: 0,
+    waitingFounder: 0,
+    followUpDue: 0,
+    replyAttention: 0,
+    demoPending: 0,
+    completed: 0,
+  };
+}
+
+function normalizeDailyRunSummary(raw: unknown): HermesDailyRunSummary {
+  const empty = emptyDailyRunSummary();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return empty;
+  const o = raw as Record<string, unknown>;
+  const out = { ...empty };
+  for (const key of Object.keys(empty) as (keyof HermesDailyRunSummary)[]) {
+    out[key] = coerceCount(o[key]);
+  }
+  return out;
+}
+
+/** `YYYY-MM-DD`, matching what the client is expected to pass explicitly. */
+const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+export function isValidLocalDate(value: unknown): value is string {
+  return typeof value === "string" && LOCAL_DATE_PATTERN.test(value);
+}
+
+export type HermesDailyRun = {
+  /** Equal to `localDate` — one run per day is a structural guarantee, not a rule to enforce. */
+  id: string;
+  localDate: string;
+  status: HermesDailyRunStatus;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  /** Bumped every time the queue is recomputed for this run. */
+  queueRevision: number;
+  currentItemId: string | null;
+  itemIds: string[];
+  /** Item ids the founder skipped/snoozed this run; excluded from auto-selection. */
+  skippedItemIds: string[];
+  summary: HermesDailyRunSummary;
+  revision: number;
+};
+
+export function normalizeDailyRunRecord(
+  id: string,
+  raw: unknown,
+  fallbackNow: string,
+): HermesDailyRun | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (!isValidLocalDate(o.localDate)) return null;
+
+  const ids = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const entry of value) {
+      if (!isValidRecordId(entry) || seen.has(entry)) continue;
+      seen.add(entry);
+      out.push(entry);
+      if (out.length >= MAX_ITEM_IDS_PER_RUN) break;
+    }
+    return out;
+  };
+
+  return {
+    id,
+    localDate: o.localDate,
+    status: (DAILY_RUN_STATUSES as readonly unknown[]).includes(o.status)
+      ? (o.status as HermesDailyRunStatus)
+      : "idle",
+    startedAt: coerceIso(o.startedAt, fallbackNow),
+    updatedAt: coerceIso(o.updatedAt, fallbackNow),
+    completedAt: coerceNullableIso(o.completedAt),
+    queueRevision: coerceCount(o.queueRevision),
+    currentItemId: isValidRecordId(o.currentItemId) ? o.currentItemId : null,
+    itemIds: ids(o.itemIds),
+    skippedItemIds: ids(o.skippedItemIds),
+    summary: normalizeDailyRunSummary(o.summary),
+    revision: coerceCount(o.revision),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* file                                                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -787,6 +1188,9 @@ export type HermesRuntimeFile = {
   replies: Record<string, HermesReplyRecord>;
   demos: Record<string, HermesDemoRecord>;
   deliveries: Record<string, HermesDeliveryRecord>;
+  followUps: Record<string, FollowUpRecord>;
+  salesOutcomes: Record<string, SalesOutcomeRecord>;
+  dailyRuns: Record<string, HermesDailyRun>;
 };
 
 export function emptyHermesRuntimeFile(now: string = nowIso()): HermesRuntimeFile {
@@ -799,6 +1203,9 @@ export function emptyHermesRuntimeFile(now: string = nowIso()): HermesRuntimeFil
     replies: {},
     demos: {},
     deliveries: {},
+    followUps: {},
+    salesOutcomes: {},
+    dailyRuns: {},
   };
 }
 
@@ -828,6 +1235,13 @@ function normalizeSection<T>(
  * `operational-state/schema.ts`: the caller quarantines rather than overwrites,
  * because silently resetting a founder's mission state would be the one failure
  * this store must not have.
+ *
+ * Accepts any version in {@link SUPPORTED_HERMES_SCHEMA_VERSIONS}. A v1 file
+ * (pre-v3.8.1) has none of `followUps` / `salesOutcomes` / `dailyRuns` — those
+ * sections are simply absent from the input and `normalizeSection` reads that
+ * as empty, exactly like every other missing key it has always tolerated. The
+ * returned file always stamps the *current* version, so the very next write
+ * upgrades it in place; nothing here mutates the file it read.
  */
 export function parseHermesRuntimeFile(
   raw: unknown,
@@ -835,7 +1249,9 @@ export function parseHermesRuntimeFile(
 ): HermesRuntimeFile | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
-  if (o.schemaVersion !== HERMES_SCHEMA_VERSION) return null;
+  if (!(SUPPORTED_HERMES_SCHEMA_VERSIONS as readonly unknown[]).includes(o.schemaVersion)) {
+    return null;
+  }
 
   const fallbackAt = Date.parse(coerceIso(o.updatedAt, now));
 
@@ -857,6 +1273,17 @@ export function parseHermesRuntimeFile(
     ),
     deliveries: normalizeSection(o.deliveries, MAX_DELIVERIES, (key, value) =>
       normalizeDeliveryRecord(key, value, now),
+    ),
+    // Absent on any v1 file — reads as empty, exactly like a v2 file that has
+    // simply never had a follow-up/outcome/run recorded yet.
+    followUps: normalizeSection(o.followUps, MAX_FOLLOW_UPS, (key, value) =>
+      normalizeFollowUpRecord(key, value, now),
+    ),
+    salesOutcomes: normalizeSection(o.salesOutcomes, MAX_SALES_OUTCOMES, (key, value) =>
+      normalizeSalesOutcomeRecord(key, value, now),
+    ),
+    dailyRuns: normalizeSection(o.dailyRuns, MAX_DAILY_RUNS, (key, value) =>
+      normalizeDailyRunRecord(key, value, now),
     ),
   };
 }

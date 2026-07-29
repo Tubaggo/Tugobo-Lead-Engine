@@ -242,12 +242,17 @@ describe("precedence", () => {
     );
   });
 
-  test("13. a stray follow-up after a won deal still wins the founder's attention", () => {
+  test("13. v3.8.1: a terminal outcome outranks a stray follow-up, not the other way round", () => {
+    // Superseded by the v3.8.1 terminal-outcome-first fix (see actionStageOf's
+    // own doc comment): a decided mission has nothing left to be urgent about,
+    // so `won`/`lost` now resolves before every transient signal, including a
+    // follow-up record that should already have been superseded by the same
+    // `RECORD_OUTCOME` transaction that closed the deal.
     const stage = actionStageOf(mission("m-1"), {
       followUps: [{ missionId: "m-1", status: "candidate" }],
       salesOutcomes: [{ missionId: "m-1", status: "won" }],
     });
-    assert.equal(stage, "follow_up_required");
+    assert.equal(stage, "won");
   });
 
   test("14. a bare mission is `unknown`", () => {
@@ -268,6 +273,158 @@ describe("precedence", () => {
       replies: [reply(null, { urgency: "high" })],
     });
     assert.equal(stage, "unknown");
+  });
+});
+
+/**
+ * v3.8.1 — Final Terminal Outcome Precedence Fix.
+ *
+ * A `won`/`lost` sales outcome is terminal. Before this fix, `actionStageOf`
+ * checked it last, so a mission with any lingering transient signal — a
+ * `sent`/`delivered`/`read` receipt, a hot reply, a pending demo, an active
+ * follow-up, even a `failed` delivery — kept showing that transient state
+ * forever, even after the founder had already recorded how the deal ended.
+ * These are exactly the founder-facing scenarios the release blocker named.
+ */
+describe("terminal outcome precedence (v3.8.1 fix)", () => {
+  const won = [{ missionId: "m-1", status: "won" as const }];
+  const lost = [{ missionId: "m-1", status: "lost" as const }];
+
+  test("20. sent + won → won", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      deliveries: [delivery("m-1", "sent")],
+      salesOutcomes: won,
+    });
+    assert.equal(stage, "won");
+  });
+
+  test("21. delivered + won → won", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      deliveries: [delivery("m-1", "delivered")],
+      salesOutcomes: won,
+    });
+    assert.equal(stage, "won");
+  });
+
+  test("22. read + won → won", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      deliveries: [delivery("m-1", "read")],
+      salesOutcomes: won,
+    });
+    assert.equal(stage, "won");
+  });
+
+  test("23. sent + lost → lost", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      deliveries: [delivery("m-1", "sent")],
+      salesOutcomes: lost,
+    });
+    assert.equal(stage, "lost");
+  });
+
+  test("24. hot_reply + won → won", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      replies: [reply("m-1", { urgency: "high" })],
+      salesOutcomes: won,
+    });
+    assert.equal(stage, "won");
+  });
+
+  test("25. demo_pending + lost → lost", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      demos: [demo("m-1", "demo_requested")],
+      salesOutcomes: lost,
+    });
+    assert.equal(stage, "lost");
+  });
+
+  test("26. follow_up_required + won → won", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      followUps: [{ missionId: "m-1", status: "candidate" }],
+      salesOutcomes: won,
+    });
+    assert.equal(stage, "won");
+  });
+
+  test("27. approval_required + lost → lost", () => {
+    const stage = actionStageOf(mission("m-1", "approval"), {
+      salesOutcomes: lost,
+    });
+    assert.equal(stage, "lost");
+  });
+
+  test("28. ready + won → won", () => {
+    const stage = actionStageOf(mission("m-1", "execution-ready"), {
+      salesOutcomes: won,
+    });
+    assert.equal(stage, "won");
+  });
+
+  test("29. failed + won → won", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      deliveries: [delivery("m-1", "failed")],
+      salesOutcomes: won,
+    });
+    assert.equal(stage, "won");
+  });
+
+  test("30. failed + lost → lost", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      deliveries: [delivery("m-1", "failed")],
+      salesOutcomes: lost,
+    });
+    assert.equal(stage, "lost");
+  });
+
+  test("31. an `open` outcome (not terminal) still yields outcome_required, unchanged", () => {
+    const stage = actionStageOf(mission("m-1"), {
+      salesOutcomes: [{ missionId: "m-1", status: "open" }],
+    });
+    assert.equal(stage, "outcome_required");
+  });
+
+  test("32. no outcome at all preserves every pre-existing transient precedence", () => {
+    assert.equal(
+      actionStageOf(mission("m-1"), { deliveries: [delivery("m-1", "sent")] }),
+      "sent",
+    );
+    assert.equal(
+      actionStageOf(mission("m-1"), { replies: [reply("m-1", { urgency: "high" })] }),
+      "hot_reply",
+    );
+    assert.equal(
+      actionStageOf(mission("m-1"), { demos: [demo("m-1", "demo_requested")] }),
+      "demo_pending",
+    );
+    assert.equal(actionStageOf(mission("m-1", "approval")), "approval_required");
+  });
+
+  test("33. a terminal outcome ranks with `won`/`lost`, not with any transient stage", () => {
+    const wonStage = actionStageOf(mission("m-1"), {
+      deliveries: [delivery("m-1", "sent")],
+      replies: [reply("m-1", { urgency: "high" })],
+      demos: [demo("m-1", "demo_requested")],
+      followUps: [{ missionId: "m-1", status: "candidate" }],
+      salesOutcomes: won,
+    });
+    assert.equal(wonStage, "won");
+    assert.equal(ACTION_STAGE_RANK[wonStage], ACTION_STAGE_RANK.won);
+    assert.notEqual(ACTION_STAGE_RANK[wonStage], ACTION_STAGE_RANK.hot_reply);
+  });
+
+  test("34. the queue ranks a terminal mission behind every transient one, regardless of its old signals", () => {
+    const queue = computeActionQueue(
+      [mission("m-won"), mission("m-hot")],
+      {
+        deliveries: [delivery("m-won", "sent")],
+        replies: [reply("m-hot", { urgency: "high" })],
+        salesOutcomes: [{ missionId: "m-won", status: "won" }],
+      },
+    );
+    assert.deepEqual(
+      queue.map((entry) => entry.stage),
+      ["hot_reply", "won"],
+    );
   });
 });
 

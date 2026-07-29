@@ -179,7 +179,11 @@ describe("file parsing", () => {
   });
 
   test("19. a wrong schema version parses to null so the caller can quarantine", () => {
-    assert.equal(parseHermesRuntimeFile({ schemaVersion: 2 }, NOW), null);
+    // v3.8.1 note: version 2 is now current and version 1 (pre-v3.8.1) is
+    // accepted for migration — see `schema-v2-migration.test.ts`. Only a
+    // version outside that supported set is a wrong version here.
+    assert.equal(parseHermesRuntimeFile({ schemaVersion: 99 }, NOW), null);
+    assert.equal(parseHermesRuntimeFile({ schemaVersion: 0 }, NOW), null);
     assert.equal(parseHermesRuntimeFile([], NOW), null);
     assert.equal(parseHermesRuntimeFile("nope", NOW), null);
   });

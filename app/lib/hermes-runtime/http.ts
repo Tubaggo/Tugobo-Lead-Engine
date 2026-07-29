@@ -8,6 +8,16 @@ import {
   InvalidMissionTransitionError,
 } from "./mission.ts";
 import { InvalidRecordIdError, UnknownMissionError } from "./repository.ts";
+import { InvalidFollowUpTransitionError } from "./follow-up.ts";
+import { InvalidOutcomeTransitionError } from "./outcome.ts";
+import { UnknownDailyRunItemError } from "./daily-run.ts";
+import {
+  InvalidLocalDateError,
+  InvalidOutcomeUpdateError,
+  StaleApprovalError,
+  UnknownDailyRunError,
+  UnknownFollowUpError,
+} from "./daily-loop-repository.ts";
 
 export { json, errorJson, readJsonBody } from "../operational-state/http.ts";
 
@@ -37,6 +47,27 @@ export function hermesErrorResponse(err: unknown): Response {
   }
   if (err instanceof InvalidRecordIdError) {
     return errorJson("invalid id", 400);
+  }
+  if (err instanceof InvalidFollowUpTransitionError) {
+    return json({ error: "illegal follow-up transition", from: err.from, to: err.to }, 409);
+  }
+  if (err instanceof InvalidOutcomeTransitionError) {
+    return json({ error: "illegal outcome transition", from: err.from, to: err.to }, 409);
+  }
+  if (err instanceof StaleApprovalError) {
+    return json({ error: "approval does not cover the current message", blockingReasons: err.blockingReasons }, 409);
+  }
+  if (err instanceof InvalidOutcomeUpdateError) {
+    return errorJson("outcome update is missing required detail", 400);
+  }
+  if (err instanceof InvalidLocalDateError) {
+    return errorJson("invalid local date", 400);
+  }
+  if (err instanceof UnknownDailyRunError || err instanceof UnknownFollowUpError) {
+    return errorJson("not found", 404);
+  }
+  if (err instanceof UnknownDailyRunItemError) {
+    return errorJson("item is not in the current daily run queue", 409);
   }
   if (err instanceof CorruptDataFileError) {
     return errorJson("storage unavailable", 503);
