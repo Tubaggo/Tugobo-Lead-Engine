@@ -23,6 +23,14 @@ import {
  *  - concurrent writers are serialized, so a read-modify-write cannot be lost
  *  - a corrupt file is quarantined, never silently reset
  *  - no lead content, note text, or path is ever logged
+ *
+ * v3.8.0: the durability primitives below (`withWriteLock`, `writeAtomicJson`,
+ * `readRawJsonFile`, `quarantineFile`) are exported so a second durable domain
+ * — the Hermes runtime store — reuses this exact machinery instead of growing
+ * a parallel copy of it. The operational-state functions further down are
+ * themselves written in terms of those primitives, so there is one atomic-write
+ * implementation in the codebase, not two. The lock map is keyed by absolute
+ * path, so two different files never serialize against each other.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -42,7 +50,7 @@ import {
  */
 const writeChains = new Map<string, Promise<unknown>>();
 
-function withWriteLock<T>(filePath: string, task: () => Promise<T>): Promise<T> {
+export function withWriteLock<T>(filePath: string, task: () => Promise<T>): Promise<T> {
   const previous = writeChains.get(filePath) ?? Promise.resolve();
   // Swallow the predecessor's rejection so one failed write cannot poison the
   // queue for every write behind it.
@@ -82,12 +90,26 @@ export async function isStorageWritable(dir: string): Promise<boolean> {
 /* read                                                                       */
 /* -------------------------------------------------------------------------- */
 
-export class CorruptStateFileError extends Error {
+/**
+ * A durable JSON file was unreadable and has been moved aside.
+ *
+ * The base carries only the quarantine path — never the original path, never
+ * any content — so a message that reaches a log or a response body cannot leak
+ * where the founder's data lives or what was in it.
+ */
+export class CorruptDataFileError extends Error {
   readonly quarantinePath: string;
-  constructor(quarantinePath: string) {
-    super("operational state file was unreadable and has been quarantined");
-    this.name = "CorruptStateFileError";
+  constructor(quarantinePath: string, message: string) {
+    super(message);
+    this.name = "CorruptDataFileError";
     this.quarantinePath = quarantinePath;
+  }
+}
+
+export class CorruptStateFileError extends CorruptDataFileError {
+  constructor(quarantinePath: string) {
+    super(quarantinePath, "operational state file was unreadable and has been quarantined");
+    this.name = "CorruptStateFileError";
   }
 }
 
@@ -103,11 +125,42 @@ function isNotFound(err: unknown): boolean {
  * Moves an unreadable file aside so the next write starts clean without
  * destroying whatever was there. Returns the quarantine path.
  */
-async function quarantine(filePath: string): Promise<string> {
+export async function quarantineFile(filePath: string): Promise<string> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const target = `${filePath}.corrupt-${stamp}`;
   await fs.rename(filePath, target);
   return target;
+}
+
+/**
+ * What was actually on disk, before any schema is applied.
+ *
+ * `missing` covers both an absent file and an empty one — both mean "nothing
+ * has been written yet", which is a valid fresh-install state and never an
+ * error. `unparseable` is reserved for bytes that exist but are not JSON; only
+ * that case warrants quarantine.
+ */
+export type RawJsonRead =
+  | { kind: "missing" }
+  | { kind: "json"; value: unknown }
+  | { kind: "unparseable" };
+
+export async function readRawJsonFile(filePath: string): Promise<RawJsonRead> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf8");
+  } catch (err) {
+    if (isNotFound(err)) return { kind: "missing" };
+    throw err;
+  }
+
+  if (raw.trim().length === 0) return { kind: "missing" };
+
+  try {
+    return { kind: "json", value: JSON.parse(raw) };
+  } catch {
+    return { kind: "unparseable" };
+  }
 }
 
 /**
@@ -119,25 +172,14 @@ async function quarantine(filePath: string): Promise<string> {
  * fail loudly instead of handing back an empty pipeline.
  */
 export async function readStateFile(filePath: string): Promise<OperationalStateFile> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(filePath, "utf8");
-  } catch (err) {
-    if (isNotFound(err)) return emptyStateFile();
-    throw err;
+  const raw = await readRawJsonFile(filePath);
+  if (raw.kind === "missing") return emptyStateFile();
+  if (raw.kind === "unparseable") {
+    throw new CorruptStateFileError(await quarantineFile(filePath));
   }
 
-  if (raw.trim().length === 0) return emptyStateFile();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new CorruptStateFileError(await quarantine(filePath));
-  }
-
-  const file = parseStateFile(parsed);
-  if (!file) throw new CorruptStateFileError(await quarantine(filePath));
+  const file = parseStateFile(raw.value);
+  if (!file) throw new CorruptStateFileError(await quarantineFile(filePath));
   return file;
 }
 
@@ -167,7 +209,7 @@ export async function readStateFileOrEmpty(
  * atomic on POSIX and on NTFS, so a reader sees either the whole old file or
  * the whole new one — never a truncated JSON document.
  */
-async function writeAtomic(filePath: string, file: OperationalStateFile): Promise<void> {
+export async function writeAtomicJson(filePath: string, value: unknown): Promise<void> {
   const dir = path.dirname(filePath);
   await ensureDataDir(dir);
 
@@ -175,7 +217,7 @@ async function writeAtomic(filePath: string, file: OperationalStateFile): Promis
     dir,
     `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}`,
   );
-  const payload = `${JSON.stringify(file, null, 2)}\n`;
+  const payload = `${JSON.stringify(value, null, 2)}\n`;
 
   const handle = await fs.open(tempPath, "w", 0o600);
   try {
@@ -209,7 +251,7 @@ export async function updateStateFile(
     const current = await readStateFile(filePath);
     const next = await mutate(current);
     const stamped: OperationalStateFile = { ...next, updatedAt: nowIso() };
-    await writeAtomic(filePath, stamped);
+    await writeAtomicJson(filePath, stamped);
     return stamped;
   });
 }
