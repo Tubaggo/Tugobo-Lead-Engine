@@ -2,6 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import type { ScoredLead } from "@/app/lib/leads";
+import { whatsappLinkWithText } from "@/app/lib/leads";
+import * as operationalState from "@/app/lib/operational-state/client";
+import type { OutreachStance } from "@/app/lib/outreach/lifecycle";
+import { isStaleCopyDraft, messageWorkspaceGuard } from "@/app/lib/outreach/workspace";
+import { useLeadMessageWorkspace } from "@/app/components/LeadMessageEditor";
+import {
+  computeLeadPreparationAction,
+  PREPARATION_ACTION_LABELS_TR,
+  type PreparationAction,
+} from "@/app/lib/hermes-runtime/lead-preparation";
+
 /**
  * Minimal Founder workspace for the Hermes daily loop (v3.8.1).
  *
@@ -152,6 +164,38 @@ const PREPARATION_STATUS_TONE: Record<LeadPreparationStatus, string> = {
   ready: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
 };
 
+/**
+ * Which `actionState` values can only be reached once a mission has already
+ * passed its approval gate (`mission.stage` is `execution-ready` or later —
+ * see `action-stage.ts`'s `actionStageOf`). Everything not in this set
+ * (`approval_required`, and `unknown` for a mission still in an earlier
+ * stage) is treated as "not yet approved" — the safe direction, since
+ * re-approving an already-approved draft is a harmless no-op but skipping
+ * approval is not.
+ */
+const APPROVED_OR_BEYOND_STATES = new Set<ActionStage>([
+  "ready",
+  "sent",
+  "delivered",
+  "read",
+  "hot_reply",
+  "demo_pending",
+  "follow_up_required",
+  "outcome_required",
+  "reply_needs_review",
+  "reply_received",
+  "won",
+  "lost",
+  "failed",
+]);
+
+/** First-contact unless the ladder itself already says otherwise — no new business logic, just reading `actionState`. */
+function stanceForActionState(actionState: ActionStage): OutreachStance {
+  if (actionState === "demo_pending") return "demo_confirm";
+  if (actionState === "follow_up_required") return "follow_up";
+  return "first_contact";
+}
+
 function todayLocalDate(): string {
   const now = new Date();
   const y = now.getFullYear();
@@ -176,8 +220,15 @@ export default function HermesDailyWorkspace() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [currentMessage, setCurrentMessage] = useState("");
-  const [draftLoading, setDraftLoading] = useState(false);
+  /**
+   * Full roster lead for whichever item is selected — the message engine
+   * (`generateOutreachStylePack`) needs the whole `ScoredLead`, not the thin
+   * queue-item projection. Read-only GET of the same canonical roster
+   * `runReenrichment` already reads; never a provider call.
+   */
+  const [roster, setRoster] = useState<ScoredLead[]>([]);
+  /** The leadId the operational-state mirror has been freshly hydrated for, so the message workspace hook never mounts against stale or empty mirror state. */
+  const [leadWorkspaceReady, setLeadWorkspaceReady] = useState<string | null>(null);
   const [channel, setChannel] = useState<"whatsapp" | "phone" | "instagram" | "email">("whatsapp");
   const [followUpPreset, setFollowUpPreset] = useState<1 | 3>(1);
   const [replyIntent, setReplyIntent] = useState("interested");
@@ -232,37 +283,52 @@ export default function HermesDailyWorkspace() {
   // selected — which would re-fetch the draft below and silently discard
   // whatever the founder had just typed into `currentMessage`.
   const selectedLeadId = selectedItem?.leadId ?? null;
+  const selectedRosterLead = useMemo(
+    () => roster.find((lead) => lead.id === selectedLeadId) ?? null,
+    [roster, selectedLeadId],
+  );
 
+  /**
+   * Roster read — once on mount. A read of already-persisted canonical state
+   * (the same GET `runReenrichment` below already uses), never a provider
+   * call: nothing here crawls a website, calls an LLM, or reaches WhatsApp.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/operational-workspace/roster", { cache: "no-store" })
+      .then(parseJsonSafe)
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray(data?.roster) ? (data.roster as ScoredLead[]) : [];
+        setRoster(list);
+      })
+      .catch(() => {
+        // A failed roster read leaves the message workspace panel showing its
+        // own "lead not found" state; the queue itself is unaffected.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Hydrates the shared operational-state mirror for the selected lead
+   * before the message-workspace hook mounts against it — otherwise its
+   * first read would see an empty mirror entry and default `activeTone`
+   * to "soft" even when the server has something else on file. A GET of
+   * already-persisted state, not a provider call.
+   */
   useEffect(() => {
     if (!selectedLeadId) {
-      // Clearing the draft when the selection is cleared, not a state
-      // derived from a render — there is no external system to defer this to.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCurrentMessage("");
+      setLeadWorkspaceReady(null);
       return;
     }
     let cancelled = false;
-    setDraftLoading(true);
-    fetch(`/api/operational-state/${encodeURIComponent(selectedLeadId)}`, {
-      cache: "no-store",
-    })
-      .then(async (res) => {
-        if (cancelled) return;
-        if (!res.ok) {
-          setCurrentMessage("");
-          return;
-        }
-        const state = await parseJsonSafe(res);
-        const workspace = state?.messageWorkspace as
-          | { activeTone?: string; drafts?: Record<string, { message?: string }> }
-          | undefined;
-        const tone = workspace?.activeTone ?? "soft";
-        const message = workspace?.drafts?.[tone]?.message ?? "";
-        setCurrentMessage(message);
-      })
-      .finally(() => {
-        if (!cancelled) setDraftLoading(false);
-      });
+    setLeadWorkspaceReady(null);
+    void operationalState.refreshLead(selectedLeadId).finally(() => {
+      if (!cancelled) setLeadWorkspaceReady(selectedLeadId);
+    });
     return () => {
       cancelled = true;
     };
@@ -352,10 +418,10 @@ export default function HermesDailyWorkspace() {
         setReenrichError((rosterData?.error as string) ?? "Roster okunamadı");
         return;
       }
-      const roster = Array.isArray(rosterData?.roster)
-        ? (rosterData.roster as Record<string, unknown>[])
+      const freshRoster = Array.isArray(rosterData?.roster)
+        ? (rosterData.roster as ScoredLead[])
         : [];
-      const index = roster.findIndex((lead) => lead.id === selectedItem.leadId);
+      const index = freshRoster.findIndex((lead) => lead.id === selectedItem.leadId);
       if (index === -1) {
         setReenrichError("Bu lead roster'da bulunamadı.");
         return;
@@ -364,7 +430,7 @@ export default function HermesDailyWorkspace() {
       const enrichRes = await fetch("/api/re-enrich-lead", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lead: roster[index] }),
+        body: JSON.stringify({ lead: freshRoster[index] }),
       });
       const enrichData = await parseJsonSafe(enrichRes);
       if (!enrichRes.ok) {
@@ -377,8 +443,8 @@ export default function HermesDailyWorkspace() {
         return;
       }
 
-      const updatedRoster = [...roster];
-      updatedRoster[index] = enrichedLead as Record<string, unknown>;
+      const updatedRoster = [...freshRoster];
+      updatedRoster[index] = enrichedLead as ScoredLead;
       const putRes = await fetch("/api/operational-workspace/roster", {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -390,6 +456,11 @@ export default function HermesDailyWorkspace() {
         return;
       }
 
+      // The panel's message-generation/stance logic reads `roster` from
+      // component state, not from a fresh fetch — without this, a founder
+      // who just re-enriched would still see the pre-enrichment lead fields
+      // until a full page reload.
+      setRoster(updatedRoster);
       setReenrichNotice("Zenginleştirme tamamlandı — hazırlık durumu güncellendi.");
       await refreshQueue();
     } finally {
@@ -467,6 +538,14 @@ export default function HermesDailyWorkspace() {
               items.map((item) => {
                 const isCurrent = item.id === run?.currentItemId;
                 const isSkipped = run?.skippedItemIds.includes(item.id) ?? false;
+                // A quick-action label only — it selects this row via the
+                // existing `SELECT_ITEM` action and nothing else; the actual
+                // handoff logic lives entirely in `LeadOutreachHandoffPanel`
+                // once selected. No rank/preparation is computed here.
+                const quickAction = computeLeadPreparationAction({
+                  status: item.preparation.status,
+                  approvalPending: !APPROVED_OR_BEYOND_STATES.has(item.actionState),
+                });
                 return (
                   <li key={item.id}>
                     <button
@@ -484,8 +563,13 @@ export default function HermesDailyWorkspace() {
                           {item.recommendedAction}
                         </span>
                       </span>
-                      <span className="shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300">
-                        {item.stageLabel}
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-zinc-400">
+                          {PREPARATION_ACTION_LABELS_TR[quickAction]}
+                        </span>
+                        <span className="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300">
+                          {item.stageLabel}
+                        </span>
                       </span>
                     </button>
                   </li>
@@ -595,97 +679,33 @@ export default function HermesDailyWorkspace() {
                   type="button"
                   onClick={() => void runReenrichment()}
                   disabled={reenrichLoading}
-                  className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 ${
+                    selectedItem.preparation.status === "needs_research" ||
+                    selectedItem.preparation.status === "needs_channel"
+                      ? "bg-indigo-600 hover:bg-indigo-500 ring-2 ring-indigo-400/40"
+                      : "bg-zinc-700 hover:bg-zinc-600"
+                  }`}
                 >
                   {reenrichLoading ? "Zenginleştiriliyor…" : "Yeniden Zenginleştir"}
                 </button>
               </div>
 
-              <div className="flex flex-col gap-2">
-                <label className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                  Mevcut mesaj {draftLoading ? "(yükleniyor…)" : ""}
-                </label>
-                <textarea
-                  value={currentMessage}
-                  onChange={(e) => setCurrentMessage(e.target.value)}
-                  rows={4}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
-                  placeholder="Bu lead için henüz bir taslak yok — lead detayından üretin."
+              {selectedRosterLead && leadWorkspaceReady === selectedItem.leadId ? (
+                <LeadOutreachHandoffPanel
+                  key={selectedItem.leadId}
+                  item={selectedItem}
+                  lead={selectedRosterLead}
+                  channel={channel}
+                  setChannel={setChannel}
+                  followUpPreset={followUpPreset}
+                  setFollowUpPreset={setFollowUpPreset}
+                  doAction={doAction}
+                  refreshQueue={refreshQueue}
+                  globalLoading={loading}
                 />
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={!currentMessage || loading}
-                    onClick={() =>
-                      void doAction("APPROVE_CURRENT_DRAFT", {
-                        missionId: selectedItem.missionId,
-                        leadId: selectedItem.leadId,
-                        currentMessage,
-                      })
-                    }
-                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    Taslağı Onayla
-                  </button>
-                  <a
-                    href={`https://wa.me/?text=${encodeURIComponent(currentMessage)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/5"
-                  >
-                    WhatsApp&apos;ta Aç
-                  </a>
-                  <select
-                    value={channel}
-                    onChange={(e) =>
-                      setChannel(e.target.value as "whatsapp" | "phone" | "instagram" | "email")
-                    }
-                    className="rounded-lg border border-white/10 bg-zinc-950/60 px-2 py-1.5 text-xs text-zinc-200"
-                  >
-                    <option value="whatsapp">WhatsApp</option>
-                    <option value="phone">Telefon</option>
-                    <option value="instagram">Instagram</option>
-                    <option value="email">E-posta</option>
-                  </select>
-                  <select
-                    value={followUpPreset}
-                    onChange={(e) => setFollowUpPreset(Number(e.target.value) === 3 ? 3 : 1)}
-                    className="rounded-lg border border-white/10 bg-zinc-950/60 px-2 py-1.5 text-xs text-zinc-200"
-                  >
-                    <option value={1}>+1 gün takip</option>
-                    <option value={3}>+3 gün takip</option>
-                  </select>
-                  <button
-                    type="button"
-                    disabled={
-                      !currentMessage || loading || selectedItem.preparation.status === "review_required"
-                    }
-                    title={
-                      selectedItem.preparation.status === "review_required"
-                        ? "Kanıtlar değişti — göndermeden önce taslağı incele/yeniden üret"
-                        : undefined
-                    }
-                    onClick={() =>
-                      void doAction("MARK_CONTACTED", {
-                        missionId: selectedItem.missionId,
-                        leadId: selectedItem.leadId,
-                        currentMessage,
-                        channel,
-                        followUpPresetDays: followUpPreset,
-                      })
-                    }
-                    className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-                  >
-                    Gönderdim
-                  </button>
-                </div>
-                {selectedItem.preparation.status === "review_required" ? (
-                  <p className="text-xs text-amber-300">
-                    Kanıtlar değişti — göndermeden önce taslağı inceleyin, gerekiyorsa yeniden üretip
-                    yeniden onaylayın.
-                  </p>
-                ) : null}
-              </div>
+              ) : (
+                <p className="text-xs text-zinc-500">Mesaj çalışma alanı yükleniyor…</p>
+              )}
 
               <div className="flex flex-wrap gap-2 border-t border-white/[0.06] pt-3">
                 <button
@@ -887,6 +907,335 @@ export default function HermesDailyWorkspace() {
             </div>
           )}
         </section>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* preparation -> outreach handoff panel (v3.8.3)                            */
+/* -------------------------------------------------------------------------- */
+
+const TONE_LABELS_TR: Record<string, string> = {
+  soft: "Yumuşak",
+  direct: "Direkt",
+  consultative: "Danışman",
+};
+
+type LeadOutreachHandoffPanelProps = {
+  item: DailyActionItem;
+  lead: ScoredLead;
+  channel: "whatsapp" | "phone" | "instagram" | "email";
+  setChannel: (channel: "whatsapp" | "phone" | "instagram" | "email") => void;
+  followUpPreset: 1 | 3;
+  setFollowUpPreset: (preset: 1 | 3) => void;
+  doAction: (action: string, payload?: Record<string, unknown>) => Promise<void>;
+  refreshQueue: () => Promise<void>;
+  globalLoading: boolean;
+};
+
+/**
+ * The one place a selected lead's preparation status turns into the correct
+ * outreach action, without leaving `/v2`.
+ *
+ * Reuses `useLeadMessageWorkspace` (`LeadMessageEditor.tsx`) verbatim for
+ * generate/regenerate/manual-save/persist — no second message engine, no
+ * second evidence read, no second draft-persistence policy. What this panel
+ * adds is Hermes-specific: the single recommended action banner
+ * (`computeLeadPreparationAction`), and the approve → WhatsApp → contacted
+ * handoff, which is mission/approval state `LeadMessageEditor` does not know
+ * about and never should.
+ *
+ * Keyed by `lead.id` at the call site — a different lead is a fresh mount,
+ * exactly like `LeadMessageEditor` itself, so no unsaved text or ephemeral
+ * "WhatsApp opened" flag can leak from one lead to another.
+ */
+function LeadOutreachHandoffPanel({
+  item,
+  lead,
+  channel,
+  setChannel,
+  followUpPreset,
+  setFollowUpPreset,
+  doAction,
+  refreshQueue,
+  globalLoading,
+}: LeadOutreachHandoffPanelProps) {
+  const stance: OutreachStance = stanceForActionState(item.actionState);
+  const guard = useMemo(
+    () =>
+      messageWorkspaceGuard({
+        doNotContact: false,
+        hasWhatsAppChannel: item.preparation.checks.verifiedWhatsApp,
+      }),
+    [item.preparation.checks.verifiedWhatsApp],
+  );
+
+  const handleDraftSaved = useCallback(() => {
+    void refreshQueue();
+  }, [refreshQueue]);
+
+  const ws = useLeadMessageWorkspace({
+    lead,
+    guard,
+    stance,
+    autoGenerate: false,
+    onDraftSaved: handleDraftSaved,
+  });
+
+  const [whatsappOpened, setWhatsappOpened] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
+  const [contactError, setContactError] = useState<string | null>(null);
+
+  const approvalPending = !APPROVED_OR_BEYOND_STATES.has(item.actionState);
+  const recommendedAction: PreparationAction = computeLeadPreparationAction({
+    status: item.preparation.status,
+    approvalPending,
+    whatsappOpened,
+  });
+
+  // A generation/regeneration that lands is exactly the moment the daily
+  // queue's own `preparation` snapshot (baked in from the last daily-run
+  // read) has gone stale — `useLeadMessageWorkspace` persists through its
+  // own path (`operational-state` PATCH), not through `doAction`, so nothing
+  // else would trigger this recompute.
+  const generateAndRefresh = useCallback(
+    async (mode: "generate" | "regenerate" | "refresh") => {
+      await ws.generate(mode);
+      await refreshQueue();
+    },
+    [ws, refreshQueue],
+  );
+
+  const handleApprove = useCallback(async () => {
+    if (!ws.savedDraft || ws.dirty) return;
+    setApproveError(null);
+    try {
+      await doAction("APPROVE_CURRENT_DRAFT", {
+        missionId: item.missionId,
+        leadId: item.leadId,
+        currentMessage: ws.draftText,
+      });
+      setWhatsappOpened(false);
+    } catch {
+      setApproveError("Onay kaydedilemedi. Tekrar deneyin.");
+    }
+  }, [doAction, item.leadId, item.missionId, ws.draftText, ws.dirty, ws.savedDraft]);
+
+  const waLink = guard.canOpenWhatsApp ? whatsappLinkWithText(lead.phone, ws.draftText) : null;
+
+  const handleOpenWhatsApp = useCallback(() => {
+    if (!waLink) return;
+    window.open(waLink, "_blank");
+    setWhatsappOpened(true);
+  }, [waLink]);
+
+  const handleMarkContacted = useCallback(async () => {
+    setContactError(null);
+    try {
+      await doAction("MARK_CONTACTED", {
+        missionId: item.missionId,
+        leadId: item.leadId,
+        currentMessage: ws.draftText,
+        channel,
+        followUpPresetDays: followUpPreset,
+      });
+      setWhatsappOpened(false);
+    } catch {
+      setContactError("Gönderildi olarak işaretlenemedi. Tekrar deneyin.");
+    }
+  }, [channel, doAction, followUpPreset, item.leadId, item.missionId, ws.draftText]);
+
+  const busy = ws.busy !== null || globalLoading;
+  const generateLabel =
+    item.preparation.status === "draft_stale"
+      ? PREPARATION_ACTION_LABELS_TR.REGENERATE_DRAFT
+      : ws.savedDraft
+        ? "Yeniden Üret"
+        : PREPARATION_ACTION_LABELS_TR.GENERATE_DRAFT;
+  const generateMode = ws.savedDraft ? "regenerate" : "generate";
+  const generateEmphasized =
+    recommendedAction === "GENERATE_DRAFT" || recommendedAction === "REGENERATE_DRAFT";
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-[11px] text-zinc-500">
+        Önerilen aksiyon: <span className="text-zinc-300">{PREPARATION_ACTION_LABELS_TR[recommendedAction]}</span>
+      </p>
+
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[9px] font-semibold uppercase tracking-wider text-zinc-500">Ton</span>
+          {(["soft", "direct", "consultative"] as const).map((tone) => (
+            <button
+              key={tone}
+              type="button"
+              onClick={() => ws.setActiveTone(tone)}
+              className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition ${
+                ws.activeTone === tone
+                  ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-200"
+                  : "border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"
+              }`}
+            >
+              {TONE_LABELS_TR[tone]}
+              {ws.persisted.drafts[tone] ? <span className="ml-1 text-[9px] text-emerald-300">●</span> : null}
+            </button>
+          ))}
+        </div>
+
+        {isStaleCopyDraft(ws.savedDraft) && !ws.dirty && guard.canGenerate ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-400/25 bg-amber-500/10 px-2.5 py-1.5">
+            <p className="text-[11px] text-amber-200">Bu taslak eski mesaj tonuyla yazıldı.</p>
+            <button
+              type="button"
+              onClick={() => void generateAndRefresh("refresh")}
+              disabled={busy}
+              className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
+            >
+              Yeni tonla güncelle
+            </button>
+          </div>
+        ) : null}
+
+        <textarea
+          value={ws.draftText}
+          onChange={(e) => ws.setDraftText(e.target.value ?? "")}
+          rows={4}
+          className="w-full rounded-lg border border-white/10 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+          placeholder={
+            guard.canGenerate
+              ? `Bu ton için henüz mesaj yok. "${TONE_LABELS_TR[ws.activeTone]}" tonunda mesaj oluşturun veya kendiniz yazın.`
+              : "Bu ton için kayıtlı mesaj yok."
+          }
+        />
+
+        {ws.generateError ? <p className="text-[11px] text-rose-300">{ws.generateError}</p> : null}
+        {ws.researchNotice ? (
+          <p className="rounded-md border border-amber-400/25 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+            {ws.researchNotice}
+          </p>
+        ) : null}
+        {ws.saveError ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] text-rose-300">{ws.saveError}</p>
+            {ws.hasPendingGeneration ? (
+              <button
+                type="button"
+                onClick={() => void ws.retryPendingSave()}
+                disabled={busy}
+                className="rounded border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+              >
+                {ws.busy === "saving" ? "Kaydediliyor…" : "Kaydetmeyi yeniden dene"}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void generateAndRefresh(generateMode)}
+            disabled={!guard.canGenerate || busy}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 ${
+              generateEmphasized
+                ? "bg-sky-600 hover:bg-sky-500 ring-2 ring-sky-400/40"
+                : "bg-emerald-600 hover:bg-emerald-500"
+            }`}
+          >
+            {ws.busy === "generating" ? "Üretiliyor…" : generateLabel}
+          </button>
+          <button
+            type="button"
+            onClick={() => void ws.saveManual()}
+            disabled={!ws.dirty || busy}
+            className="rounded-lg border border-zinc-700/40 bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/[0.05] disabled:opacity-50"
+          >
+            {ws.busy === "saving" ? "Kaydediliyor…" : "Kaydet"}
+          </button>
+          {ws.savedFlash ? <span className="self-center text-[11px] text-emerald-300">Kaydedildi</span> : null}
+          {ws.dirty ? <span className="self-center text-[11px] text-amber-200">Kaydedilmedi</span> : null}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 border-t border-white/[0.06] pt-3">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!ws.savedDraft || ws.dirty || busy}
+            title={ws.dirty ? "Onaylamadan önce taslağı kaydedin" : undefined}
+            onClick={() => void handleApprove()}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 ${
+              recommendedAction === "APPROVE"
+                ? "bg-emerald-600 hover:bg-emerald-500 ring-2 ring-emerald-400/40"
+                : "bg-zinc-700 hover:bg-zinc-600"
+            }`}
+          >
+            {PREPARATION_ACTION_LABELS_TR.APPROVE}
+          </button>
+          {waLink ? (
+            <button
+              type="button"
+              onClick={handleOpenWhatsApp}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium text-white ${
+                recommendedAction === "OPEN_WHATSAPP"
+                  ? "bg-green-600 hover:bg-green-500 ring-2 ring-green-400/40"
+                  : "bg-zinc-700 hover:bg-zinc-600"
+              }`}
+            >
+              {PREPARATION_ACTION_LABELS_TR.OPEN_WHATSAPP}
+            </button>
+          ) : (
+            <span
+              title={guard.whatsAppBlockedReason ?? "Mesaj boş"}
+              className="cursor-not-allowed rounded-lg border border-zinc-700/40 px-3 py-1.5 text-xs text-zinc-600"
+            >
+              {PREPARATION_ACTION_LABELS_TR.OPEN_WHATSAPP}
+            </span>
+          )}
+          <select
+            value={channel}
+            onChange={(e) => setChannel(e.target.value as "whatsapp" | "phone" | "instagram" | "email")}
+            className="rounded-lg border border-white/10 bg-zinc-950/60 px-2 py-1.5 text-xs text-zinc-200"
+          >
+            <option value="whatsapp">WhatsApp</option>
+            <option value="phone">Telefon</option>
+            <option value="instagram">Instagram</option>
+            <option value="email">E-posta</option>
+          </select>
+          <select
+            value={followUpPreset}
+            onChange={(e) => setFollowUpPreset(Number(e.target.value) === 3 ? 3 : 1)}
+            className="rounded-lg border border-white/10 bg-zinc-950/60 px-2 py-1.5 text-xs text-zinc-200"
+          >
+            <option value={1}>+1 gün takip</option>
+            <option value={3}>+3 gün takip</option>
+          </select>
+          <button
+            type="button"
+            disabled={!ws.savedDraft || busy || item.preparation.status === "review_required"}
+            title={
+              item.preparation.status === "review_required"
+                ? "Kanıtlar değişti — göndermeden önce taslağı incele/yeniden üret"
+                : undefined
+            }
+            onClick={() => void handleMarkContacted()}
+            className={`rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 ${
+              recommendedAction === "MARK_CONTACTED"
+                ? "bg-indigo-600 hover:bg-indigo-500 ring-2 ring-indigo-400/40"
+                : "bg-zinc-700 hover:bg-zinc-600"
+            }`}
+          >
+            {PREPARATION_ACTION_LABELS_TR.MARK_CONTACTED}
+          </button>
+        </div>
+        {approveError ? <p className="text-[11px] text-rose-300">{approveError}</p> : null}
+        {contactError ? <p className="text-[11px] text-rose-300">{contactError}</p> : null}
+        {item.preparation.status === "review_required" ? (
+          <p className="text-xs text-amber-300">
+            Kanıtlar değişti — göndermeden önce taslağı inceleyin, gerekiyorsa yeniden üretip yeniden
+            onaylayın.
+          </p>
+        ) : null}
       </div>
     </div>
   );

@@ -171,6 +171,80 @@ export function evaluateDraftStaleness(
 }
 
 /* -------------------------------------------------------------------------- */
+/* preparation -> outreach handoff (v3.8.3)                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The single next Founder action for a lead, derived from its preparation
+ * status plus the one thing preparation itself cannot see: whether the
+ * current draft already carries a founder approval.
+ *
+ * v3.8.3 — Hermes Preparation-to-Outreach Handoff. This is deliberately a
+ * second, tiny pure function rather than a field folded into
+ * {@link LeadPreparationAssessment}: approval is resolved from the durable
+ * Hermes mission file (`mission-approval-resolver.ts`), which is server-only
+ * and async, while `computeLeadPreparation` above is synchronous and knows
+ * nothing about missions. Keeping them separate keeps `lead-preparation.ts`
+ * exactly what it already was — no second preparation engine, no new
+ * durable state, just one more deterministic mapping over values that
+ * already exist.
+ */
+export type PreparationAction =
+  | "REENRICH"
+  | "GENERATE_DRAFT"
+  | "REGENERATE_DRAFT"
+  | "REVIEW_DRAFT"
+  | "APPROVE"
+  | "OPEN_WHATSAPP"
+  | "MARK_CONTACTED";
+
+export const PREPARATION_ACTION_LABELS_TR: Record<PreparationAction, string> = {
+  REENRICH: "Yeniden Zenginleştir",
+  GENERATE_DRAFT: "Mesaj Oluştur",
+  REGENERATE_DRAFT: "Mesajı Yenile",
+  REVIEW_DRAFT: "İncele",
+  APPROVE: "Onayla",
+  OPEN_WHATSAPP: "WhatsApp'ta Aç",
+  MARK_CONTACTED: "Gönderdim",
+};
+
+export type PreparationActionInput = {
+  status: LeadPreparationStatus;
+  /** True while the current draft is still awaiting the founder's approval (mission stage `"approval"`). */
+  approvalPending: boolean;
+  /** True once "WhatsApp'ta Aç" has been used for the current approved draft this session. */
+  whatsappOpened?: boolean;
+};
+
+/**
+ * The one recommended action for a `ready` lead is never ambiguous: an
+ * unapproved draft always asks for {@link PreparationAction.APPROVE} first,
+ * and only an approved one may be sent — this order can never be skipped.
+ * Every other status maps 1:1 to the repair action its own blocker already
+ * names in `lead-preparation.ts` (see `BLOCKER_EXPLANATION_TR` / the
+ * `repairAction` on each `LeadPreparationBlocker`), reproduced here as a
+ * flat switch so a caller does not have to know which blocker index to read.
+ */
+export function computeLeadPreparationAction(
+  input: PreparationActionInput,
+): PreparationAction {
+  switch (input.status) {
+    case "needs_research":
+    case "needs_channel":
+      return "REENRICH";
+    case "needs_draft":
+      return "GENERATE_DRAFT";
+    case "draft_stale":
+      return "REGENERATE_DRAFT";
+    case "review_required":
+      return "REVIEW_DRAFT";
+    case "ready":
+      if (input.approvalPending) return "APPROVE";
+      return input.whatsappOpened ? "MARK_CONTACTED" : "OPEN_WHATSAPP";
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* assessment                                                                 */
 /* -------------------------------------------------------------------------- */
 

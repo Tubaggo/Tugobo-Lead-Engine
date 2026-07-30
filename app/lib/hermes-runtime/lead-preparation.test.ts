@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 
 import {
   computeLeadPreparation,
+  computeLeadPreparationAction,
   evaluateDraftStaleness,
   type LeadPreparationInput,
+  type LeadPreparationStatus,
 } from "./lead-preparation.ts";
 import { buildPersonalizationEvidence, computeEvidenceFingerprint } from "../outreach/evidence.ts";
 import { emptyMessageWorkspace } from "../outreach/workspace.ts";
@@ -217,5 +219,83 @@ describe("checks", () => {
       buildPersonalizationEvidence({ hasOwnWebsite: lead.hasOwnWebsite, websiteIntelligence: lead.websiteIntelligence }),
     );
     assert.equal(result.evidenceFingerprint, expected);
+  });
+});
+
+describe("computeLeadPreparationAction — v3.8.3 handoff mapping", () => {
+  test("19. needs_research -> REENRICH", () => {
+    assert.equal(
+      computeLeadPreparationAction({ status: "needs_research", approvalPending: false }),
+      "REENRICH",
+    );
+  });
+
+  test("20. needs_channel -> REENRICH", () => {
+    assert.equal(
+      computeLeadPreparationAction({ status: "needs_channel", approvalPending: false }),
+      "REENRICH",
+    );
+  });
+
+  test("21. needs_draft -> GENERATE_DRAFT", () => {
+    assert.equal(
+      computeLeadPreparationAction({ status: "needs_draft", approvalPending: false }),
+      "GENERATE_DRAFT",
+    );
+  });
+
+  test("22. draft_stale -> REGENERATE_DRAFT", () => {
+    assert.equal(
+      computeLeadPreparationAction({ status: "draft_stale", approvalPending: false }),
+      "REGENERATE_DRAFT",
+    );
+  });
+
+  test("23. review_required -> REVIEW_DRAFT (even when approvalPending)", () => {
+    assert.equal(
+      computeLeadPreparationAction({ status: "review_required", approvalPending: true }),
+      "REVIEW_DRAFT",
+    );
+  });
+
+  test("24. ready + unapproved -> APPROVE", () => {
+    assert.equal(
+      computeLeadPreparationAction({ status: "ready", approvalPending: true }),
+      "APPROVE",
+    );
+  });
+
+  test("25. ready + approved + not yet opened -> OPEN_WHATSAPP", () => {
+    assert.equal(
+      computeLeadPreparationAction({ status: "ready", approvalPending: false }),
+      "OPEN_WHATSAPP",
+    );
+  });
+
+  test("26. ready + approved + already opened -> MARK_CONTACTED", () => {
+    assert.equal(
+      computeLeadPreparationAction({
+        status: "ready",
+        approvalPending: false,
+        whatsappOpened: true,
+      }),
+      "MARK_CONTACTED",
+    );
+  });
+
+  test("27. deterministic ordering — same input always yields same action", () => {
+    const statuses: LeadPreparationStatus[] = [
+      "needs_research",
+      "needs_channel",
+      "needs_draft",
+      "draft_stale",
+      "review_required",
+      "ready",
+    ];
+    for (const status of statuses) {
+      const a = computeLeadPreparationAction({ status, approvalPending: false });
+      const b = computeLeadPreparationAction({ status, approvalPending: false });
+      assert.equal(a, b, status);
+    }
   });
 });

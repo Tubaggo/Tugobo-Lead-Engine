@@ -1185,7 +1185,18 @@ function classifyContactChannel(
     (getTurkishPhoneKind(lead.phone) === "mobile" &&
       normalizePhoneDedupe(lead.phone) !== null);
 
-  if (leadDirect || finderDirect) return "ready";
+  // Canonical roster truth (v3.8.2 Contact Finder canonicalization —
+  // `app/lib/contact-finder-canonicalization.ts`). Unlike `finder` above,
+  // which only exists in this browser's `contact-finder-map-v1` cache, this
+  // reads a fact already written to the shared roster — so a channel verified
+  // via Contact Finder or re-enrichment reads "ready" here even on a browser
+  // that never ran Contact Finder locally.
+  const canonicalVerified =
+    lead.whatsappConfidence === "confirmed" ||
+    lead.whatsappConfidence === "likely" ||
+    lead.instagramConfidence === "confirmed";
+
+  if (leadDirect || finderDirect || canonicalVerified) return "ready";
 
   if (lead.website?.trim()) {
     if (!finder) return "needs_finder";
@@ -1603,7 +1614,11 @@ function rowReadinessWithFinder(
 ): { score: number; reasons: string[] } {
   const hasEmail = Boolean(finder?.foundEmails?.length);
   const hasPhoneFromFinder = Boolean(finder?.foundPhones?.length);
-  const verified = finder?.bestContactType === "VERIFIED_WHATSAPP";
+  // Canonical roster truth first (see `classifyContactChannel` above for
+  // why): a confirmed WhatsApp on the roster counts as verified even when
+  // this browser's Contact Finder cache never saw it.
+  const verified =
+    finder?.bestContactType === "VERIFIED_WHATSAPP" || row.whatsappConfidence === "confirmed";
   return computeContactReadinessScore(
     {
       phone: row.phone,
