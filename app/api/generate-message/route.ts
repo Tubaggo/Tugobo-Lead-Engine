@@ -23,6 +23,7 @@ import {
 } from "@/app/lib/outreach/engine";
 import {
   buildPersonalizationEvidence,
+  computeEvidenceFingerprint,
   selectEvidence,
   type EvidenceSelection,
 } from "@/app/lib/outreach/evidence";
@@ -416,6 +417,16 @@ async function handlePOST(req: Request): Promise<Response> {
       likelySignalCount: signals.likely.length,
       evidenceCount: evidencePack.length,
       styleKey: TONE_TO_STYLE[requestedTone],
+      /**
+       * v3.8.2: a digest of the evidence pack this generation was built from
+       * — see `outreach/evidence.ts`'s `computeEvidenceFingerprint`. The pack
+       * is shared across all three tones (only the *selected* item per tone
+       * differs), so one value covers the whole response. A saving client
+       * stores this on the draft; a later re-enrichment that changes the
+       * pack produces a different value, which is how staleness is detected
+       * without ever persisting the evidence itself.
+       */
+      evidenceFingerprint: computeEvidenceFingerprint(evidencePack),
     },
   });
 }

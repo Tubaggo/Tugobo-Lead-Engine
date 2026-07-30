@@ -15,6 +15,7 @@ import {
   InvalidLocalDateError,
   InvalidOutcomeUpdateError,
   StaleApprovalError,
+  StaleDraftError,
   UnknownDailyRunError,
   UnknownFollowUpError,
 } from "./daily-loop-repository.ts";
@@ -56,6 +57,12 @@ export function hermesErrorResponse(err: unknown): Response {
   }
   if (err instanceof StaleApprovalError) {
     return json({ error: "approval does not cover the current message", blockingReasons: err.blockingReasons }, 409);
+  }
+  if (err instanceof StaleDraftError) {
+    return json(
+      { error: "draft evidence changed since approval — review or regenerate first", blockerCodes: err.blockerCodes },
+      409,
+    );
   }
   if (err instanceof InvalidOutcomeUpdateError) {
     return errorJson("outcome update is missing required detail", 400);

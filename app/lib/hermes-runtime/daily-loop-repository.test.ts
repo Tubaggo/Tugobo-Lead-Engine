@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { getLeadState, putRoster } from "../operational-state/repository.ts";
+import { getLeadState, patchLeadState, putRoster } from "../operational-state/repository.ts";
 import {
   approveCurrentDraft,
   buildDailyQueueSnapshot,
@@ -18,6 +18,7 @@ import {
   skipItem,
   startOrResumeDailyRun,
   StaleApprovalError,
+  StaleDraftError,
   UnknownDailyRunError,
   UnknownDailyRunItemError,
   UnknownMissionError,
@@ -26,6 +27,7 @@ import { UnknownLeadError } from "../operational-state/repository.ts";
 import { createMission } from "./repository.ts";
 import { readHermesFileOrEmpty } from "./store.ts";
 import { resolveHermesRuntimeFilePath } from "./env.ts";
+import { buildPersonalizationEvidence, computeEvidenceFingerprint } from "../outreach/evidence.ts";
 
 /**
  * The daily loop's own repository surface, integration-tested against a real
@@ -281,5 +283,122 @@ describe("daily run lifecycle + restart durability", () => {
     const a = await buildDailyQueueSnapshot("2026-07-29");
     const b = await buildDailyQueueSnapshot("2026-07-29");
     assert.deepEqual(a.items, b.items);
+  });
+});
+
+describe("markContacted — evidence staleness guard (v3.8.2)", () => {
+  async function seedRosterWithEvidence(leadId: string): Promise<void> {
+    await putRoster([
+      {
+        id: leadId,
+        name: "Otel A",
+        city: "Antalya",
+        hasOwnWebsite: true,
+        websiteIntelligence: { hasWhatsAppLink: true },
+        whatsappConfidence: "confirmed",
+      },
+    ]);
+  }
+
+  test("20. a draft whose evidence fingerprint no longer matches blocks MARK_CONTACTED with StaleDraftError", async () => {
+    const leadId = "gmaps-abc";
+    await seedRosterWithEvidence(leadId);
+    await createMission({ missionId: "m-1", leadId, hotelName: "Otel A", stage: "approval" });
+
+    const message = "Merhaba, kısa bir sorumuz olacaktı.";
+    await patchLeadState(leadId, {
+      messageWorkspace: {
+        activeTone: "soft",
+        drafts: {
+          soft: {
+            tone: "soft",
+            message,
+            source: "provider",
+            updatedAt: new Date().toISOString(),
+            generatedAt: new Date().toISOString(),
+            evidenceFingerprint: "deliberately-wrong-fingerprint",
+          },
+        },
+        recentMessages: [],
+      },
+    });
+
+    await approveCurrentDraft({ missionId: "m-1", leadId, currentMessage: message });
+    await assert.rejects(
+      () => markContacted({ missionId: "m-1", leadId, currentMessage: message, channel: "whatsapp" }),
+      StaleDraftError,
+    );
+  });
+
+  test("21. a draft whose evidence fingerprint matches current evidence proceeds normally", async () => {
+    const leadId = "gmaps-def";
+    await seedRosterWithEvidence(leadId);
+    await createMission({ missionId: "m-2", leadId, hotelName: "Otel B", stage: "approval" });
+
+    const pack = buildPersonalizationEvidence({
+      hasOwnWebsite: true,
+      websiteIntelligence: { hasWhatsAppLink: true },
+    });
+    const fp = computeEvidenceFingerprint(pack);
+
+    const message = "Merhaba, kısa bir sorumuz olacaktı.";
+    await patchLeadState(leadId, {
+      messageWorkspace: {
+        activeTone: "soft",
+        drafts: {
+          soft: {
+            tone: "soft",
+            message,
+            source: "provider",
+            updatedAt: new Date().toISOString(),
+            generatedAt: new Date().toISOString(),
+            evidenceFingerprint: fp,
+          },
+        },
+        recentMessages: [],
+      },
+    });
+
+    await approveCurrentDraft({ missionId: "m-2", leadId, currentMessage: message });
+    const result = await markContacted({
+      missionId: "m-2",
+      leadId,
+      currentMessage: message,
+      channel: "whatsapp",
+    });
+    assert.equal(result.mission.missionId, "m-2");
+  });
+
+  test("22. a draft with no fingerprint at all (pre-v3.8.2) and no re-enrichment since is not blocked", async () => {
+    const leadId = "gmaps-ghi";
+    await seedRosterWithEvidence(leadId);
+    await createMission({ missionId: "m-3", leadId, hotelName: "Otel C", stage: "approval" });
+
+    const message = "Merhaba, kısa bir sorumuz olacaktı.";
+    await patchLeadState(leadId, {
+      messageWorkspace: {
+        activeTone: "soft",
+        drafts: {
+          soft: {
+            tone: "soft",
+            message,
+            source: "provider",
+            updatedAt: new Date().toISOString(),
+            generatedAt: new Date().toISOString(),
+            // no evidenceFingerprint — a draft generated before this sprint
+          },
+        },
+        recentMessages: [],
+      },
+    });
+
+    await approveCurrentDraft({ missionId: "m-3", leadId, currentMessage: message });
+    const result = await markContacted({
+      missionId: "m-3",
+      leadId,
+      currentMessage: message,
+      channel: "whatsapp",
+    });
+    assert.equal(result.mission.missionId, "m-3");
   });
 });

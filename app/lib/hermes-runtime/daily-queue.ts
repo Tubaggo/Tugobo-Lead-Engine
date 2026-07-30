@@ -28,6 +28,11 @@ import {
 } from "./message-readiness.ts";
 import { deriveFounderActionReasons, type FounderActionReason } from "./reason.ts";
 import { isActiveFollowUpStatus } from "./follow-up.ts";
+import {
+  computeLeadPreparation,
+  type LeadPreparationAssessment,
+  type LeadPreparationRosterInput,
+} from "./lead-preparation.ts";
 import type {
   FollowUpRecord,
   HermesDeliveryRecord,
@@ -50,6 +55,13 @@ export type HermesDailyActionItem = {
   recommendedAction: string;
   reasonCodes: FounderActionReason[];
   messageReadiness: MessageReadiness;
+  /**
+   * The full "is this lead ready, and why not" answer (v3.8.2). `messageReadiness`
+   * above is kept exactly as v3.8.1 shipped it — a backward-compatible, coarser
+   * signal existing consumers already read — this is the detailed breakdown a
+   * Guided Preparation surface renders from.
+   */
+  preparation: LeadPreparationAssessment;
   /** ISO instant, or `null` when no follow-up is bound to this item. */
   dueAt: string | null;
   updatedAt: string;
@@ -61,6 +73,8 @@ export type LeadQueueContext = {
   icpFitScore?: number | null;
   verifiedOpportunityScore?: number | null;
   whatsappConfidence?: string | null;
+  /** Everything else `lead-preparation.ts` needs — canonical roster fields only, never Contact-Finder localStorage. */
+  preparation: LeadPreparationRosterInput;
 };
 
 export type ComputeDailyQueueInput = {
@@ -137,6 +151,12 @@ export function computeHermesDailyActionItems(
       startOfLocalDayMs: input.startOfLocalDayMs,
     });
 
+    const preparation = computeLeadPreparation({
+      leadId: entry.leadId,
+      lead: context?.preparation ?? {},
+      workspace: context?.workspace,
+    });
+
     return {
       id: entry.missionId,
       leadId: entry.leadId,
@@ -148,6 +168,7 @@ export function computeHermesDailyActionItems(
       recommendedAction: SUGGESTED_ACTION_LABELS[entry.stage],
       reasonCodes,
       messageReadiness,
+      preparation,
       dueAt: followUp ? new Date(followUp.dueAt).toISOString() : null,
       updatedAt: mission?.updatedAt ?? new Date(now).toISOString(),
     };

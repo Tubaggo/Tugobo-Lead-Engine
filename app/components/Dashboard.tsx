@@ -12217,7 +12217,10 @@ export default function Dashboard({ leads }: { leads: ScoredLead[] }) {
       const res = await fetch("/api/contact-finder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
+        // v3.8.2: leadId lets the route merge a verified finding into the
+        // canonical roster (guarded, never a downgrade) instead of leaving
+        // it as a localStorage-only preview. See contact-finder-canonicalization.ts.
+        body: JSON.stringify({ ...input, leadId }),
       });
       const data = (await res.json()) as ContactFinderResult & { error?: string };
       if (!res.ok) {

@@ -39,6 +39,41 @@ type FounderActionReason = {
   evidenceRefs: string[];
 };
 
+type LeadPreparationStatus =
+  | "review_required"
+  | "needs_channel"
+  | "needs_research"
+  | "needs_draft"
+  | "draft_stale"
+  | "ready";
+
+type LeadPreparationBlocker = {
+  code: string;
+  severity: "blocking" | "warning";
+  explanationTr: string;
+  sourceRefs: string[];
+  repairAction: "REENRICH" | "GENERATE_DRAFT" | "REGENERATE_DRAFT" | "REVIEW_DRAFT" | "NONE";
+};
+
+type LeadPreparationChecks = {
+  websiteEvidence: boolean;
+  verifiedWhatsApp: boolean;
+  instagramKnown: boolean;
+  otaKnown: boolean;
+  usableEvidence: boolean;
+  draftExists: boolean;
+  draftCurrentVersion: boolean;
+  draftEvidenceCurrent: boolean;
+};
+
+type LeadPreparationAssessment = {
+  status: LeadPreparationStatus;
+  blockers: LeadPreparationBlocker[];
+  checks: LeadPreparationChecks;
+  recommendedAction: string;
+  evidenceFingerprint: string;
+};
+
 type DailyActionItem = {
   id: string;
   leadId: string;
@@ -50,6 +85,7 @@ type DailyActionItem = {
   recommendedAction: string;
   reasonCodes: FounderActionReason[];
   messageReadiness: MessageReadiness;
+  preparation: LeadPreparationAssessment;
   dueAt: string | null;
   updatedAt: string;
 };
@@ -98,6 +134,24 @@ const READINESS_LABELS: Record<MessageReadiness, string> = {
   not_required: "Gerekli değil",
 };
 
+const PREPARATION_STATUS_LABELS: Record<LeadPreparationStatus, string> = {
+  review_required: "İnceleme Gerekiyor",
+  needs_channel: "Kanal Gerekiyor",
+  needs_research: "Araştırma Gerekiyor",
+  needs_draft: "Taslak Gerekiyor",
+  draft_stale: "Taslak Eski",
+  ready: "Hazır",
+};
+
+const PREPARATION_STATUS_TONE: Record<LeadPreparationStatus, string> = {
+  review_required: "border-amber-500/30 bg-amber-500/10 text-amber-200",
+  needs_channel: "border-red-500/30 bg-red-500/10 text-red-200",
+  needs_research: "border-red-500/30 bg-red-500/10 text-red-200",
+  needs_draft: "border-sky-500/30 bg-sky-500/10 text-sky-200",
+  draft_stale: "border-amber-500/30 bg-amber-500/10 text-amber-200",
+  ready: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+};
+
 function todayLocalDate(): string {
   const now = new Date();
   const y = now.getFullYear();
@@ -133,6 +187,9 @@ export default function HermesDailyWorkspace() {
   const [outcomeMrr, setOutcomeMrr] = useState("");
   const [outcomeLostReason, setOutcomeLostReason] = useState("budget");
   const [outcomeNote, setOutcomeNote] = useState("");
+  const [reenrichLoading, setReenrichLoading] = useState(false);
+  const [reenrichError, setReenrichError] = useState<string | null>(null);
+  const [reenrichNotice, setReenrichNotice] = useState<string | null>(null);
 
   const applyResponse = useCallback((data: DailyRunResponse) => {
     setRun(data.run);
@@ -274,6 +331,72 @@ export default function HermesDailyWorkspace() {
     [localDate, applyResponse],
   );
 
+  /**
+   * "Yeniden Zenginleştir" — the only network/provider-calling action this
+   * component makes, and only ever from an explicit click. Reuses the
+   * existing `/api/re-enrich-lead` route and the existing whole-roster
+   * persistence path (`/api/operational-workspace/roster`) — the same one
+   * `Dashboard.tsx`'s own re-enrich flow uses — rather than inventing a
+   * second write path for the same canonical data. Ends with `refreshQueue`
+   * so `preparation` on every item reflects the fresh roster immediately.
+   */
+  const runReenrichment = useCallback(async () => {
+    if (!selectedItem) return;
+    setReenrichLoading(true);
+    setReenrichError(null);
+    setReenrichNotice(null);
+    try {
+      const rosterRes = await fetch("/api/operational-workspace/roster", { cache: "no-store" });
+      const rosterData = await parseJsonSafe(rosterRes);
+      if (!rosterRes.ok) {
+        setReenrichError((rosterData?.error as string) ?? "Roster okunamadı");
+        return;
+      }
+      const roster = Array.isArray(rosterData?.roster)
+        ? (rosterData.roster as Record<string, unknown>[])
+        : [];
+      const index = roster.findIndex((lead) => lead.id === selectedItem.leadId);
+      if (index === -1) {
+        setReenrichError("Bu lead roster'da bulunamadı.");
+        return;
+      }
+
+      const enrichRes = await fetch("/api/re-enrich-lead", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lead: roster[index] }),
+      });
+      const enrichData = await parseJsonSafe(enrichRes);
+      if (!enrichRes.ok) {
+        setReenrichError((enrichData?.error as string) ?? "Zenginleştirme başarısız");
+        return;
+      }
+      const enrichedLead = enrichData?.lead;
+      if (!enrichedLead || typeof enrichedLead !== "object") {
+        setReenrichError("Zenginleştirme sonucu boş döndü.");
+        return;
+      }
+
+      const updatedRoster = [...roster];
+      updatedRoster[index] = enrichedLead as Record<string, unknown>;
+      const putRes = await fetch("/api/operational-workspace/roster", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roster: updatedRoster }),
+      });
+      if (!putRes.ok) {
+        const putData = await parseJsonSafe(putRes);
+        setReenrichError((putData?.error as string) ?? "Roster güncellenemedi");
+        return;
+      }
+
+      setReenrichNotice("Zenginleştirme tamamlandı — hazırlık durumu güncellendi.");
+      await refreshQueue();
+    } finally {
+      setReenrichLoading(false);
+    }
+  }, [selectedItem, refreshQueue]);
+
   return (
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
       <header className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-zinc-900/60 px-4 py-3.5">
@@ -406,6 +529,78 @@ export default function HermesDailyWorkspace() {
                 </ul>
               </div>
 
+              <div className="rounded-lg border border-white/[0.06] bg-zinc-950/40 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                    Hazırlık Durumu
+                  </p>
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[11px] ${PREPARATION_STATUS_TONE[selectedItem.preparation.status]}`}
+                  >
+                    {PREPARATION_STATUS_LABELS[selectedItem.preparation.status]}
+                  </span>
+                </div>
+
+                <p className="mb-2 text-xs text-zinc-300">
+                  {selectedItem.preparation.recommendedAction}
+                </p>
+
+                <ul className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
+                  {(
+                    [
+                      ["websiteEvidence", "Website kanıtı"],
+                      ["verifiedWhatsApp", "WhatsApp doğrulandı"],
+                      ["instagramKnown", "Instagram biliniyor"],
+                      ["otaKnown", "OTA biliniyor"],
+                      ["usableEvidence", "Kullanılabilir kanıt"],
+                      ["draftExists", "Taslak var"],
+                      ["draftCurrentVersion", "Taslak sürümü güncel"],
+                      ["draftEvidenceCurrent", "Kanıt güncel"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <li key={key} className="flex items-center gap-1">
+                      <span
+                        className={
+                          selectedItem.preparation.checks[key] ? "text-emerald-400" : "text-zinc-600"
+                        }
+                      >
+                        {selectedItem.preparation.checks[key] ? "✓" : "○"}
+                      </span>
+                      {label}
+                    </li>
+                  ))}
+                </ul>
+
+                {selectedItem.preparation.blockers.length > 0 ? (
+                  <ul className="mb-3 flex flex-col gap-1">
+                    {selectedItem.preparation.blockers.map((blocker) => (
+                      <li
+                        key={blocker.code}
+                        className={`text-xs ${blocker.severity === "blocking" ? "text-red-300" : "text-amber-300"}`}
+                      >
+                        {blocker.explanationTr}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
+                {reenrichError ? (
+                  <p className="mb-2 text-xs text-red-300">{reenrichError}</p>
+                ) : null}
+                {reenrichNotice ? (
+                  <p className="mb-2 text-xs text-emerald-300">{reenrichNotice}</p>
+                ) : null}
+
+                <button
+                  type="button"
+                  onClick={() => void runReenrichment()}
+                  disabled={reenrichLoading}
+                  className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
+                >
+                  {reenrichLoading ? "Zenginleştiriliyor…" : "Yeniden Zenginleştir"}
+                </button>
+              </div>
+
               <div className="flex flex-col gap-2">
                 <label className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
                   Mevcut mesaj {draftLoading ? "(yükleniyor…)" : ""}
@@ -462,7 +657,14 @@ export default function HermesDailyWorkspace() {
                   </select>
                   <button
                     type="button"
-                    disabled={!currentMessage || loading}
+                    disabled={
+                      !currentMessage || loading || selectedItem.preparation.status === "review_required"
+                    }
+                    title={
+                      selectedItem.preparation.status === "review_required"
+                        ? "Kanıtlar değişti — göndermeden önce taslağı incele/yeniden üret"
+                        : undefined
+                    }
                     onClick={() =>
                       void doAction("MARK_CONTACTED", {
                         missionId: selectedItem.missionId,
@@ -477,6 +679,12 @@ export default function HermesDailyWorkspace() {
                     Gönderdim
                   </button>
                 </div>
+                {selectedItem.preparation.status === "review_required" ? (
+                  <p className="text-xs text-amber-300">
+                    Kanıtlar değişti — göndermeden önce taslağı inceleyin, gerekiyorsa yeniden üretip
+                    yeniden onaylayın.
+                  </p>
+                ) : null}
               </div>
 
               <div className="flex flex-wrap gap-2 border-t border-white/[0.06] pt-3">

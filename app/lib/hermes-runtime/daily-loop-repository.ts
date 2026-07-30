@@ -16,6 +16,10 @@ import {
   type LeadQueueContext,
 } from "./daily-queue.ts";
 import {
+  computeLeadPreparation,
+  type LeadPreparationRosterInput,
+} from "./lead-preparation.ts";
+import {
   advancePastDailyRunItem,
   buildDailyRun,
   refreshDailyRun,
@@ -135,6 +139,24 @@ export class StaleApprovalError extends Error {
   }
 }
 
+/**
+ * v3.8.2 — the second contacted-safety guard, alongside {@link StaleApprovalError}.
+ * A founder may have approved a draft honestly, on the copy that was correct
+ * *then*; if re-enrichment has since changed what the evidence pack actually
+ * says, sending that copy now would be sending something the business can no
+ * longer be honestly asked. `review_required` (see `lead-preparation.ts`) is
+ * the one condition this blocks on — every other preparation status still
+ * allows a send once the approval hash itself is valid.
+ */
+export class StaleDraftError extends Error {
+  readonly blockerCodes: string[];
+  constructor(blockerCodes: string[]) {
+    super("draft evidence changed since approval — review or regenerate before marking contacted");
+    this.name = "StaleDraftError";
+    this.blockerCodes = blockerCodes;
+  }
+}
+
 function filePath(): string {
   return resolveHermesRuntimeFilePath();
 }
@@ -163,6 +185,34 @@ function hasVerifiedWhatsApp(lead: ScoredLead | undefined): boolean {
   return confidence === "confirmed" || confidence === "likely";
 }
 
+/**
+ * Canonical roster fields only, mapped into what `lead-preparation.ts`
+ * reads — never Contact-Finder localStorage, never a second truth owner.
+ * Shared by the queue projection and by `markContacted`'s own staleness
+ * check, so the two can never compute a different answer for the same lead.
+ */
+function toPreparationLeadInput(lead: ScoredLead | undefined): LeadPreparationRosterInput {
+  return {
+    businessType: lead?.type,
+    businessSignals: lead?.businessSignals,
+    channels: lead?.channels,
+    hasInstagram: lead?.hasInstagram,
+    hasOwnWebsite: lead?.hasOwnWebsite,
+    websiteIntelligence: lead?.websiteIntelligence
+      ? {
+          hasWhatsAppLink: lead.websiteIntelligence.hasWhatsAppLink,
+          hasBookingCtaText: lead.websiteIntelligence.hasBookingCtaText,
+          hasBookingEngine: lead.websiteIntelligence.hasBookingEngine,
+          hasInquiryForm: lead.websiteIntelligence.hasInquiryForm,
+        }
+      : null,
+    whatsappConfidence: lead?.whatsappConfidence ?? null,
+    instagramConfidence: lead?.instagramConfidence ?? null,
+    otaConfidence: lead?.otaConfidence ?? null,
+    lastEnrichedAt: lead?.lastEnrichedAt ?? null,
+  };
+}
+
 function buildLeadLookup(
   operational: Awaited<ReturnType<typeof getOperationalState>>,
 ): (leadId: string) => LeadQueueContext | undefined {
@@ -176,6 +226,7 @@ function buildLeadLookup(
       icpFitScore: lead?.icpFitScore ?? null,
       verifiedOpportunityScore: lead?.verifiedOpportunityScore ?? null,
       whatsappConfidence: lead?.whatsappConfidence ?? null,
+      preparation: toPreparationLeadInput(lead),
     };
   };
 }
@@ -491,6 +542,21 @@ export async function markContacted(input: MarkContactedInput): Promise<MarkCont
   });
   if (!resolution.founderApproved) {
     throw new StaleApprovalError(resolution.blockingReasons);
+  }
+
+  // Second, independent guard: the approval hash matching the copy on screen
+  // proves the founder approved *this text*; it says nothing about whether
+  // the evidence that text was built on is still what re-enrichment found
+  // most recently. Read fresh, not from any cached queue snapshot.
+  const operational = await getOperationalState();
+  const roster = operational.roster.find((lead) => lead.id === leadId);
+  const preparation = computeLeadPreparation({
+    leadId,
+    lead: toPreparationLeadInput(roster),
+    workspace: operational.leads[leadId]?.messageWorkspace,
+  });
+  if (preparation.status === "review_required") {
+    throw new StaleDraftError(preparation.blockers.map((b) => b.code));
   }
 
   const now = nowIso();

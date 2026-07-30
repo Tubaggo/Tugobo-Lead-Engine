@@ -95,6 +95,16 @@ export type PersistedOutreachDraft = {
    * public signal.
    */
   personalization?: OutreachPersonalization;
+  /**
+   * Deterministic digest of the evidence pack this draft was written from
+   * (v3.8.2, see `outreach/evidence.ts`'s `computeEvidenceFingerprint`).
+   *
+   * Absent on every draft generated before this field existed — that is a
+   * normal, expected state, not corruption, and callers must treat it as
+   * "unknown" rather than "stale". Never the evidence itself, only a digest:
+   * this field cannot leak what was observed about the lead.
+   */
+  evidenceFingerprint?: string;
 };
 
 export type RecentWorkspaceMessage = {
@@ -198,6 +208,8 @@ function normalizeDraft(
   }
   const personalization = normalizePersonalization(raw.personalization);
   if (personalization) draft.personalization = personalization;
+  const evidenceFingerprint = shortString(raw.evidenceFingerprint, 64);
+  if (evidenceFingerprint) draft.evidenceFingerprint = evidenceFingerprint;
 
   return draft;
 }
@@ -361,6 +373,8 @@ export type GeneratedDraftInput = {
   usedSignalKeys?: string[];
   generationId?: string;
   personalization?: OutreachPersonalization;
+  /** See `PersistedOutreachDraft.evidenceFingerprint`. */
+  evidenceFingerprint?: string;
 };
 
 function pushRecent(
@@ -426,6 +440,8 @@ export function applyGeneratedDrafts(
     if (generationId) draft.generationId = generationId;
     const personalization = normalizePersonalization(entry.personalization);
     if (personalization) draft.personalization = personalization;
+    const evidenceFingerprint = shortString(entry.evidenceFingerprint, 64);
+    if (evidenceFingerprint) draft.evidenceFingerprint = evidenceFingerprint;
     drafts[entry.tone] = draft;
 
     recentMessages = pushRecent(recentMessages, {

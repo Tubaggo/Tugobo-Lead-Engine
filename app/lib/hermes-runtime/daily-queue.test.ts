@@ -116,10 +116,15 @@ describe("decoration fields", () => {
       missions,
       startOfLocalDayMs: START_OF_DAY,
       now: NOW,
-      leadLookup: () => ({ hasWhatsAppChannel: true, workspace: undefined }),
+      leadLookup: () => ({
+        hasWhatsAppChannel: true,
+        workspace: undefined,
+        preparation: { whatsappConfidence: "confirmed" },
+      }),
     });
     assert.equal(items[0].messageReadiness, "needs_research");
     assert.equal(items[0].reasonCodes[0]?.code, "NEEDS_RESEARCH");
+    assert.equal(items[0].preparation.status, "needs_research");
   });
 });
 

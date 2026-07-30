@@ -28,6 +28,8 @@
  * and under `node --test`.
  */
 
+import { createHash } from "node:crypto";
+
 export const PERSONALIZATION_EVIDENCE_TYPES = [
   "website_whatsapp_link",
   "booking_button",
@@ -385,6 +387,53 @@ export function buildPersonalizationEvidence(
     return index === -1 ? EVIDENCE_PRIORITY.length : index;
   };
   return out.sort((a, b) => rank(a.type) - rank(b.type));
+}
+
+/* -------------------------------------------------------------------------- */
+/* fingerprint (v3.8.2)                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A deterministic digest of what the evidence pack actually *says*.
+ *
+ * v3.8.2's answer to a real gap: re-enrichment already recomputes
+ * `websiteIntelligence` and therefore the next evidence pack, but nothing
+ * ever compared the new pack to the one an existing draft was written from —
+ * so a draft could keep reading "ready" after the business it was built on
+ * had visibly changed (a WhatsApp link removed, a second language added, a
+ * booking engine installed). This is the one comparison point that closes
+ * that gap, without persisting the pack itself anywhere.
+ *
+ * Deliberately excludes everything that can change without the underlying
+ * fact changing: pack order (a re-fetch may return channels in a different
+ * order), `sourceUrl`/`capturedAt` (freshness, not content), `id` (derived
+ * from `type`, never independently meaningful), and `labelTr`/`evidenceText`
+ * (presentation, fully determined by the fields that remain). `metadata` is
+ * kept — a room count moving from 3 to 8, or a channel count moving from 3 to
+ * 5, is a real change in what the business can honestly be asked about.
+ *
+ * Only ever returns an opaque digest. The evidence itself never has to be
+ * persisted for two fingerprints to be compared.
+ */
+export function computeEvidenceFingerprint(
+  pack: readonly PersonalizationEvidence[],
+): string {
+  const stable = pack
+    .map((item) => ({
+      type: item.type,
+      confidence: item.confidence,
+      metadata: item.metadata
+        ? Object.entries(item.metadata)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, value]) => [key, String(value)] as const)
+        : [],
+    }))
+    // Sorted by type: `buildPersonalizationEvidence` emits at most one item
+    // per type, so this alone gives a total, content-independent order.
+    .sort((a, b) => a.type.localeCompare(b.type));
+
+  const serialized = JSON.stringify(stable);
+  return createHash("sha256").update(serialized, "utf8").digest("hex").slice(0, 32);
 }
 
 /* -------------------------------------------------------------------------- */

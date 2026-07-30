@@ -1,10 +1,45 @@
 import { NextResponse } from "next/server";
-import {
-  confidenceFromScore,
-  maturityFromScore,
-  type SignalConfidence,
-} from "@/app/lib/intelligence/confidence";
+import type { SignalConfidence } from "@/app/lib/intelligence/confidence";
+import type { WhatsAppConfidence } from "@/app/lib/intelligence/whatsapp-verification";
 import { withAdminSession } from "@/app/lib/auth/require-admin-session";
+import { extractContactSignalsFromHtml } from "@/app/lib/extract-contact-signals-from-html";
+import { inferWebsiteIntelligenceFromHomepageHtml } from "@/app/lib/website-html-intelligence";
+import { buildContactFinderCanonicalPatch } from "@/app/lib/contact-finder-canonicalization";
+import { getRoster, putRoster } from "@/app/lib/operational-state/repository";
+import { isValidLeadId } from "@/app/lib/operational-state/lead-id";
+import type { ScoredLead, WebsiteIntelligenceSummary } from "@/app/lib/leads";
+
+/**
+ * Contact Finder — v3.8.2 canonicalization.
+ *
+ * v3.7.x behaviour is preserved for the preview (crawl a homepage, recommend
+ * the best contact surface); what changes is where the underlying channel
+ * signals land. Two duplications this route used to own are gone:
+ *
+ *  1. Its own HTML-scanning regexes for booking CTA / booking engine /
+ *     contact page / inquiry form / social icons / OTA links / viewport are
+ *     replaced by the canonical `inferWebsiteIntelligenceFromHomepageHtml`
+ *     (`website-html-intelligence.ts`) — the same function the real
+ *     import/re-enrichment pipeline uses. One HTML→signal reading, not two
+ *     that can silently drift apart.
+ *  2. Its own WhatsApp/Instagram/email link regexes are replaced by
+ *     `extractContactSignalsFromHtml`, the same extractor
+ *     `enrich-lead-homepage.ts` already uses.
+ *
+ * What is genuinely Contact Finder's own — "which single contact surface
+ * should the founder use" (`pickBestContact`) and Turkish phone
+ * classification — stays local; that decision has no canonical owner
+ * elsewhere because nothing else needs to make it.
+ *
+ * New: when the caller supplies a `leadId` that the roster already knows,
+ * a verified finding is merged into the canonical roster through the same
+ * `putRoster` path import/re-enrichment already uses — guarded so a weaker
+ * finding can never downgrade a stronger one, a phone-derived guess can
+ * never read as "confirmed", and Instagram evidence can never become
+ * WhatsApp confidence. `canonicalPersisted` in the response tells the
+ * caller whether that actually happened; a `false` must never be shown to
+ * the founder as "verified".
+ */
 
 type ContactFinderType =
   | "VERIFIED_WHATSAPP"
@@ -31,23 +66,9 @@ type ContactFinderResponse = {
     | "Website email"
     | "Website homepage";
   reason: string;
-  websiteIntelligence?: {
-    hasWhatsAppLink: boolean;
-    hasTelLink: boolean;
-    hasBookingCtaText: boolean;
-    hasBookingEngine: boolean;
-    hasContactPage: boolean;
-    hasInquiryForm: boolean;
-    hasSocialIcons: boolean;
-    hasOtaOutboundLinks: boolean;
-    bookingFlowQuality: number;
-    mobileViewportPresent: boolean;
-    socialLinksQuality: number;
-    confidence: number;
-    websiteConfidence: SignalConfidence;
-    directBookingMaturity: "low" | "medium" | "high";
-    conversionMaturity: "low" | "medium" | "high";
-  };
+  websiteIntelligence?: WebsiteIntelligenceSummary;
+  /** True only when the finding was actually merged into the canonical roster. */
+  canonicalPersisted: boolean;
 };
 
 function normalizeWebsite(input: string): string {
@@ -60,90 +81,7 @@ function uniq(items: string[]): string[] {
   return Array.from(new Set(items.map((v) => v.trim()).filter(Boolean)));
 }
 
-function extractInstagramLinks(html: string): string[] {
-  const matches = html.match(/https?:\/\/(?:www\.)?instagram\.com\/[^\s"'<>]+/gi) ?? [];
-  return uniq(matches.map((m) => m.replace(/[),.;]+$/g, "")));
-}
-
-function extractWhatsappLinks(html: string): string[] {
-  const matches =
-    html.match(
-      /https?:\/\/(?:wa\.me|(?:api\.)?whatsapp\.com)\/[^\s"'<>]*/gi,
-    ) ?? [];
-  return uniq(matches.map((m) => m.replace(/[),.;]+$/g, "")));
-}
-
-function extractTelLinks(html: string): string[] {
-  const matches = html.match(/tel:[^"'<>\s]+/gi) ?? [];
-  return uniq(matches.map((m) => m.replace(/[),.;]+$/g, "")));
-}
-
-function extractEmails(text: string): string[] {
-  const matches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? [];
-  return uniq(matches);
-}
-
-function hasMobileViewport(html: string): boolean {
-  return /<meta[^>]*name=["']viewport["'][^>]*>/i.test(html);
-}
-
-function hasBookingCtaText(html: string): boolean {
-  return /(rezervasyon|book\s*now|check\s*availability|availability|book\s*direct|hemen\s*rezervasyon)/i.test(
-    html,
-  );
-}
-
-function hasBookingEngineLink(html: string): boolean {
-  return /(book(?:ing)?\.|airbnb\.|expedia\.|hotels\.com|synxis|cloudbeds|littlehotelier|sirvoy|innroad|booking\s*engine)/i.test(
-    html,
-  );
-}
-
-function hasContactPageLink(html: string): boolean {
-  return /href=["'][^"']*(?:\/|^)(?:contact|iletisim|bize-ulasin|reach-us|reservation-contact)[^"']*["']/i.test(
-    html,
-  );
-}
-
-function hasInquiryForm(html: string): boolean {
-  if (!/<form[\s>][\s\S]*?<\/form>/i.test(html)) return false;
-  return /(name|id|placeholder)=["'][^"']*(?:message|inquiry|talep|rezervasyon|reservation|contact)[^"']*["']/i.test(
-    html,
-  );
-}
-
-function hasSocialIconsOrLinks(html: string): boolean {
-  return /(instagram\.com|facebook\.com|tiktok\.com|youtube\.com|x\.com|twitter\.com|linkedin\.com)/i.test(
-    html,
-  );
-}
-
-function hasOtaOutboundLinks(html: string): boolean {
-  return /(booking\.com|airbnb\.|expedia\.|hotels\.com|tatilsepeti\.)/i.test(html);
-}
-
-function calculateBookingFlowQuality(input: {
-  bookingCta: boolean;
-  bookingEngine: boolean;
-  hasContactPage: boolean;
-  hasInquiryForm: boolean;
-  hasWhatsapp: boolean;
-  hasSocialIcons: boolean;
-  hasOtaOutboundLinks: boolean;
-}): number {
-  let score = 24;
-  if (input.bookingCta) score += 22;
-  if (input.bookingEngine) score += 24;
-  if (input.hasContactPage) score += 10;
-  if (input.hasInquiryForm) score += 10;
-  if (input.hasWhatsapp) score += 12;
-  if (input.hasSocialIcons) score += 8;
-  if (input.hasOtaOutboundLinks) score -= 16;
-  return Math.max(0, Math.min(100, Math.round(score)));
-}
-
-function classifyPhones(text: string): { mobile: string[]; landline: string[] } {
-  const candidates = text.match(/(?:\+?90|0)?\s*\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{2}[\s.-]*\d{2}/g) ?? [];
+function classifyPhones(candidates: string[]): { mobile: string[]; landline: string[] } {
   const mobile: string[] = [];
   const landline: string[] = [];
 
@@ -223,7 +161,7 @@ function pickBestContact(data: {
   landline: string[];
   instagram: string[];
   emails: string[];
-}): ContactFinderResponse {
+}): Omit<ContactFinderResponse, "websiteIntelligence" | "canonicalPersisted"> {
   if (data.whatsapp.length > 0) {
     const normalized = normalizeWhatsAppLinkToWaMe(data.whatsapp[0]);
     return {
@@ -325,34 +263,54 @@ function pickBestContact(data: {
   };
 }
 
-function estimateSocialLinksQuality(data: {
-  instagram: string[];
-  whatsapp: string[];
-  emails: string[];
-  phonesMobile: string[];
-  phonesLandline: string[];
-}): number {
-  let score = 12;
-  if (data.instagram.length > 0) score += 32;
-  if (data.whatsapp.length > 0) score += 28;
-  if (data.emails.length > 0) score += 12;
-  if (data.phonesMobile.length > 0) score += 14;
-  else if (data.phonesLandline.length > 0) score += 6;
-  if (data.instagram.length > 0 && data.whatsapp.length > 0) score += 6;
-  return Math.max(0, Math.min(100, Math.round(score)));
+/**
+ * Merges a guarded canonical patch into the one roster entry matching
+ * `leadId`, and persists via the existing `putRoster` path. Returns whether
+ * anything was actually written — `false` when the lead is unknown, which
+ * the caller must treat as "not verified", not as a soft failure.
+ */
+async function canonicalizeIntoRoster(
+  leadId: string,
+  patch: { whatsappConfidence?: WhatsAppConfidence; instagramConfidence?: SignalConfidence; websiteIntelligence: WebsiteIntelligenceSummary },
+): Promise<boolean> {
+  const roster = await getRoster();
+  const index = roster.findIndex((lead) => lead.id === leadId);
+  if (index === -1) return false;
+
+  const current = roster[index];
+  const next: ScoredLead = {
+    ...current,
+    websiteIntelligence: patch.websiteIntelligence,
+    ...(patch.whatsappConfidence ? { whatsappConfidence: patch.whatsappConfidence } : {}),
+    ...(patch.instagramConfidence ? { instagramConfidence: patch.instagramConfidence } : {}),
+  };
+
+  const updatedRoster = [...roster];
+  updatedRoster[index] = next;
+  await putRoster(updatedRoster);
+  return true;
 }
 
 async function handlePOST(req: Request) {
-  let body: { website?: string; phone?: string; instagram?: string };
+  let body: { website?: string; phone?: string; instagram?: string; leadId?: string };
   try {
-    body = (await req.json()) as { website?: string; phone?: string; instagram?: string };
+    body = (await req.json()) as {
+      website?: string;
+      phone?: string;
+      instagram?: string;
+      leadId?: string;
+    };
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const leadId = typeof body.leadId === "string" && isValidLeadId(body.leadId) ? body.leadId : null;
+
   const url = normalizeWebsite(body.website ?? "");
   if (!url) {
     // No website — try phone then instagram as fallback contact surfaces.
+    // No HTML was fetched, so there is no `websiteIntelligence` to
+    // canonicalize; these fallbacks stay preview-only, exactly as before.
     const phone = body.phone?.trim() ?? "";
     const instagram = body.instagram?.trim() ?? "";
     if (phone) {
@@ -368,7 +326,8 @@ async function handlePOST(req: Request) {
           foundWhatsapp: [waLink],
           source: "Website phone number",
           reason: "WhatsApp path via listing phone (no website available)",
-        });
+          canonicalPersisted: false,
+        } satisfies ContactFinderResponse);
       }
       return NextResponse.json({
         bestContactType: "PHONE_ONLY",
@@ -380,7 +339,8 @@ async function handlePOST(req: Request) {
         foundWhatsapp: [],
         source: "Website phone number",
         reason: "Phone fallback (no website, no mobile WA path)",
-      });
+        canonicalPersisted: false,
+      } satisfies ContactFinderResponse);
     }
     if (instagram) {
       return NextResponse.json({
@@ -393,7 +353,8 @@ async function handlePOST(req: Request) {
         foundWhatsapp: [],
         source: "Website Instagram link",
         reason: "Instagram fallback (no website available)",
-      });
+        canonicalPersisted: false,
+      } satisfies ContactFinderResponse);
     }
     return NextResponse.json({ error: "website, phone, or instagram is required" }, { status: 400 });
   }
@@ -413,41 +374,20 @@ async function handlePOST(req: Request) {
     }
 
     const html = await res.text();
-    const visibleText = html
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ");
 
-    const foundWhatsapp = extractWhatsappLinks(html);
-    const foundTel = extractTelLinks(html);
-    const foundInstagram = extractInstagramLinks(html);
-    const foundEmails = extractEmails(visibleText);
-    const phones = classifyPhones(visibleText);
-    const hasViewport = hasMobileViewport(html);
-    const bookingCta = hasBookingCtaText(html);
-    const bookingEngine = hasBookingEngineLink(html);
-    const contactPage = hasContactPageLink(html);
-    const inquiryForm = hasInquiryForm(html);
-    const socialIcons = hasSocialIconsOrLinks(html);
-    const otaOutboundLinks = hasOtaOutboundLinks(html);
-    const bookingFlowQuality = calculateBookingFlowQuality({
-      bookingCta,
-      bookingEngine,
-      hasContactPage: contactPage,
-      hasInquiryForm: inquiryForm,
-      hasWhatsapp: foundWhatsapp.length > 0,
-      hasSocialIcons: socialIcons,
-      hasOtaOutboundLinks: otaOutboundLinks,
-    });
-    const socialLinksQuality = estimateSocialLinksQuality({
-      instagram: foundInstagram,
-      whatsapp: foundWhatsapp,
-      emails: foundEmails,
-      phonesMobile: phones.mobile,
-      phonesLandline: phones.landline,
+    // Canonical extraction — the same functions the real import/re-enrichment
+    // pipeline uses. No regex here is Contact Finder's own anymore.
+    const signals = extractContactSignalsFromHtml(html, { pageUrl: url });
+    const foundWhatsapp = signals.whatsappLinks;
+    const foundInstagram = signals.instagramLinks;
+    const foundEmails = signals.emails;
+    const phones = classifyPhones([...signals.phones, ...signals.turkishGsmNumbers]);
+
+    const websiteIntelligence = inferWebsiteIntelligenceFromHomepageHtml(html, {
+      hasWhatsAppLink: foundWhatsapp.length > 0,
     });
 
-    const result = pickBestContact({
+    const picked = pickBestContact({
       website: url,
       whatsapp: foundWhatsapp,
       mobile: phones.mobile,
@@ -456,57 +396,37 @@ async function handlePOST(req: Request) {
       emails: foundEmails,
     });
 
-    const confidenceBase =
-      (bookingCta ? 24 : 0) +
-      (bookingEngine ? 24 : 0) +
-      (contactPage ? 12 : 0) +
-      (inquiryForm ? 12 : 0) +
-      (hasViewport ? 18 : 0) +
-      (foundWhatsapp.length > 0 ? 20 : 0) +
-      (foundTel.length > 0 ? 14 : 0) +
-      (socialIcons ? 8 : 0) -
-      (otaOutboundLinks ? 10 : 0);
-    const websiteConfidenceScore = Math.max(0, Math.min(100, confidenceBase));
-    const websiteConfidence = confidenceFromScore(websiteConfidenceScore, {
-      confirmed: 80,
-      likely: 55,
-      weak: 30,
-    });
-    const directBookingMaturity = maturityFromScore(bookingFlowQuality);
-    const conversionMaturity = maturityFromScore(
-      Math.round(
-        Math.max(
-          0,
-          Math.min(
-            100,
-            bookingFlowQuality * 0.6 +
-              (foundWhatsapp.length > 0 ? 20 : 0) +
-              (inquiryForm ? 12 : 0) +
-              (contactPage ? 8 : 0) -
-              (otaOutboundLinks ? 10 : 0),
-          ),
-        ),
-      ),
-    );
-    result.websiteIntelligence = {
-      hasWhatsAppLink: foundWhatsapp.length > 0,
-      hasTelLink: foundTel.length > 0,
-      hasBookingCtaText: bookingCta,
-      hasBookingEngine: bookingEngine,
-      hasContactPage: contactPage,
-      hasInquiryForm: inquiryForm,
-      hasSocialIcons: socialIcons,
-      hasOtaOutboundLinks: otaOutboundLinks,
-      bookingFlowQuality,
-      mobileViewportPresent: hasViewport,
-      socialLinksQuality,
-      confidence: websiteConfidenceScore,
-      websiteConfidence,
-      directBookingMaturity,
-      conversionMaturity,
-    };
+    let canonicalPersisted = false;
+    if (leadId) {
+      try {
+        const roster = await getRoster();
+        const current = roster.find((lead) => lead.id === leadId);
+        const patch = buildContactFinderCanonicalPatch(
+          {
+            whatsappConfidence: current?.whatsappConfidence ?? null,
+            instagramConfidence: current?.instagramConfidence ?? null,
+            websiteIntelligence: current?.websiteIntelligence,
+          },
+          {
+            verifiedWhatsAppLink: foundWhatsapp.length > 0,
+            generatedWhatsAppOnly: foundWhatsapp.length === 0 && phones.mobile.length > 0,
+            instagramLinkFound: foundInstagram.length > 0,
+            websiteIntelligence,
+          },
+        );
+        canonicalPersisted = await canonicalizeIntoRoster(leadId, patch);
+      } catch {
+        // A failed canonical write must not fail the whole request — the
+        // founder still gets the preview, just correctly marked unverified.
+        canonicalPersisted = false;
+      }
+    }
 
-    return NextResponse.json(result);
+    return NextResponse.json({
+      ...picked,
+      websiteIntelligence,
+      canonicalPersisted,
+    } satisfies ContactFinderResponse);
   } catch {
     return NextResponse.json(
       { error: "Failed to fetch or analyze website" },

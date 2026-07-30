@@ -59,6 +59,8 @@ export type OutreachStylePack = {
   duplicateAvoided: boolean;
   /** Explainability for the requested tone's draft. Absent at reply stages. */
   personalizationByStyle: Partial<Record<StyleKey, DraftPersonalization>>;
+  /** Digest of the evidence pack this generation used. See `workspace.ts`'s `PersistedOutreachDraft.evidenceFingerprint`. */
+  evidenceFingerprint?: string;
 };
 
 export type OutreachGenerationOutcome = OutreachStylePack | OutreachNeedsResearchPack;
@@ -166,7 +168,7 @@ export async function generateOutreachStylePack(
     generationId?: string;
     duplicateAvoided?: boolean;
     tones?: { soft?: ToneDetail; direct?: ToneDetail; consultative?: ToneDetail };
-    meta?: { provider?: string | null };
+    meta?: { provider?: string | null; evidenceFingerprint?: string };
   };
 
   if (!res.ok) {
@@ -231,5 +233,9 @@ export async function generateOutreachStylePack(
         ? { premium: tones.consultative.personalization }
         : {}),
     },
+    evidenceFingerprint:
+      typeof data.meta?.evidenceFingerprint === "string"
+        ? data.meta.evidenceFingerprint
+        : undefined,
   };
 }

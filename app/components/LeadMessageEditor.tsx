@@ -283,6 +283,7 @@ export function useLeadMessageWorkspace({
             toneOf(style) === activeTone ? pack.usedSignalKeys : undefined,
           generationId: pack.generationId,
           personalization: pack.personalizationByStyle[style],
+          evidenceFingerprint: pack.evidenceFingerprint,
         }));
 
         candidate = {
