@@ -103,6 +103,7 @@ import {
 } from "@/app/components/SectionNavigationRail";
 import {
   resolveOperationTarget,
+  resolveFounderCommandDestination,
   type OperationNavKey,
 } from "@/app/lib/operation-navigation";
 import {
@@ -7097,8 +7098,20 @@ function DailyOperatingBrief({
           ? (tr ? "Bugün sıcak fırsatları demo aşamasına taşı." : "Move hot leads to demo stage today.")
           : (tr ? "Bugün yeni lead üretimi gerekiyor." : "New lead generation needed today.");
 
+    // v3.9.1 — same structured signal that already chose `focus`'s copy, not a
+    // parse of that copy. Mirrors the exact 4-way priority FounderWorkflowSteps
+    // already uses for the same concepts (closeFollowUps/engageHot/advanceDemo/
+    // generateNew), so the headline and the flow-step card never disagree.
+    const focusKey: OperationNavKey = followUpDue > 0
+      ? "closeFollowUps"
+      : hotNotContacted > 0
+        ? "engageHot"
+        : demoCount > 0
+          ? "advanceDemo"
+          : "generateNew";
+
     const estimatedMinutes = criticalCount * 3;
-    return { criticalCount, focus, estimatedMinutes, activeLeadCount };
+    return { criticalCount, focus, focusKey, estimatedMinutes, activeLeadCount };
   }, [rows, now, tr]);
 
   if (rows.length === 0) return null;
@@ -7115,7 +7128,16 @@ function DailyOperatingBrief({
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-indigo-400">
             {tr ? "Bugünün Ana Odağı" : "Today's Main Focus"}
           </div>
-          <div className="text-sm font-medium text-indigo-100">{intel.focus}</div>
+          {/* v3.9.1 — concrete action instruction, so it navigates like the KPI
+              buttons below it (same OperationNavKey contract, no new nav system). */}
+          <button
+            type="button"
+            onClick={() => onNavigate(intel.focusKey)}
+            aria-label={intel.focus}
+            className="-mx-1 block w-full rounded px-1 text-left text-sm font-medium text-indigo-100 transition hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+          >
+            {intel.focus}
+          </button>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <button
@@ -9130,6 +9152,32 @@ function FounderCommandCenter({
         ? "text-amber-300 border-amber-500/30 bg-amber-500/10"
         : "text-zinc-400 border-zinc-600/40 bg-zinc-700/20";
 
+  // v3.9.1 — the primary command is a concrete operational action, so it
+  // navigates to the existing workspace it describes. Keyed off the
+  // structured priority, never parsed from the `command` copy string.
+  const destination = resolveFounderCommandDestination(cmd.priority);
+  const commandAriaLabel =
+    cmd.impactRevenue > 0
+      ? `${cmd.command} — ${formatTRY(cmd.impactRevenue)} gelir etkisi`
+      : cmd.command;
+  const commandContent = (
+    <>
+      <p
+        className={`mt-1 text-2xl font-bold tracking-tight ${commandCls[cmd.priority] ?? "text-zinc-200"}`}
+      >
+        {cmd.command}
+      </p>
+      {cmd.impactRevenue > 0 && (
+        <p className="mt-1 text-[13px] font-medium text-zinc-400">
+          <span className="font-bold text-zinc-200">{formatTRY(cmd.impactRevenue)}</span>
+          {" "}gelir etkisi
+        </p>
+      )}
+    </>
+  );
+  const commandInteractiveCls =
+    "-mx-1 block w-full rounded-lg px-1 text-left no-underline transition hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50";
+
   return (
     <section
       className={`overflow-hidden rounded-xl border ${priorityBorder[cmd.priority] ?? priorityBorder[5]}`}
@@ -9144,32 +9192,43 @@ function FounderCommandCenter({
         </span>
       </div>
 
-      {/* Primary command */}
+      {/* Primary command — clickable: navigates to the existing workspace it
+          instructs the founder to act in. Never executes anything itself. */}
       <div className="px-4 pt-4 pb-3">
         <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">
           Bugünkü Birincil Komut
         </p>
-        <p
-          className={`mt-1 text-2xl font-bold tracking-tight ${commandCls[cmd.priority] ?? "text-zinc-200"}`}
-        >
-          {cmd.command}
-        </p>
-        {cmd.impactRevenue > 0 && (
-          <p className="mt-1 text-[13px] font-medium text-zinc-400">
-            <span className="font-bold text-zinc-200">{formatTRY(cmd.impactRevenue)}</span>
-            {" "}gelir etkisi
-          </p>
+        {destination.kind === "href" ? (
+          <a href={destination.href} aria-label={commandAriaLabel} className={commandInteractiveCls}>
+            {commandContent}
+          </a>
+        ) : (
+          <button
+            type="button"
+            onClick={() => goToSection(destination.sectionId)}
+            aria-label={commandAriaLabel}
+            className={commandInteractiveCls}
+          >
+            {commandContent}
+          </button>
         )}
       </div>
 
       {/* Critical lead */}
       {cmd.criticalLeadId && (
         <div className="mx-4 mb-3 overflow-hidden rounded-lg border border-white/8 bg-white/[0.025]">
-          <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-600">
-                Kritik Lead
-              </p>
+          <p className="px-3 pt-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-600">
+            Kritik Lead
+          </p>
+          <div className="flex items-center justify-between gap-3 px-3 pb-2.5">
+            {/* v3.9.1 — the lead's own name/content region opens the same
+                canonical lead as "Detay Aç". Sibling buttons, not nested. */}
+            <button
+              type="button"
+              onClick={() => onOpenDetail(cmd.criticalLeadId!)}
+              aria-label={`${cmd.criticalLeadName} detayını aç`}
+              className="min-w-0 flex-1 rounded-md text-left transition hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            >
               <p className="mt-0.5 text-[13px] font-semibold text-zinc-100">
                 {cmd.criticalLeadName}
                 {cmd.criticalLeadCity && (
@@ -9179,7 +9238,7 @@ function FounderCommandCenter({
                 )}
               </p>
               <p className="mt-0.5 text-[11px] text-zinc-500">{cmd.criticalLeadReason}</p>
-            </div>
+            </button>
             <button
               type="button"
               onClick={() => onOpenDetail(cmd.criticalLeadId!)}

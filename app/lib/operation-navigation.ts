@@ -23,7 +23,9 @@ export type OperationSectionId =
   | "satis-boru-hatti"
   | "bugunun-firsatlari"
   | "satis-plani"
-  | "lead-havuzu";
+  | "lead-havuzu"
+  | "sicak-leadler"
+  | "gelir-risk";
 
 /** Subset of LeadStatus | "all" — no new statuses introduced. */
 export type OperationStatusFilter =
@@ -196,4 +198,62 @@ export function isOperationNavKey(value: unknown): value is OperationNavKey {
  */
 export function resolveOperationTarget(key: OperationNavKey): OperationTarget {
   return OPERATION_TARGETS[key] ?? OPERATION_TARGETS.activeLeads;
+}
+
+/* -------------------------------------------------------------------------- */
+/* v3.9.1 — Founder Command Center primary-command destination                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Priority levels produced by `computeFounderCommand` in Dashboard.tsx
+ * (`FounderCommandResult.priority`). Mirrored here rather than imported, so
+ * this module stays free of any Dashboard/React dependency.
+ *
+ * Order: FOLLOW_UP_DUE(1) > HOT_NOW(2) > DEMO_READY(3) > RECOVERY(4) >
+ * PIPELINE_LOW(5).
+ */
+export type FounderCommandPriority = 1 | 2 | 3 | 4 | 5;
+
+/**
+ * Where the Founder Command Center's single primary command should send the
+ * founder on click. Two kinds because the real destinations are two
+ * genuinely different things in this app:
+ *  - `section` — an anchor on the same page, opened with `goToSection`.
+ *  - `href` — a separate route. Only `/dashboard/follow-ups` today, the same
+ *    Takipler page already linked twice elsewhere in Dashboard.tsx.
+ * Not a new navigation system — a typed description of the two that already
+ * exist, so the component doesn't need to know which one applies.
+ */
+export type CommandDestination =
+  | { kind: "section"; sectionId: OperationSectionId }
+  | { kind: "href"; href: string };
+
+/** The existing Takipler route (see the two `<a href>` uses in Dashboard.tsx). */
+export const FOLLOW_UPS_HREF = "/dashboard/follow-ups";
+
+/**
+ * Resolves the Command Center's priority to a real, existing destination.
+ * Keyed off the structured priority the engine already computes — not the
+ * `command` copy string — so a wording change can never desync the link.
+ */
+export function resolveFounderCommandDestination(
+  priority: FounderCommandPriority,
+): CommandDestination {
+  switch (priority) {
+    case 1:
+      // "Takip gecikmelerini kapat" — overdue follow-ups live in Takipler.
+      return { kind: "href", href: FOLLOW_UPS_HREF };
+    case 2:
+      // "Sıcak fırsatlarla iletişime geç" — the Hot Leads workspace.
+      return { kind: "section", sectionId: "sicak-leadler" };
+    case 3:
+      // "Demo adaylarını ilerlet" — the sales pipeline.
+      return { kind: "section", sectionId: "satis-boru-hatti" };
+    case 4:
+      // "Risk altındaki geliri geri kazan" — Revenue & Risk.
+      return { kind: "section", sectionId: "gelir-risk" };
+    case 5:
+      // "Yeni fırsat üretimine odaklan" — generate new leads.
+      return { kind: "section", sectionId: "lead-havuzu" };
+  }
 }

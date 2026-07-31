@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  FOLLOW_UPS_HREF,
   OPERATION_TARGETS,
   isOperationNavKey,
+  resolveFounderCommandDestination,
   resolveOperationTarget,
+  type FounderCommandPriority,
   type OperationNavKey,
   type OperationSectionId,
 } from "./operation-navigation.ts";
@@ -197,5 +200,75 @@ describe("operation-navigation — contract integrity", () => {
     // @ts-expect-error — exercising the runtime fallback for an invalid key.
     const t = resolveOperationTarget("bogus");
     assert.equal(t.sectionId, "tum-leadler");
+  });
+});
+
+/**
+ * v3.9.1 — Founder Command Center primary-command destination.
+ *
+ * `resolveFounderCommandDestination` is keyed off the structured priority
+ * `computeFounderCommand` already produces (Dashboard.tsx), not off the
+ * `command` copy string — these tests pin priority → destination, not wording.
+ */
+describe("operation-navigation — Founder Command Center destination", () => {
+  const ALL_PRIORITIES: readonly FounderCommandPriority[] = [1, 2, 3, 4, 5];
+
+  it("1. priority 1 (follow-up due) opens Takipler, not an in-page section", () => {
+    const d = resolveFounderCommandDestination(1);
+    assert.equal(d.kind, "href");
+    assert.equal(d.kind === "href" ? d.href : null, FOLLOW_UPS_HREF);
+  });
+
+  it("2. priority 2 (hot now) opens the Hot Leads section", () => {
+    const d = resolveFounderCommandDestination(2);
+    assert.equal(d.kind, "section");
+    assert.equal(d.kind === "section" ? d.sectionId : null, "sicak-leadler");
+  });
+
+  it("3. priority 3 (demo ready) opens the Sales Pipeline section", () => {
+    const d = resolveFounderCommandDestination(3);
+    assert.equal(d.kind, "section");
+    assert.equal(d.kind === "section" ? d.sectionId : null, "satis-boru-hatti");
+  });
+
+  it("4. priority 4 (recovery) opens the Revenue & Risk section", () => {
+    const d = resolveFounderCommandDestination(4);
+    assert.equal(d.kind, "section");
+    assert.equal(d.kind === "section" ? d.sectionId : null, "gelir-risk");
+  });
+
+  it("5. priority 5 (pipeline low) opens the Lead Pool section", () => {
+    const d = resolveFounderCommandDestination(5);
+    assert.equal(d.kind, "section");
+    assert.equal(d.kind === "section" ? d.sectionId : null, "lead-havuzu");
+  });
+
+  it("6. every priority resolves to a distinct, real destination — no dangling target", () => {
+    const REAL_SECTION_IDS = [
+      "tum-leadler",
+      "satis-boru-hatti",
+      "bugunun-firsatlari",
+      "satis-plani",
+      "lead-havuzu",
+      "sicak-leadler",
+      "gelir-risk",
+    ];
+    for (const p of ALL_PRIORITIES) {
+      const d = resolveFounderCommandDestination(p);
+      if (d.kind === "href") {
+        assert.equal(d.href, FOLLOW_UPS_HREF);
+      } else {
+        assert.ok(
+          REAL_SECTION_IDS.includes(d.sectionId),
+          `priority ${p} → unknown section ${d.sectionId}`,
+        );
+      }
+    }
+  });
+
+  it("7. resolution is a pure function of priority — same input, same output", () => {
+    for (const p of ALL_PRIORITIES) {
+      assert.deepEqual(resolveFounderCommandDestination(p), resolveFounderCommandDestination(p));
+    }
   });
 });
